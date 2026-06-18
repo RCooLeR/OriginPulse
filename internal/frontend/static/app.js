@@ -45,6 +45,7 @@ const state = {
   analysisTab: "sourceIPs",
   logType: "nginx-access",
   signalFilter: "all",
+  signalKey: "",
   siteTab: "overview",
   entity: null,
   entityDetails: {},
@@ -121,6 +122,7 @@ function wireEvents() {
       const route = link.dataset.route || "overview";
       state.viewContext = {};
       state.entity = null;
+      state.signalKey = "";
       showRoute(route, true);
     });
   });
@@ -203,6 +205,7 @@ function wireEvents() {
   qsa("[data-signal-filter]").forEach((button) => {
     button.addEventListener("click", () => {
       state.signalFilter = button.dataset.signalFilter || "all";
+      state.signalKey = "";
       state.pages.signals = 0;
       updateURL(false);
       renderSignals();
@@ -254,6 +257,7 @@ function wireEvents() {
     if (routeButton) {
       state.viewContext = {};
       state.entity = null;
+      state.signalKey = "";
       showRoute(routeButton.dataset.routeTarget || "overview", true);
       return;
     }
@@ -477,10 +481,14 @@ function syncContextFromURL() {
     state.siteID = decodeURIComponent(pathParts[1]);
   }
   state.entity = null;
+  state.signalKey = "";
   if (state.route === "investigate" && pathParts[1]) {
     const kind = pathParts[1];
     const value = pathParts[2] ? decodeURIComponent(pathParts.slice(2).join("/")) : params.get(kind === "path" ? "path" : "value") || "";
     if (value) state.entity = { kind, value };
+  }
+  if (state.route === "signals" && pathParts[1]) {
+    state.signalKey = decodeURIComponent(pathParts.slice(1).join("/"));
   }
   state.from = params.get("from") ? dateToLocalInput(new Date(params.get("from"))) : "";
   state.to = params.get("to") ? dateToLocalInput(new Date(params.get("to"))) : "";
@@ -516,6 +524,9 @@ function routePath(route) {
   if (route === "investigate" && state.entity?.kind && state.entity?.value) {
     if (state.entity.kind === "path") return "/investigate/path";
     return `/investigate/${encodeURIComponent(state.entity.kind)}/${encodeURIComponent(state.entity.value)}`;
+  }
+  if (route === "signals" && state.signalKey) {
+    return `/signals/${encodeURIComponent(state.signalKey)}`;
   }
   return routes[route].path;
 }
@@ -1314,6 +1325,7 @@ function renderSignals() {
     button.setAttribute("aria-selected", active ? "true" : "false");
   });
   const allSignals = buildSignalItems();
+  renderSignalDetail(allSignals);
   const signals = state.signalFilter === "all" ? allSignals : allSignals.filter((item) => item.group === state.signalFilter);
   renderPager("#signalsPager", "signals", signals);
   const pageItems = paginate("signals", signals);
@@ -1324,6 +1336,275 @@ function renderSignals() {
     return [formatCategory(group), formatNumber(count)];
   });
   qs("#signalsGroupStats").innerHTML = groups.map(statTile).join("");
+}
+
+function renderSignalDetail(signals = buildSignalItems()) {
+  const panel = qs("#signalDetailPanel");
+  if (!panel) return;
+  if (!state.signalKey) {
+    panel.classList.add("hidden");
+    return;
+  }
+  panel.classList.remove("hidden");
+  const signal = findSignalByKey(state.signalKey, signals);
+  if (!signal) {
+    setText("#signalDetailEyebrow", "Signal investigation");
+    setText("#signalDetailTitle", "Signal not found");
+    qs("#signalDetailActions").innerHTML = `<button class="ghost small" type="button" data-route-target="signals">Back to signals</button>`;
+    qs("#signalDetailBody").innerHTML = `<div class="empty">This signal is no longer present in the current site and time window.</div>`;
+    return;
+  }
+  setText("#signalDetailEyebrow", `${formatCategory(signal.group || "Signal")} signal`);
+  setText("#signalDetailTitle", signal.title || "Signal investigation");
+  qs("#signalDetailActions").innerHTML = signalDetailActions(signal);
+  qs("#signalDetailBody").innerHTML = signalDetailBody(signal, signals);
+}
+
+function findSignalByKey(key, signals = buildSignalItems()) {
+  return (signals || []).find((item) => item.key === key) || null;
+}
+
+function signalDetailActions(signal) {
+  const actions = [
+    signal.sourceKind === "job"
+      ? `<button class="ghost small" type="button" data-route-target="system">Open system</button>`
+      : `<button class="ghost small" type="button" data-pivot='${encodePivot(signalLogPivot(signal))}'>Open matching logs</button>`,
+    signal.ip ? `<button class="ghost small" type="button" data-pivot='${encodePivot({ kind: "ip", value: signal.ip, site_id: signal.siteID || "", origin: "signal_detail" })}'>Open source IP</button>` : "",
+    signal.path ? `<button class="ghost small" type="button" data-pivot='${encodePivot({ kind: "path", value: signal.path, site_id: signal.siteID || "", origin: "signal_detail" })}'>Open affected path</button>` : "",
+    signal.siteID ? `<button class="ghost small" type="button" data-pivot='${encodePivot({ kind: "site", value: signal.siteID, origin: "signal_detail" })}'>Open site</button>` : "",
+    `<button class="ghost small" type="button" data-route-target="signals">Ranked list</button>`,
+  ];
+  return actions.filter(Boolean).join("");
+}
+
+function signalDetailBody(signal, signals = buildSignalItems()) {
+  const evidence = signalEvidence(signal).slice(0, 12);
+  const related = relatedSignals(signal, signals).slice(0, 6);
+  const paths = signalPaths(signal, evidence).slice(0, 8);
+  const sites = signalSites(signal, evidence).slice(0, 8);
+  const details = signal.details ? JSON.stringify(signal.details, null, 2) : "";
+  return `
+    <div class="field-grid signal-facts">${signalFacts(signal).map(statTile).join("")}</div>
+    <section class="signal-detail-grid">
+      ${entitySection("What happened", signalNarrative(signal), "")}
+      ${entitySection("Matching evidence", evidence.map(logEvidenceRow).join(""), "No matching evidence rows in this scope.")}
+      ${entitySection("Related entities", signalEntities(signal), "No entity pivots available.")}
+      ${entitySection("Related signals", related.map(signalRow).join(""), "No related signals in this scope.")}
+      ${entitySection("Affected sites", sites.map(signalSiteRow).join(""), "No site distribution available.")}
+      ${entitySection("Affected paths", paths.map(signalPathRow).join(""), "No path distribution available.")}
+      ${details ? entitySection("Raw signal details", `<pre class="signal-raw">${escapeHTML(details)}</pre>`, "") : ""}
+    </section>
+  `;
+}
+
+function signalFacts(signal) {
+  return [
+    ["Severity", formatCategory(signal.severity || "-")],
+    ["Risk", signal.risk || severityRank(signal.severity) * 20 || "-"],
+    ["Group", formatCategory(signal.group || "-")],
+    ["Requests", formatNumber(signal.requests || 0)],
+    ["Errors", formatNumber(signal.errors || 0)],
+    ["Site", signal.siteID || "All sites"],
+    ["Source IP", signal.ip || "-"],
+    ["Path", signal.path || "-"],
+    ["Last seen", formatTime(signal.lastSeen)],
+    ["Source", formatCategory(signal.sourceKind || "signal")],
+  ];
+}
+
+function signalNarrative(signal) {
+  const recommendation = signalRecommendation(signal);
+  return `
+    <div class="signal-narrative">
+      <p>${escapeHTML(signal.summary || "The signal was produced from current access-log analysis.")}</p>
+      <dl class="facts compact-facts">
+        <div><dt>Recommended action</dt><dd>${escapeHTML(recommendation)}</dd></div>
+        <div><dt>Blast radius</dt><dd>${escapeHTML(signalBlastRadius(signal))}</dd></div>
+        <div><dt>Confidence</dt><dd>${escapeHTML(signalConfidence(signal))}</dd></div>
+      </dl>
+    </div>
+  `;
+}
+
+function signalRecommendation(signal) {
+  if (signal.sourceKind === "injectionProbe") return "Review matching requests, inspect the source IP, and confirm whether the affected path needs blocking or application hardening.";
+  if (signal.sourceKind === "adminProbe") return "Check source IP reputation, confirm the targeted admin path is expected, and review repeated hits across sites.";
+  if (signal.sourceKind === "torSource") return "Inspect the Tor source, compare admin-path pressure, and decide whether rate limiting or temporary blocking is appropriate.";
+  if (signal.sourceKind === "slowPath") return "Open matching logs, inspect status and timing, then compare this path against site reliability signals.";
+  if (signal.sourceKind === "recentError") return "Open matching logs and inspect the source, path, and status trend before escalating.";
+  if (signal.sourceKind === "job") return "Open system status and inspect the failed background job before trusting freshness-sensitive charts.";
+  return "Open supporting logs and related entities, then decide whether this signal is expected noise or needs response.";
+}
+
+function signalBlastRadius(signal) {
+  const parts = [
+    signal.siteID ? `site ${signal.siteID}` : "all selected sites",
+    signal.path ? `path ${signal.path}` : "",
+    signal.ip ? `source ${signal.ip}` : "",
+  ].filter(Boolean);
+  return parts.join(" / ");
+}
+
+function signalConfidence(signal) {
+  if ((signal.risk || 0) >= 80 || signal.severity === "critical") return "High";
+  if ((signal.risk || 0) >= 50 || signal.severity === "high") return "Medium";
+  return "Watch";
+}
+
+function signalEvidence(signal) {
+  const targetKind = signalEvidenceKind(signal);
+  const rows = filteredLogEvidence();
+  const matched = rows.filter((row) => {
+    const siteMatches = !signal.siteID || !row.site_id || row.site_id === signal.siteID;
+    const ipMatches = Boolean(signal.ip && row.ip === signal.ip);
+    const pathMatchesSignal = Boolean(signal.path && pathMatches(row.path, signal.path));
+    const kindMatches = Boolean(targetKind && row.kind === targetKind);
+    if (signal.sourceKind === "job") return false;
+    if (signal.ip && signal.path) return siteMatches && (ipMatches || pathMatchesSignal || kindMatches);
+    if (signal.ip) return siteMatches && (ipMatches || kindMatches);
+    if (signal.path) return siteMatches && (pathMatchesSignal || kindMatches);
+    return siteMatches && kindMatches;
+  });
+  return matched.length ? matched : rows.filter((row) => {
+    if (signal.siteID && row.site_id !== signal.siteID) return false;
+    if (signal.group === "reliability") return Number(row.errors || 0) > 0;
+    return false;
+  });
+}
+
+function signalEvidenceKind(signal) {
+  return {
+    injectionProbe: "Injection probe",
+    adminProbe: "Admin probe",
+    torSource: "Tor source",
+    slowPath: "Slow path",
+    recentError: "Recent error",
+  }[signal.sourceKind] || "";
+}
+
+function relatedSignals(signal, signals = buildSignalItems()) {
+  return (signals || []).filter((item) => {
+    if (item.key === signal.key) return false;
+    if (signal.ip && item.ip === signal.ip) return true;
+    if (signal.path && item.path && pathMatches(item.path, signal.path)) return true;
+    if (signal.siteID && item.siteID === signal.siteID && item.group === signal.group) return true;
+    return false;
+  });
+}
+
+function signalEntities(signal) {
+  const rows = [
+    signal.ip ? signalEntityRow("Source IP", signal.ip, { kind: "ip", value: signal.ip, site_id: signal.siteID || "", origin: "signal_detail" }) : "",
+    signal.path ? signalEntityRow("Path", signal.path, { kind: "path", value: signal.path, site_id: signal.siteID || "", origin: "signal_detail" }) : "",
+    signal.actor ? signalEntityRow("Actor", signal.actor, { kind: "actor", value: signal.actor, site_id: signal.siteID || "", origin: "signal_detail" }) : "",
+    signal.siteID ? signalEntityRow("Site", signal.siteID, { kind: "site", value: signal.siteID, origin: "signal_detail" }) : "",
+  ];
+  return rows.filter(Boolean).join("");
+}
+
+function signalEntityRow(label, value, pivot) {
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(label)}</strong>
+        <span>${escapeHTML(value || "-")}</span>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(pivot)}'>Open</button>
+      </div>
+      <div class="signal-numbers"><span>entity</span><b>${escapeHTML(formatCategory(pivot.kind || "-"))}</b></div>
+    </div>
+  `;
+}
+
+function signalPaths(signal, evidence = signalEvidence(signal)) {
+  const paths = new Map();
+  filteredTopPaths().forEach((item) => {
+    if (signal.siteID && item.site_id && item.site_id !== signal.siteID) return;
+    if (signal.path && !pathMatches(item.path, signal.path)) return;
+    const key = `${item.site_id || ""}|${item.path || "/"}`;
+    paths.set(key, { ...item });
+  });
+  evidence.forEach((item) => {
+    const key = `${item.site_id || ""}|${item.path || "/"}`;
+    const existing = paths.get(key) || { site_id: item.site_id || "", path: item.path || "/", requests: 0, status_4xx: 0, status_5xx: 0, bytes_sent: 0 };
+    existing.requests += Number(item.requests || 0);
+    existing.status_4xx += Number(item.status_4xx || 0) + (Number(item.status || 0) >= 400 && Number(item.status || 0) < 500 ? 1 : 0);
+    existing.status_5xx += Number(item.status_5xx || 0) + (Number(item.status || 0) >= 500 ? 1 : 0);
+    existing.bytes_sent += Number(item.bytes_sent || 0);
+    paths.set(key, existing);
+  });
+  return Array.from(paths.values()).sort((a, b) => Number(b.requests || 0) - Number(a.requests || 0));
+}
+
+function signalSites(signal, evidence = signalEvidence(signal)) {
+  const sites = new Map();
+  evidence.forEach((item) => {
+    const siteID = item.site_id || signal.siteID || "unknown";
+    const existing = sites.get(siteID) || { site_id: siteID, env: item.env || "", requests: 0, errors: 0, last_seen: "" };
+    existing.requests += Number(item.requests || 0);
+    existing.errors += Number(item.errors || 0);
+    if (!existing.last_seen || new Date(item.ts || 0) > new Date(existing.last_seen || 0)) existing.last_seen = item.ts || "";
+    sites.set(siteID, existing);
+  });
+  if (!sites.size && signal.siteID) {
+    sites.set(signal.siteID, { site_id: signal.siteID, env: signal.env || "", requests: signal.requests || 0, errors: signal.errors || 0, last_seen: signal.lastSeen || "" });
+  }
+  return Array.from(sites.values()).sort((a, b) => Number(b.requests || 0) - Number(a.requests || 0));
+}
+
+function signalSiteRow(item) {
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(item.site_id || "-")}</strong>
+        <span>${escapeHTML([item.env, formatTime(item.last_seen)].filter(Boolean).join(" - ") || "current scope")}</span>
+        <div class="signal-actions">
+          ${item.site_id && item.site_id !== "unknown" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: item.site_id, origin: "signal_detail" })}'>Open site</button>` : ""}
+          ${item.site_id && item.site_id !== "unknown" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: item.site_id, status_class: item.errors ? "errors" : "", origin: "signal_detail" })}'>Open logs</button>` : ""}
+        </div>
+      </div>
+      <div class="signal-numbers"><span>${formatNumber(item.errors || 0)} errors</span><b>${formatNumber(item.requests || 0)}</b></div>
+    </div>
+  `;
+}
+
+function signalPathRow(item) {
+  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(item.path || "/")}</strong>
+        <span>${escapeHTML(item.site_id || "all sites")} - ${formatStatusBuckets(item)}</span>
+        <div class="signal-actions">
+          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path || "/", site_id: item.site_id || "", origin: "signal_detail" })}'>Open path</button>
+          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "/", site_id: item.site_id || "", status_class: errors ? "errors" : "", origin: "signal_detail" })}'>Open logs</button>
+        </div>
+      </div>
+      <div class="signal-numbers"><span>${formatBytes(item.bytes_sent || 0)}</span><b>${formatNumber(item.requests || 0)}</b></div>
+    </div>
+  `;
+}
+
+function signalLogPivot(signal) {
+  const pivot = {
+    kind: "log_filter",
+    site_id: signal.siteID || "",
+    origin: "signal_detail",
+  };
+  if (signal.ip) pivot.ip = signal.ip;
+  if (signal.path) pivot.path = signal.path;
+  if (signal.errors) pivot.status_class = "errors";
+  if (signal.actor) pivot.known_actor = signal.actor;
+  return pivot;
+}
+
+function signalContext(signal) {
+  const context = {};
+  if (signal.siteID) context.site_id = signal.siteID;
+  if (signal.ip) context.ip = signal.ip;
+  if (signal.path) context.path = signal.path;
+  if (signal.errors) context.status_class = "errors";
+  if (signal.actor) context.known_actor = signal.actor;
+  return context;
 }
 
 function renderInvestigate() {
@@ -2218,6 +2499,7 @@ async function handleSiteAction(action) {
   if (action === "signals") {
     state.siteID = site.id;
     state.viewContext = {};
+    state.signalKey = "";
     showRoute("signals", true);
     await refreshWithValidation();
     return;
@@ -2225,6 +2507,7 @@ async function handleSiteAction(action) {
   if (action === "reports") {
     state.siteID = site.id;
     state.viewContext = {};
+    state.signalKey = "";
     showRoute("reports", true);
     await refreshWithValidation();
     return;
@@ -3131,6 +3414,7 @@ async function handlePivot(pivot) {
   if (pivot.kind === "site" && (pivot.value || pivot.site_id)) {
     state.siteID = pivot.value || pivot.site_id || "";
     state.viewContext = {};
+    state.signalKey = "";
     resetContextPages();
     showRoute("sites", true);
     await refreshWithValidation();
@@ -3141,6 +3425,7 @@ async function handlePivot(pivot) {
     if (pivot.value) state.selectedReportIDs[state.reportTab] = pivot.value;
     if (pivot.site_id) state.siteID = pivot.site_id;
     state.viewContext = {};
+    state.signalKey = "";
     resetContextPages();
     showRoute("reports", true);
     if (needsRefresh) await refreshWithValidation();
@@ -3156,11 +3441,17 @@ async function handlePivot(pivot) {
   }
   resetContextPages();
   if (pivot.kind === "signal") {
-    showSignalDetail(pivot.key);
-    updateURL(false);
+    state.signalKey = pivot.key || pivot.value || "";
+    state.entity = null;
+    const signal = findSignalByKey(state.signalKey);
+    if (signal) state.viewContext = signalContext(signal);
+    showRoute("signals", true);
+    if (needsRefresh) await refreshWithValidation();
+    else renderSignals();
     return;
   }
   if (pivot.kind === "ip") {
+    state.signalKey = "";
     state.entity = { kind: "ip", value: pivot.value };
     showRoute("investigate", true);
     if (needsRefresh) await refreshWithValidation();
@@ -3169,6 +3460,7 @@ async function handlePivot(pivot) {
     return;
   }
   if (pivot.kind === "actor") {
+    state.signalKey = "";
     state.entity = { kind: "actor", value: pivot.value };
     showRoute("investigate", true);
     if (needsRefresh) await refreshWithValidation();
@@ -3177,6 +3469,7 @@ async function handlePivot(pivot) {
     return;
   }
   if (pivot.kind === "path") {
+    state.signalKey = "";
     state.entity = { kind: "path", value: pivot.value || pivot.path || "/" };
     showRoute("investigate", true);
     if (needsRefresh) await refreshWithValidation();
@@ -3185,6 +3478,7 @@ async function handlePivot(pivot) {
   }
   if (pivot.kind === "log_filter") {
     state.entity = null;
+    state.signalKey = "";
     showRoute("logs", true);
     if (needsRefresh) await refreshWithValidation();
     else renderLogs();
@@ -3228,7 +3522,7 @@ function pivotContext(pivot) {
 }
 
 function resetContextPages() {
-  ["sourceIPs", "userAgents", "sites", "signals"].forEach((key) => {
+  ["sourceIPs", "userAgents", "sites", "signals", "logEvidence"].forEach((key) => {
     state.pages[key] = 0;
   });
 }

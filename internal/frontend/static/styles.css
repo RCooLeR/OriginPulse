@@ -735,6 +735,51 @@ h2 {
   min-height: 520px;
 }
 
+.signal-detail {
+  display: grid;
+}
+
+.signal-detail-body {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 10px;
+}
+
+.signal-facts {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.signal-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0 10px 10px;
+}
+
+.signal-narrative {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.signal-narrative p {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.45;
+}
+
+.signal-raw {
+  max-height: 300px;
+  margin: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: auto;
+  background: #fbfcfd;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+}
+
 .entity-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -1498,7 +1543,8 @@ td code,
     grid-template-areas: none;
   }
 
-  .entity-facts {
+  .entity-facts,
+  .signal-facts {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
@@ -1594,6 +1640,7 @@ td code,
   .explorer-layout,
   .entity-grid,
   .entity-detail-grid,
+  .signal-detail-grid,
   .site-workspace,
   .site-tab-grid,
   .metrics,
@@ -1608,7 +1655,8 @@ td code,
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .entity-facts {
+  .entity-facts,
+  .signal-facts {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
