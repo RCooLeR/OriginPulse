@@ -45,6 +45,9 @@ const state = {
   logType: "nginx-access",
   signalFilter: "all",
   siteTab: "overview",
+  entity: null,
+  entityDetails: {},
+  entityDetailLoading: {},
   viewContext: {},
   reportTab: "daily",
   selectedReportIDs: {},
@@ -116,6 +119,7 @@ function wireEvents() {
       event.preventDefault();
       const route = link.dataset.route || "overview";
       state.viewContext = {};
+      state.entity = null;
       showRoute(route, true);
     });
   });
@@ -246,6 +250,7 @@ function wireEvents() {
     const routeButton = event.target.closest("[data-route-target]");
     if (routeButton) {
       state.viewContext = {};
+      state.entity = null;
       showRoute(routeButton.dataset.routeTarget || "overview", true);
       return;
     }
@@ -468,6 +473,12 @@ function syncContextFromURL() {
   if (state.route === "sites" && pathParts[1]) {
     state.siteID = decodeURIComponent(pathParts[1]);
   }
+  state.entity = null;
+  if (state.route === "investigate" && pathParts[1]) {
+    const kind = pathParts[1];
+    const value = pathParts[2] ? decodeURIComponent(pathParts.slice(2).join("/")) : params.get(kind === "path" ? "path" : "value") || "";
+    if (value) state.entity = { kind, value };
+  }
   state.from = params.get("from") ? dateToLocalInput(new Date(params.get("from"))) : "";
   state.to = params.get("to") ? dateToLocalInput(new Date(params.get("to"))) : "";
   if (state.range !== "custom") {
@@ -481,6 +492,10 @@ function syncContextFromURL() {
     const value = params.get(key);
     if (value) state.viewContext[key] = value;
   });
+  if (state.entity?.kind === "ip") state.viewContext.ip = state.entity.value;
+  if (state.entity?.kind === "path") state.viewContext.path = state.entity.value;
+  if (state.entity?.kind === "actor") state.viewContext.known_actor = state.entity.value;
+  if (state.entity?.kind === "user-agent") state.viewContext.user_agent = state.entity.value;
 }
 
 function updateURL(push) {
@@ -495,6 +510,10 @@ function routePath(route) {
   if (route === "sites" && state.siteID) {
     return `/sites/${encodeURIComponent(state.siteID)}`;
   }
+  if (route === "investigate" && state.entity?.kind && state.entity?.value) {
+    if (state.entity.kind === "path") return "/investigate/path";
+    return `/investigate/${encodeURIComponent(state.entity.kind)}/${encodeURIComponent(state.entity.value)}`;
+  }
   return routes[route].path;
 }
 
@@ -506,10 +525,14 @@ function viewQuery(extra = {}) {
   if (state.range === "custom" && from) params.set("from", from);
   if (state.range === "custom" && to) params.set("to", to);
   if (state.route === "sites") return params;
+  if (state.route === "investigate" && state.entity?.kind === "path" && state.entity.value) params.set("path", state.entity.value);
   if (state.siteID) params.set("site_id", state.siteID);
   if (state.route === "logs" && state.logType && state.logType !== "nginx-access") params.set("log_type", state.logType);
   if (state.route === "signals" && state.signalFilter && state.signalFilter !== "all") params.set("signal_filter", state.signalFilter);
   Object.entries({ ...state.viewContext, ...extra }).forEach(([key, value]) => {
+    if (state.route === "investigate" && state.entity?.kind === "ip" && key === "ip") return;
+    if (state.route === "investigate" && state.entity?.kind === "actor" && key === "known_actor") return;
+    if (state.route === "investigate" && state.entity?.kind === "user-agent" && key === "user_agent") return;
     if (value !== undefined && value !== null && value !== "") params.set(key, value);
   });
   return params;
@@ -746,6 +769,7 @@ function signalRow(item) {
   const actions = [
     `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: item.key, origin: state.route })}'>Open signal</button>`,
     item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: item.siteID, origin: "signal" })}'>Open IP</button>` : "",
+    item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path, site_id: item.siteID, origin: "signal" })}'>Open path</button>` : "",
     item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path, ip: item.ip, site_id: item.siteID, status_class: item.errors ? "errors" : "", origin: "signal" })}'>Open logs</button>` : "",
   ].filter(Boolean).join("");
   const meta = [
@@ -1068,9 +1092,257 @@ function renderSignals() {
 }
 
 function renderInvestigate() {
+  renderEntityPage();
   renderSourceIPs();
   renderUserAgents();
   renderActors();
+}
+
+function renderEntityPage() {
+  const panel = qs("#entityPagePanel");
+  if (!panel) return;
+  const entity = state.entity;
+  if (!entity?.kind || !entity?.value) {
+    panel.classList.add("hidden");
+    return;
+  }
+  panel.classList.remove("hidden");
+  ensureEntityDetailLoaded(entity);
+  setText("#entityPageEyebrow", `${formatCategory(entity.kind)} investigation`);
+  setText("#entityPageTitle", entity.value);
+  qs("#entityPageActions").innerHTML = entityActions(entity);
+  qs("#entityPageBody").innerHTML = entityBody(entity);
+}
+
+function ensureEntityDetailLoaded(entity) {
+  if (entity.kind !== "ip") return;
+  const key = entityKey(entity);
+  if (state.entityDetails[key] || state.entityDetailLoading[key]) return;
+  state.entityDetailLoading[key] = true;
+  fetchJSON(`/api/v1/investigate/ip/${encodeURIComponent(entity.value)}?${buildFilterQuery({ limit: 30, site_id: state.viewContext.site_id || state.siteID || "" })}`)
+    .then((detail) => {
+      state.entityDetails[key] = detail;
+      renderEntityPage();
+    })
+    .catch((error) => {
+      state.entityDetails[key] = { lookup_errors: [error.message] };
+      renderEntityPage();
+    })
+    .finally(() => {
+      state.entityDetailLoading[key] = false;
+    });
+}
+
+function entityKey(entity) {
+  return `${entity.kind}:${entity.value}:${state.siteID || state.viewContext.site_id || ""}:${state.range}:${state.from}:${state.to}`;
+}
+
+function entityActions(entity) {
+  const siteID = state.viewContext.site_id || state.siteID || "";
+  const logPivot = entityLogPivot(entity, siteID);
+  return `
+    <button class="ghost small" type="button" data-pivot='${encodePivot(logPivot)}'>Open matching logs</button>
+    ${entity.kind === "ip" ? `<button class="ghost small" type="button" data-pivot='${encodePivot({ kind: "ip", value: entity.value, site_id: siteID, origin: "entity" })}'>Refresh IP lookup</button>` : ""}
+    <button class="ghost small" type="button" data-route-target="investigate">All entities</button>
+  `;
+}
+
+function entityLogPivot(entity, siteID = "") {
+  if (entity.kind === "ip") return { kind: "log_filter", ip: entity.value, site_id: siteID, origin: "entity" };
+  if (entity.kind === "path") return { kind: "log_filter", path: entity.value, site_id: siteID, origin: "entity" };
+  if (entity.kind === "actor") return { kind: "log_filter", known_actor: entity.value, actor_type: state.viewContext.actor_type || "", site_id: siteID, origin: "entity" };
+  if (entity.kind === "user-agent") return { kind: "log_filter", user_agent: entity.value, site_id: siteID, origin: "entity" };
+  return { kind: "log_filter", site_id: siteID, origin: "entity" };
+}
+
+function entityBody(entity) {
+  const detail = state.entityDetails[entityKey(entity)] || {};
+  const facts = entityFacts(entity, detail);
+  const signals = entitySignals(entity).slice(0, 8);
+  const evidence = entityEvidence(entity).slice(0, 12);
+  const paths = entityPaths(entity, detail).slice(0, 10);
+  const sites = entitySites(entity, detail).slice(0, 10);
+  const agents = entityUserAgents(entity, detail).slice(0, 10);
+  return `
+    <div class="field-grid entity-facts">${facts.map(statTile).join("")}</div>
+    <section class="entity-detail-grid">
+      ${entitySection("Related signals", signals.map(signalRow).join(""), "No related signals in this scope.")}
+      ${entitySection("Recent evidence", evidence.map(logEvidenceRow).join(""), "No recent evidence in this scope.")}
+      ${entitySection("Sites touched", sites.map(entitySiteRow).join(""), "No site distribution available.")}
+      ${entitySection("Paths", paths.map(entityPathRow).join(""), "No path distribution available.")}
+      ${entitySection("User agents", agents.map(entityUserAgentRow).join(""), "No user-agent distribution available.")}
+      ${entity.lookup_errors?.length || detail.lookup_errors?.length ? entitySection("Lookup notes", `<div class="empty">${escapeHTML((entity.lookup_errors || detail.lookup_errors || []).join("\\n"))}</div>`, "") : ""}
+    </section>
+  `;
+}
+
+function entityFacts(entity, detail = {}) {
+  if (entity.kind === "ip") {
+    const local = (state.data.analysis?.source_ips || []).find((item) => item.ip === entity.value) || {};
+    const traffic = detail.traffic || {};
+    const stored = detail.stored_intel || {};
+    const errors = Number(traffic.status_4xx || local.status_4xx || 0) + Number(traffic.status_5xx || local.status_5xx || 0);
+    return [
+      ["Requests", formatNumber(traffic.requests || local.requests || 0)],
+      ["Errors", formatNumber(errors)],
+      ["Error rate", formatPercent(ratio(errors, traffic.requests || local.requests || 0))],
+      ["Known actor", stored.known_actor || local.known_actor || "-"],
+      ["ASN", (detail.asn?.asn || stored.asn) ? `AS${detail.asn?.asn || stored.asn}` : "-"],
+      ["Last seen", formatTime(traffic.last_seen || local.last_seen)],
+    ];
+  }
+  if (entity.kind === "path") {
+    const rows = entityEvidence(entity);
+    const totalRequests = entityPaths(entity).reduce((sum, item) => sum + Number(item.requests || 0), 0);
+    const errors = rows.reduce((sum, item) => sum + Number(item.errors || 0), 0);
+    const sites = new Set(rows.map((item) => item.site_id).filter(Boolean));
+    const ips = new Set(rows.map((item) => item.ip).filter(Boolean));
+    return [
+      ["Requests", formatNumber(totalRequests || rows.length)],
+      ["Errors", formatNumber(errors)],
+      ["Source IPs", formatNumber(ips.size)],
+      ["Sites", formatNumber(sites.size)],
+      ["Current site", state.siteID || state.viewContext.site_id || "All sites"],
+      ["Window", activeFilterLabel()],
+    ];
+  }
+  if (entity.kind === "actor") {
+    const actor = aggregateActors().find((item) => item.label === entity.value) || {};
+    const ips = contextActorIPs({ known_actor: entity.value, actor_type: state.viewContext.actor_type || actor.type });
+    return [
+      ["Type", formatCategory(actor.type || state.viewContext.actor_type || "-")],
+      ["Requests", formatNumber(actor.requests || 0)],
+      ["Errors", formatNumber(actor.errors || 0)],
+      ["Source IPs", formatNumber(actor.ips || ips.size)],
+      ["Risk", actor.risk || "-"],
+      ["Last seen", formatTime(actor.lastSeen)],
+    ];
+  }
+  return [
+    ["Value", entity.value],
+    ["Window", activeFilterLabel()],
+  ];
+}
+
+function entitySignals(entity) {
+  return buildSignalItems().filter((item) => {
+    if (entity.kind === "ip") return item.ip === entity.value;
+    if (entity.kind === "path") return item.path && pathMatches(item.path, entity.value);
+    if (entity.kind === "actor") return item.actor === entity.value || item.summary?.includes(entity.value) || item.title?.includes(entity.value);
+    return false;
+  });
+}
+
+function entityEvidence(entity) {
+  const rows = filteredLogEvidence();
+  if (entity.kind === "ip") return rows.filter((item) => item.ip === entity.value);
+  if (entity.kind === "path") return rows.filter((item) => pathMatches(item.path, entity.value));
+  if (entity.kind === "actor") {
+    const ips = contextActorIPs({ known_actor: entity.value, actor_type: state.viewContext.actor_type || "" });
+    return rows.filter((item) => item.known_actor === entity.value || (item.ip && ips.has(item.ip)));
+  }
+  if (entity.kind === "user-agent") return rows.filter((item) => String(item.user_agent || "").includes(entity.value));
+  return rows;
+}
+
+function entityPaths(entity, detail = {}) {
+  if (entity.kind === "ip" && detail.top_paths) return detail.top_paths;
+  if (entity.kind === "path") return filteredTopPaths().filter((item) => pathMatches(item.path, entity.value));
+  const paths = new Map();
+  entityEvidence(entity).forEach((item) => {
+    const key = item.path || "/";
+    const existing = paths.get(key) || { path: key, requests: 0, status_4xx: 0, status_5xx: 0, bytes_sent: 0 };
+    existing.requests += Number(item.requests || 1);
+    existing.status_4xx += Number(item.status_4xx || (Number(item.status || 0) >= 400 && Number(item.status || 0) < 500 ? 1 : 0));
+    existing.status_5xx += Number(item.status_5xx || (Number(item.status || 0) >= 500 ? 1 : 0));
+    existing.bytes_sent += Number(item.bytes_sent || 0);
+    paths.set(key, existing);
+  });
+  return Array.from(paths.values()).sort((a, b) => b.requests - a.requests);
+}
+
+function entitySites(entity, detail = {}) {
+  if (entity.kind === "ip" && detail.sites) return detail.sites;
+  const sites = new Map();
+  entityEvidence(entity).forEach((item) => {
+    const key = item.site_id || "unknown";
+    const existing = sites.get(key) || { site_id: key, env: item.env || "", requests: 0, status_4xx: 0, status_5xx: 0, last_seen: "" };
+    existing.requests += Number(item.requests || 1);
+    existing.status_4xx += Number(item.status_4xx || (Number(item.status || 0) >= 400 && Number(item.status || 0) < 500 ? 1 : 0));
+    existing.status_5xx += Number(item.status_5xx || (Number(item.status || 0) >= 500 ? 1 : 0));
+    if (new Date(item.ts || 0) > new Date(existing.last_seen || 0)) existing.last_seen = item.ts;
+    sites.set(key, existing);
+  });
+  return Array.from(sites.values()).sort((a, b) => b.requests - a.requests);
+}
+
+function entityUserAgents(entity, detail = {}) {
+  if (entity.kind === "ip" && detail.top_user_agents) return detail.top_user_agents;
+  const agents = new Map();
+  entityEvidence(entity).forEach((item) => {
+    const key = item.user_agent || "(empty)";
+    const existing = agents.get(key) || { sample: key, requests: 0, status_4xx: 0, status_5xx: 0 };
+    existing.requests += Number(item.requests || 1);
+    existing.status_4xx += Number(item.status_4xx || (Number(item.status || 0) >= 400 && Number(item.status || 0) < 500 ? 1 : 0));
+    existing.status_5xx += Number(item.status_5xx || (Number(item.status || 0) >= 500 ? 1 : 0));
+    agents.set(key, existing);
+  });
+  return Array.from(agents.values()).sort((a, b) => b.requests - a.requests);
+}
+
+function entitySection(title, html, emptyMessage) {
+  if (!html && !emptyMessage) return "";
+  return `
+    <article class="entity-section">
+      <div class="panel-head"><h2>${escapeHTML(title)}</h2></div>
+      <div class="signal-list">${html || `<div class="empty">${escapeHTML(emptyMessage)}</div>`}</div>
+    </article>
+  `;
+}
+
+function entitySiteRow(item) {
+  const siteID = item.site_id || "-";
+  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(siteID)}</strong>
+        <span>${escapeHTML([item.env, `${formatNumber(errors)} errors`, item.last_seen ? `last ${formatTime(item.last_seen)}` : ""].filter(Boolean).join(" - "))}</span>
+        ${item.site_id ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: item.site_id, origin: "entity" })}'>Open site</button>` : ""}
+        ${item.site_id ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ ...entityLogPivot(state.entity, item.site_id), origin: "entity" })}'>Open logs</button>` : ""}
+      </div>
+      <div class="signal-numbers"><span>requests</span><b>${formatNumber(item.requests || 0)}</b></div>
+    </div>
+  `;
+}
+
+function entityPathRow(item) {
+  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(item.path || "/")}</strong>
+        <span>${escapeHTML(`${formatNumber(errors)} errors - ${formatBytes(item.bytes_sent || 0)}`)}</span>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path || "/", site_id: state.siteID || state.viewContext.site_id || "", origin: "entity" })}'>Open path</button>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "/", site_id: state.siteID || state.viewContext.site_id || "", status_class: errors ? "errors" : "", origin: "entity" })}'>Open logs</button>
+      </div>
+      <div class="signal-numbers"><span>requests</span><b>${formatNumber(item.requests || 0)}</b></div>
+    </div>
+  `;
+}
+
+function entityUserAgentRow(item) {
+  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(item.family || "User agent")}</strong>
+        <span>${escapeHTML(item.sample || "(empty)")}</span>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", user_agent: item.sample || "", site_id: state.siteID || state.viewContext.site_id || "", status_class: errors ? "errors" : "", origin: "entity" })}'>Open logs</button>
+      </div>
+      <div class="signal-numbers"><span>${formatNumber(errors)} errors</span><b>${formatNumber(item.requests || 0)}</b></div>
+    </div>
+  `;
 }
 
 function renderActors() {
@@ -1613,6 +1885,7 @@ function siteSecurityRow(item) {
         <strong>${escapeHTML(item.kind || formatCategory(item.category || "Security"))}: ${escapeHTML(path)}</strong>
         <span>${escapeHTML([item.ip, formatCategory(item.match_reason || item.category || ""), `${formatNumber(item.requests || 0)} requests`, `${formatNumber(errors)} errors`].filter(Boolean).join(" - "))}</span>
         ${item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: item.site_id, origin: "site" })}'>Open IP</button>` : ""}
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: path, site_id: item.site_id || "", origin: "site" })}'>Open path</button>
         <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path, ip: item.ip || "", site_id: item.site_id || "", status_class: errors ? "errors" : "", origin: "site" })}'>Open logs</button>
       </div>
       <div class="signal-numbers"><span>risk</span><b>${escapeHTML(item.risk_score || 0)}</b></div>
@@ -1627,6 +1900,7 @@ function siteReliabilityRow(item) {
       <div>
         <strong>${escapeHTML(item.path || "/")}</strong>
         <span>${escapeHTML(`p95 ${formatMs(item.p95_request_time_ms || 0)} - avg ${formatMs(item.avg_request_time_ms || 0)} - ${formatNumber(item.status_5xx || 0)} 5xx`)}</span>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path || "/", site_id: item.site_id || "", origin: "site" })}'>Open path</button>
         <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "/", site_id: item.site_id || "", status_class: Number(item.status_5xx || 0) ? "errors" : "", origin: "site" })}'>Open logs</button>
       </div>
       <div class="signal-numbers"><span>requests</span><b>${formatNumber(item.requests || 0)}</b></div>
@@ -1677,6 +1951,7 @@ function sitePathRow(item) {
       <div>
         <strong>${escapeHTML(item.path || "/")}</strong>
         <span>${escapeHTML(`${formatNumber(errors)} errors - ${formatBytes(item.bytes_sent || 0)} - p95 ${formatMs(item.p95_request_time_ms || 0)}`)}</span>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path || "/", site_id: state.siteID || item.site_id || "", origin: "site" })}'>Open path</button>
         <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "/", site_id: state.siteID || item.site_id || "", status_class: errors ? "errors" : "", origin: "site" })}'>Open logs</button>
       </div>
       <div class="signal-numbers"><span>requests</span><b>${formatNumber(item.requests || 0)}</b></div>
@@ -2057,6 +2332,7 @@ function reportDrilldownRow(report, key, item, index) {
   const detailButtons = `
     ${siteID ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "site", value: siteID, site_id: siteID, origin: "report" }))}'>Open site</button>` : ""}
     ${item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "ip", value: item.ip, site_id: siteID, origin: "report" }))}'>Open IP</button>` : ""}
+    ${item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "path", value: item.path, site_id: siteID, origin: "report" }))}'>Open path</button>` : ""}
     ${item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "log_filter", path: item.path, ip: item.ip || "", site_id: siteID, status_class: errors || item.status >= 400 ? "errors" : "", origin: "report" }))}'>Open logs</button>` : ""}
     <button class="ghost mini inline-action" type="button" data-report-detail-key="${escapeHTML(key)}" data-report-detail-index="${index}">Details</button>
   `;
@@ -2649,6 +2925,7 @@ async function handlePivot(pivot) {
     return;
   }
   if (pivot.kind === "ip") {
+    state.entity = { kind: "ip", value: pivot.value };
     showRoute("investigate", true);
     if (needsRefresh) await refreshWithValidation();
     else renderInvestigate();
@@ -2656,13 +2933,22 @@ async function handlePivot(pivot) {
     return;
   }
   if (pivot.kind === "actor") {
+    state.entity = { kind: "actor", value: pivot.value };
     showRoute("investigate", true);
     if (needsRefresh) await refreshWithValidation();
     else renderInvestigate();
     showActorDetail(pivot);
     return;
   }
+  if (pivot.kind === "path") {
+    state.entity = { kind: "path", value: pivot.value || pivot.path || "/" };
+    showRoute("investigate", true);
+    if (needsRefresh) await refreshWithValidation();
+    else renderInvestigate();
+    return;
+  }
   if (pivot.kind === "log_filter") {
+    state.entity = null;
     showRoute("logs", true);
     if (needsRefresh) await refreshWithValidation();
     else renderLogs();
