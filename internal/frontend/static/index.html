@@ -223,24 +223,62 @@
             <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-log-type="mysql-slow">MySQL slow</button>
           </div>
           <section class="explorer-layout">
-            <article class="panel">
+            <article class="panel logs-summary-panel">
               <div class="panel-head">
                 <div>
                   <p class="eyebrow">Log explorer</p>
                   <h2 id="logsTitle">Access logs</h2>
                 </div>
-                <span id="logsContext" class="pill">Current scope</span>
+                <button class="ghost mini" type="button" data-pivot='{"kind":"log_filter","origin":"logs"}'>Clear context</button>
               </div>
+              <div id="logsContext" class="context-strip"></div>
               <div id="logsFieldStats" class="field-grid"></div>
+            </article>
+            <article class="panel logs-timeline-panel">
+              <div class="panel-head">
+                <h2>Activity timeline</h2>
+                <span id="logsTimelineSummary" class="pill">-</span>
+              </div>
+              <div class="chart-box logs-chart">
+                <canvas id="logsTimelineChart"></canvas>
+              </div>
+            </article>
+            <article class="panel logs-facets-panel">
+              <div class="panel-head">
+                <h2>Field facets</h2>
+                <span id="logsFacetSummary" class="pill">-</span>
+              </div>
+              <div id="logsFacetsList" class="facet-list"></div>
             </article>
             <article class="panel explorer-main">
               <div class="panel-head">
-                <h2>Recent matching evidence</h2>
-                <span id="logsEvidenceCount" class="pill">-</span>
+                <div>
+                  <p class="eyebrow">Evidence</p>
+                  <h2>Recent matching rows</h2>
+                </div>
+                <div class="panel-tools">
+                  <span id="logsEvidenceCount" class="pill">-</span>
+                  <div id="logsPager" class="pager"></div>
+                </div>
               </div>
-              <div id="logsEvidenceList" class="signal-list"></div>
+              <div class="table-wrap logs-table-wrap">
+                <table class="logs-table">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Kind</th>
+                      <th>Site</th>
+                      <th>Source</th>
+                      <th>Path</th>
+                      <th>Signal</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="logsEvidenceTable"></tbody>
+                </table>
+              </div>
             </article>
-            <article class="panel">
+            <article class="panel logs-paths-panel">
               <div class="panel-head">
                 <h2>Top paths</h2>
                 <span id="logsTopPathCount" class="pill">-</span>

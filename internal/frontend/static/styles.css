@@ -576,24 +576,130 @@ h2 {
 
 .explorer-layout {
   display: grid;
-  grid-template-columns: minmax(280px, 0.44fr) minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 0.36fr) minmax(0, 1fr);
   grid-template-areas:
-    "fields evidence"
+    "summary evidence"
+    "timeline evidence"
+    "facets evidence"
     "paths evidence";
   gap: 12px;
   align-items: start;
 }
 
-.explorer-layout > .panel:first-child {
-  grid-area: fields;
+.logs-summary-panel {
+  grid-area: summary;
+}
+
+.logs-timeline-panel {
+  grid-area: timeline;
+}
+
+.logs-facets-panel {
+  grid-area: facets;
 }
 
 .explorer-main {
   grid-area: evidence;
 }
 
-.explorer-layout > .panel:last-child {
+.logs-paths-panel {
   grid-area: paths;
+}
+
+.logs-chart {
+  height: 198px;
+}
+
+.context-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 10px 10px 0;
+}
+
+.context-chip {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: #fbfcfd;
+  font-size: 0.76rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-chip b {
+  color: var(--ink);
+  font-size: 0.72rem;
+}
+
+.facet-list {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.facet-section {
+  display: grid;
+  gap: 6px;
+}
+
+.facet-section h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.facet-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.facet-row span,
+.facet-row small {
+  min-width: 0;
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.facet-row span {
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+
+.facet-row small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.facet-row strong {
+  font-size: 0.86rem;
+  text-align: right;
+}
+
+.logs-table-wrap {
+  max-height: 640px;
+}
+
+.logs-table td:nth-child(5),
+.logs-table th:nth-child(5) {
+  min-width: 240px;
 }
 
 .field-grid {
@@ -1396,9 +1502,11 @@ td code,
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .explorer-layout > .panel:first-child,
+  .logs-summary-panel,
+  .logs-timeline-panel,
+  .logs-facets-panel,
   .explorer-main,
-  .explorer-layout > .panel:last-child {
+  .logs-paths-panel {
     grid-area: auto;
   }
 

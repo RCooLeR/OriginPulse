@@ -33,6 +33,7 @@ const pageSize = {
   segments: 12,
   users: 12,
   signals: 25,
+  logEvidence: 18,
 };
 
 const state = {
@@ -193,8 +194,10 @@ function wireEvents() {
   qsa("[data-log-type]").forEach((button) => {
     button.addEventListener("click", () => {
       state.logType = button.dataset.logType || "nginx-access";
+      state.pages.logEvidence = 0;
       updateURL(false);
       renderLogs();
+      requestAnimationFrame(() => renderCharts());
     });
   });
   qsa("[data-signal-filter]").forEach((button) => {
@@ -849,46 +852,233 @@ function renderLogs() {
   });
   const supported = state.logType === "nginx-access";
   setText("#logsTitle", supported ? "Access logs" : `${formatLogType(state.logType)} logs`);
-  setText("#logsContext", logContextLabel());
+  qs("#logsContext").innerHTML = logContextChips().join("");
+
+  if (!supported) {
+    renderUnsupportedLogExplorer();
+    return;
+  }
 
   const analysis = state.data.analysis || {};
   const totals = analysis.totals || {};
-  const evidence = supported ? filteredLogEvidence() : [];
-  const topPaths = supported ? filteredTopPaths() : [];
-  const fieldStats = supported ? [
+  const evidence = filteredLogEvidence();
+  const topPaths = filteredTopPaths();
+  const timeline = logTimelineRows(evidence);
+  const pageItems = paginate("logEvidence", evidence);
+
+  qs("#logsFieldStats").innerHTML = accessLogStats(totals, evidence, topPaths).map(statTile).join("");
+  setText("#logsTimelineSummary", `${formatNumber(timeline.length)} buckets`);
+  renderPager("#logsPager", "logEvidence", evidence);
+  setText("#logsEvidenceCount", `${formatNumber(pageItems.length)} of ${formatNumber(evidence.length)} rows`);
+  qs("#logsEvidenceTable").innerHTML = pageItems.map(logEvidenceTableRow).join("") || emptyRow(7, "No matching access-log evidence in this scope.");
+  qs("#logsFacetsList").innerHTML = logFacetSections(evidence, topPaths).join("");
+  setText("#logsFacetSummary", `${formatNumber(logFacetCount(evidence, topPaths))} values`);
+  setText("#logsTopPathCount", `${formatNumber(topPaths.length)} paths`);
+  qs("#logsTopPathsList").innerHTML = topPaths.slice(0, 12).map(topPathLogRow).join("") || `<div class="empty">No paths match this scope.</div>`;
+}
+
+function renderUnsupportedLogExplorer() {
+  const segments = (state.data.segments || []).filter((item) => item.log_type === state.logType);
+  const indexed = segments.filter((item) => item.indexed || item.status === "indexed").length;
+  const lines = segments.reduce((sum, item) => sum + Number(item.line_count || 0), 0);
+  qs("#logsFieldStats").innerHTML = [
+    ["Log type", formatLogType(state.logType)],
+    ["Collection", segments.length ? "Raw segments found" : "Configured"],
+    ["Combined segments", formatNumber(segments.length)],
+    ["Indexed segments", formatNumber(indexed)],
+    ["Lines combined", formatNumber(lines)],
+    ["Parser", "Pending"],
+  ].map(statTile).join("");
+  setText("#logsTimelineSummary", "parser pending");
+  setText("#logsEvidenceCount", "not parsed yet");
+  qs("#logsEvidenceTable").innerHTML = emptyRow(7, `${formatLogType(state.logType)} rows are not parsed into searchable fields yet.`);
+  qs("#logsFacetsList").innerHTML = `
+    <section class="facet-section">
+      <h3>Ingestion state</h3>
+      <div class="facet-row">
+        <span>Combined segments</span>
+        <strong>${formatNumber(segments.length)}</strong>
+      </div>
+      <div class="facet-row">
+        <span>Parser</span>
+        <strong>Pending</strong>
+      </div>
+    </section>
+  `;
+  setText("#logsFacetSummary", "reserved");
+  setText("#logsTopPathCount", "not available");
+  qs("#logsTopPathsList").innerHTML = `<div class="empty">Path statistics will appear when the ${escapeHTML(formatLogType(state.logType))} parser is enabled.</div>`;
+  renderPager("#logsPager", "logEvidence", []);
+}
+
+function accessLogStats(totals, evidence, topPaths) {
+  const topIP = countFacet(evidence, (item) => item.ip, (item) => item.requests)[0];
+  const topKind = countFacet(evidence, (item) => item.kind, (item) => item.requests)[0];
+  const topPath = topPaths[0];
+  const errors = evidence.reduce((sum, item) => sum + Number(item.errors || 0), 0);
+  return [
     ["Log type", "Access"],
     ["Requests", formatNumber(totals.requests || 0)],
-    ["Sites", formatNumber((analysis.sites || []).length)],
+    ["Sites", formatNumber((state.data.analysis?.sites || []).length)],
     ["Source IPs", formatNumber(totals.unique_ips || 0)],
     ["User agents", formatNumber(totals.unique_user_agents || 0)],
-    ["4xx", formatPercent(totals.status_4xx_rate || 0)],
-    ["5xx", formatPercent(totals.status_5xx_rate || 0)],
-    ["Slow", formatPercent(totals.slow_requests_rate || 0)],
-  ] : [
-    ["Log type", formatLogType(state.logType)],
-    ["Status", "Collection-ready"],
-    ["Parser", "Pending"],
-    ["Explorer", "Pattern reserved"],
+    ["4xx / 5xx", `${formatPercent(totals.status_4xx_rate || 0)} / ${formatPercent(totals.status_5xx_rate || 0)}`],
+    ["Evidence errors", formatNumber(errors)],
+    ["Top evidence", topKind?.label || "-"],
+    ["Noisy IP", topIP?.label || "-"],
+    ["Top path", topPath?.path || "-"],
   ];
-  qs("#logsFieldStats").innerHTML = fieldStats.map(statTile).join("");
-  setText("#logsEvidenceCount", supported ? `${formatNumber(evidence.length)} rows` : "not parsed yet");
-  qs("#logsEvidenceList").innerHTML = supported
-    ? evidence.slice(0, 25).map(logEvidenceRow).join("") || `<div class="empty">No matching access-log evidence in this scope.</div>`
-    : `<div class="empty">${escapeHTML(formatLogType(state.logType))} ingestion is planned; this workspace is ready for the parser and field stats.</div>`;
-  setText("#logsTopPathCount", `${formatNumber(topPaths.length)} paths`);
-  qs("#logsTopPathsList").innerHTML = topPaths.slice(0, 12).map((item) => `
+}
+
+function logContextChips() {
+  const context = state.viewContext || {};
+  const chips = [
+    ["Scope", activeFilterLabel()],
+    ["Log type", formatLogType(state.logType)],
+  ];
+  if (context.ip) chips.push(["IP", context.ip]);
+  if (context.path) chips.push(["Path", context.path]);
+  if (context.known_actor) chips.push(["Actor", context.known_actor]);
+  if (context.actor_type) chips.push(["Actor type", formatCategory(context.actor_type)]);
+  if (context.status_class === "errors") chips.push(["Status", "Errors only"]);
+  if (context.user_agent) chips.push(["User agent", context.user_agent]);
+  return chips.map(([label, value]) => `
+    <span class="context-chip"><b>${escapeHTML(label)}</b>${escapeHTML(value)}</span>
+  `);
+}
+
+function logTimelineRows(evidence = filteredLogEvidence()) {
+  if (state.logType !== "nginx-access") return [];
+  const context = state.viewContext || {};
+  const contextKeys = Object.keys(context).filter((key) => context[key] && !(key === "site_id" && state.siteID === context[key]));
+  if (!contextKeys.length) return state.data.traffic?.timeline || [];
+  const bucketMs = logTimelineBucketMs();
+  const buckets = new Map();
+  evidence.forEach((item) => {
+    const date = new Date(item.ts || item.last_seen || 0);
+    if (Number.isNaN(date.getTime())) return;
+    const bucket = new Date(Math.floor(date.getTime() / bucketMs) * bucketMs).toISOString();
+    const existing = buckets.get(bucket) || { bucket_ts: bucket, requests: 0, status_4xx: 0, status_5xx: 0 };
+    existing.requests += Number(item.requests || 1);
+    const errors = Number(item.errors || 0);
+    if (Number(item.status || 0) >= 500) existing.status_5xx += Math.max(1, errors);
+    else existing.status_4xx += errors;
+    buckets.set(bucket, existing);
+  });
+  return Array.from(buckets.values()).sort((a, b) => new Date(a.bucket_ts) - new Date(b.bucket_ts));
+}
+
+function logTimelineBucketMs() {
+  if (state.range === "1h") return 5 * 60 * 1000;
+  if (state.range === "6h") return 15 * 60 * 1000;
+  if (state.range === "24h") return 60 * 60 * 1000;
+  if (state.range === "7d") return 6 * 60 * 60 * 1000;
+  return 24 * 60 * 60 * 1000;
+}
+
+function logFacetSections(evidence, topPaths) {
+  return [
+    facetSectionMarkup("Source IPs", countFacet(evidence, (item) => item.ip, (item) => item.requests).slice(0, 6), "ip"),
+    facetSectionMarkup("Paths", topPaths.slice(0, 6).map((item) => ({
+      label: item.path || "/",
+      value: Number(item.requests || 0),
+      errors: Number(item.status_4xx || 0) + Number(item.status_5xx || 0),
+      site_id: item.site_id || "",
+    })), "path"),
+    facetSectionMarkup("Sites", countFacet(evidence, (item) => item.site_id, (item) => item.requests).slice(0, 6), "site"),
+    facetSectionMarkup("Evidence types", countFacet(evidence, (item) => item.kind, (item) => item.requests).slice(0, 6), "kind"),
+    facetSectionMarkup("Status", statusFacets(evidence), "status"),
+  ];
+}
+
+function logFacetCount(evidence, topPaths) {
+  return countFacet(evidence, (item) => item.ip).length
+    + topPaths.length
+    + countFacet(evidence, (item) => item.site_id).length
+    + countFacet(evidence, (item) => item.kind).length
+    + statusFacets(evidence).length;
+}
+
+function countFacet(rows, keyFn, valueFn = (item) => item.requests) {
+  const map = new Map();
+  rows.forEach((item) => {
+    const label = String(keyFn(item) || "").trim();
+    if (!label) return;
+    const existing = map.get(label) || { label, value: 0, errors: 0, site_id: item.site_id || "" };
+    existing.value += Number(valueFn(item) || 0) || 1;
+    existing.errors += Number(item.errors || 0) + Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+    if (!existing.site_id && item.site_id) existing.site_id = item.site_id;
+    map.set(label, existing);
+  });
+  return Array.from(map.values()).sort((a, b) => b.value - a.value);
+}
+
+function statusFacets(evidence) {
+  const errors = evidence.reduce((sum, item) => sum + Number(item.errors || 0), 0);
+  const requests = evidence.reduce((sum, item) => sum + Number(item.requests || 0), 0);
+  return [
+    { label: "Errors only", value: errors, errors },
+    { label: "Non-error evidence", value: Math.max(0, requests - errors), errors: 0 },
+  ].filter((item) => item.value > 0);
+}
+
+function facetSectionMarkup(title, items, type) {
+  return `
+    <section class="facet-section">
+      <h3>${escapeHTML(title)}</h3>
+      ${items.map((item) => facetRowMarkup(item, type)).join("") || `<div class="empty">No ${escapeHTML(title.toLowerCase())} in this scope.</div>`}
+    </section>
+  `;
+}
+
+function facetRowMarkup(item, type) {
+  const siteID = item.site_id || state.viewContext.site_id || state.siteID || "";
+  const label = item.label || "-";
+  const refine = {
+    ip: { kind: "log_filter", ip: label, site_id: siteID, origin: "logs" },
+    path: { kind: "log_filter", path: label, site_id: siteID, status_class: item.errors ? "errors" : "", origin: "logs" },
+    site: { kind: "log_filter", site_id: label, origin: "logs" },
+    status: label === "Errors only" ? { kind: "log_filter", site_id: siteID, status_class: "errors", origin: "logs" } : null,
+  }[type];
+  const secondary = [
+    type === "ip" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: label, site_id: siteID, origin: "logs" })}'>Open IP</button>` : "",
+    type === "path" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: label, site_id: siteID, origin: "logs" })}'>Open path</button>` : "",
+    type === "site" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: label, origin: "logs" })}'>Open site</button>` : "",
+  ].filter(Boolean).join("");
+  return `
+    <div class="facet-row">
+      <div>
+        <span>${escapeHTML(label)}</span>
+        ${item.errors ? `<small>${formatNumber(item.errors)} errors</small>` : ""}
+        <div class="signal-actions">
+          ${refine ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(refine)}'>Refine</button>` : ""}
+          ${secondary}
+        </div>
+      </div>
+      <strong>${formatNumber(item.value || 0)}</strong>
+    </div>
+  `;
+}
+
+function topPathLogRow(item) {
+  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  const siteID = item.site_id || state.viewContext.site_id || state.siteID || "";
+  return `
     <div class="signal-row">
       <div>
         <strong>${escapeHTML(item.path || "/")}</strong>
         <span>${escapeHTML(item.site_id || "all sites")} - ${formatStatusBuckets(item)}</span>
-        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "/", site_id: item.site_id || "", origin: "logs" })}'>Open logs</button>
+        <div class="signal-actions">
+          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path || "/", site_id: siteID, origin: "logs" })}'>Open path</button>
+          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "/", site_id: siteID, status_class: errors ? "errors" : "", origin: "logs" })}'>Refine</button>
+        </div>
       </div>
       <div class="signal-numbers">
         <span>${formatBytes(item.bytes_sent || 0)}</span>
         <b>${formatNumber(item.requests || 0)}</b>
       </div>
     </div>
-  `).join("") || `<div class="empty">No paths match this scope.</div>`;
+  `;
 }
 
 function formatLogType(type) {
@@ -1046,6 +1236,7 @@ function logEvidenceRow(item) {
   ].filter(Boolean).join(" - ");
   const actions = [
     item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: item.site_id, origin: "logs" })}'>Open IP</button>` : "",
+    item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path, site_id: item.site_id, origin: "logs" })}'>Open path</button>` : "",
     item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path, ip: item.ip, site_id: item.site_id, status_class: item.errors ? "errors" : "", origin: "logs" })}'>Refine</button>` : "",
   ].filter(Boolean).join("");
   return `
@@ -1061,6 +1252,50 @@ function logEvidenceRow(item) {
       </div>
     </div>
   `;
+}
+
+function logEvidenceTableRow(item) {
+  const site = item.site_id ? `${item.site_id}${item.env ? ` / ${item.env}` : ""}` : "-";
+  const source = [
+    item.ip || "",
+    item.user_agent ? shortLabel(item.user_agent, 58) : "",
+  ].filter(Boolean).join(" / ") || "-";
+  const signal = logSignalMeta(item);
+  const siteID = item.site_id || state.viewContext.site_id || state.siteID || "";
+  const errors = Number(item.errors || 0);
+  const actions = [
+    item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: siteID, origin: "logs" })}'>Open IP</button>` : "",
+    item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path, site_id: siteID, origin: "logs" })}'>Open path</button>` : "",
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "", ip: item.ip || "", site_id: siteID, status_class: errors ? "errors" : "", origin: "logs" })}'>Refine</button>`,
+  ].filter(Boolean).join("");
+  return `
+    <tr>
+      <td>${formatTime(item.ts)}</td>
+      <td><strong>${escapeHTML(item.kind || "Evidence")}</strong><br><span>${escapeHTML(logEvidenceStatus(item))}</span></td>
+      <td>${escapeHTML(site)}</td>
+      <td>${escapeHTML(source)}</td>
+      <td><strong>${escapeHTML(formatURLTarget(item))}</strong></td>
+      <td>${escapeHTML(signal)}</td>
+      <td class="row-actions">${actions}</td>
+    </tr>
+  `;
+}
+
+function logEvidenceStatus(item) {
+  if (item.status) return String(item.status);
+  if (item.errors) return `${formatNumber(item.errors)} errors`;
+  if (item.p95_request_time_ms) return `p95 ${formatMs(item.p95_request_time_ms)}`;
+  return `${formatNumber(item.requests || 0)} requests`;
+}
+
+function logSignalMeta(item) {
+  return [
+    item.known_actor || "",
+    item.actor_type ? formatCategory(item.actor_type) : "",
+    item.category ? formatCategory(item.category) : "",
+    item.match_reason ? formatCategory(item.match_reason) : "",
+    item.risk_score ? `risk ${item.risk_score}` : "",
+  ].filter(Boolean).join(" / ") || "-";
 }
 
 function statTile([label, value]) {
@@ -2482,6 +2717,7 @@ function renderUsers() {
 
 function renderCharts() {
   drawTimeline(qs("#timelineChart"), state.data.traffic?.timeline || []);
+  drawTimeline(qs("#logsTimelineChart"), logTimelineRows());
   drawStatus(qs("#statusChart"), state.data.analysis?.status_breakdown || []);
   drawSites(qs("#siteChart"), state.data.analysis?.sites || []);
   drawSourceIPs(qs("#sourceChart"), state.data.analysis?.source_ips || []);
