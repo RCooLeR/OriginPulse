@@ -1361,7 +1361,38 @@ function renderSignalDetail(signals = buildSignalItems()) {
 }
 
 function findSignalByKey(key, signals = buildSignalItems()) {
-  return (signals || []).find((item) => item.key === key) || null;
+  const direct = (signals || []).find((item) => item.key === key);
+  if (direct) return direct;
+  const hint = parseReportSignalKey(key);
+  if (!hint) return null;
+  return findSignalByHint(hint, signals);
+}
+
+function findSignalByHint(hint, signals = buildSignalItems()) {
+  return (signals || []).find((signal) => {
+    if (hint.sourceKind && signal.sourceKind !== hint.sourceKind) return false;
+    if (hint.siteID && signal.siteID && signal.siteID !== hint.siteID) return false;
+    if (hint.ip && signal.ip !== hint.ip) return false;
+    if (hint.path && !pathMatches(signal.path, hint.path)) return false;
+    if (hint.title && signal.title !== hint.title) return false;
+    if (hint.actor && signal.actor && signal.actor !== hint.actor) return false;
+    return true;
+  }) || null;
+}
+
+function parseReportSignalKey(key) {
+  if (!String(key || "").startsWith("report:")) return null;
+  const value = String(key).slice("report:".length);
+  try {
+    if (value.startsWith("%7B") || value.startsWith("{")) {
+      return JSON.parse(decodeURIComponent(value));
+    }
+    const normalized = value.replaceAll("-", "+").replaceAll("_", "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    return JSON.parse(decodeURIComponent(atob(padded)));
+  } catch {
+    return null;
+  }
 }
 
 function signalDetailActions(signal) {
@@ -2847,7 +2878,9 @@ function reportDrilldownRow(report, key, item, index) {
   const value = reportDrilldownValue(item);
   const meta = reportDrilldownMeta(item, errors);
   const siteID = item.site_id || report.site_id || "";
+  const signalKey = reportSignalKey(key, item);
   const detailButtons = `
+    ${signalKey ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportSignalPivot(report, key, item, signalKey, siteID, errors))}'>Open signal</button>` : ""}
     ${siteID ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "site", value: siteID, site_id: siteID, origin: "report" }))}'>Open site</button>` : ""}
     ${item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "ip", value: item.ip, site_id: siteID, origin: "report" }))}'>Open IP</button>` : ""}
     ${item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "path", value: item.path, site_id: siteID, origin: "report" }))}'>Open path</button>` : ""}
@@ -2867,6 +2900,61 @@ function reportDrilldownRow(report, key, item, index) {
       </div>
     </div>
   `;
+}
+
+function reportSignalKey(key, item) {
+  const sourceKind = reportSignalSourceKind(key, item);
+  if (!sourceKind) return "";
+  const hint = {
+    sourceKind,
+    siteID: item.site_id || "",
+    ip: item.ip || "",
+    path: item.path || "",
+    title: sourceKind === "issue" ? item.label || "" : "",
+    actor: item.actor_value || item.known_actor || "",
+    status: item.status || 0,
+    category: item.category || "",
+  };
+  return `report:${encodeReportSignalHint(hint)}`;
+}
+
+function encodeReportSignalHint(hint) {
+  return btoa(encodeURIComponent(JSON.stringify(hint)))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+}
+
+function reportSignalSourceKind(key, item) {
+  const kind = String(item.kind || key || "");
+  return {
+    issue: "issue",
+    issues: "issue",
+    admin_probe: "adminProbe",
+    admin_probes: "adminProbe",
+    injection_probe: "injectionProbe",
+    injection_probes: "injectionProbe",
+    tor_source: "torSource",
+    tor_sources: "torSource",
+    slow_path: "slowPath",
+    slow_paths: "slowPath",
+    recent_error: "recentError",
+    recent_errors: "recentError",
+  }[kind] || "";
+}
+
+function reportSignalPivot(report, key, item, signalKey, siteID, errors) {
+  return reportPivot(report, {
+    kind: "signal",
+    key: signalKey,
+    site_id: siteID,
+    ip: item.ip || "",
+    path: item.path || "",
+    known_actor: item.actor_value || item.known_actor || "",
+    status_class: errors || Number(item.status || 0) >= 400 ? "errors" : "",
+    origin: "report",
+    report_tab: reportTabForReport(report),
+  });
 }
 
 function reportDrilldownValue(item) {
