@@ -636,6 +636,90 @@ h2 {
   align-items: start;
 }
 
+.site-workspace {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.42fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.site-list-panel {
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 154px);
+}
+
+.site-list-panel .table-wrap {
+  max-height: calc(100vh - 224px);
+}
+
+.site-list-table {
+  min-width: 690px;
+}
+
+.site-detail-stack {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.site-hero {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.site-hero-main,
+.site-actions,
+.report-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.site-hero-main h2 {
+  font-size: 1.18rem;
+}
+
+.site-meta {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.site-tab-body {
+  min-height: 280px;
+}
+
+.site-tab-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: 12px;
+  padding: 10px;
+}
+
+.site-subsection {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.site-subsection h3 {
+  margin: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -1264,7 +1348,8 @@ td code,
   }
 
   .explorer-layout,
-  .signals-layout {
+  .signals-layout,
+  .site-workspace {
     grid-template-columns: 1fr;
     grid-template-areas: none;
   }
@@ -1273,6 +1358,15 @@ td code,
   .explorer-main,
   .explorer-layout > .panel:last-child {
     grid-area: auto;
+  }
+
+  .site-list-panel {
+    position: static;
+    max-height: none;
+  }
+
+  .site-list-panel .table-wrap {
+    max-height: 430px;
   }
 
   #recentErrorsPanel .signal-list {
@@ -1349,6 +1443,8 @@ td code,
   .signals-layout,
   .explorer-layout,
   .entity-grid,
+  .site-workspace,
+  .site-tab-grid,
   .metrics,
   .report-browser,
   .report-layout,

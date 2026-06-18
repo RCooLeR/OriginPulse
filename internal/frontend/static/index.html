@@ -347,25 +347,70 @@
         </section>
 
         <section id="sitesView" class="view hidden" data-view="sites">
-          <article class="panel">
-            <div class="panel-head">
-              <h2>Configured sites</h2>
-              <div id="sitesPager" class="pager"></div>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Site</th>
-                    <th>Environments</th>
-                    <th>Tags</th>
-                    <th>Pantheon UUID</th>
-                  </tr>
-                </thead>
-                <tbody id="sitesTable"></tbody>
-              </table>
-            </div>
-          </article>
+          <section class="site-workspace">
+            <article class="panel site-list-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Sites</p>
+                  <h2>Properties</h2>
+                </div>
+                <div id="sitesPager" class="pager"></div>
+              </div>
+              <div class="table-wrap">
+                <table class="site-list-table">
+                  <thead>
+                    <tr>
+                      <th>Site</th>
+                      <th>Status</th>
+                      <th>Requests</th>
+                      <th>5xx</th>
+                      <th>Signals</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="sitesTable"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <section class="site-detail-stack">
+              <article class="panel site-hero">
+                <div class="site-hero-main">
+                  <div>
+                    <p class="eyebrow">Site workspace</p>
+                    <h2 id="siteDetailName">Select a site</h2>
+                    <p id="siteDetailMeta" class="site-meta">Current range</p>
+                  </div>
+                  <span id="siteDetailStatus" class="severity severity-low">normal</span>
+                </div>
+                <div id="siteRiskStrip" class="field-grid"></div>
+                <div class="site-actions">
+                  <button id="siteFocusButton" class="primary small" type="button" data-site-action="focus">Focus site</button>
+                  <button class="ghost small" type="button" data-site-action="logs">Open logs</button>
+                  <button class="ghost small" type="button" data-site-action="signals">Open signals</button>
+                  <button class="ghost small" type="button" data-site-action="reports">Open reports</button>
+                </div>
+              </article>
+
+              <div class="analysis-tabs" role="tablist" aria-label="Site sections">
+                <button class="analysis-tab active" type="button" role="tab" aria-selected="true" data-site-tab="overview">Overview</button>
+                <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-site-tab="security">Security</button>
+                <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-site-tab="reliability">Reliability</button>
+                <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-site-tab="actors">Actors</button>
+                <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-site-tab="paths">Paths</button>
+                <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-site-tab="logs">Logs</button>
+                <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-site-tab="reports">Reports</button>
+              </div>
+
+              <article class="panel">
+                <div class="panel-head">
+                  <h2 id="siteTabTitle">Overview</h2>
+                  <span id="siteTabSummary" class="pill">-</span>
+                </div>
+                <div id="siteTabBody" class="site-tab-body"></div>
+              </article>
+            </section>
+          </section>
         </section>
 
         <section id="alertsView" class="view hidden" data-view="alerts">

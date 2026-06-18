@@ -44,6 +44,7 @@ const state = {
   analysisTab: "sourceIPs",
   logType: "nginx-access",
   signalFilter: "all",
+  siteTab: "overview",
   viewContext: {},
   reportTab: "daily",
   selectedReportIDs: {},
@@ -178,6 +179,13 @@ function wireEvents() {
       requestAnimationFrame(drawReportCharts);
     });
   });
+  qsa("[data-site-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.siteTab = button.dataset.siteTab || "overview";
+      renderSites();
+      requestAnimationFrame(() => renderCharts());
+    });
+  });
   qsa("[data-log-type]").forEach((button) => {
     button.addEventListener("click", () => {
       state.logType = button.dataset.logType || "nginx-access";
@@ -239,6 +247,12 @@ function wireEvents() {
     if (routeButton) {
       state.viewContext = {};
       showRoute(routeButton.dataset.routeTarget || "overview", true);
+      return;
+    }
+
+    const siteActionButton = event.target.closest("[data-site-action]");
+    if (siteActionButton) {
+      await handleSiteAction(siteActionButton.dataset.siteAction || "focus");
       return;
     }
 
@@ -450,6 +464,10 @@ function syncContextFromURL() {
   state.route = routeFromPath(location.pathname);
   state.range = params.get("range") || state.range || "24h";
   state.siteID = params.has("site_id") ? params.get("site_id") || "" : state.siteID || "";
+  const pathParts = location.pathname.replace(/^\/+/, "").split("/");
+  if (state.route === "sites" && pathParts[1]) {
+    state.siteID = decodeURIComponent(pathParts[1]);
+  }
   state.from = params.get("from") ? dateToLocalInput(new Date(params.get("from"))) : "";
   state.to = params.get("to") ? dateToLocalInput(new Date(params.get("to"))) : "";
   if (state.range !== "custom") {
@@ -468,19 +486,27 @@ function syncContextFromURL() {
 function updateURL(push) {
   const route = normalizeRoute(state.route);
   const query = viewQuery().toString();
-  const url = `${routes[route].path}${query ? `?${query}` : ""}`;
+  const url = `${routePath(route)}${query ? `?${query}` : ""}`;
   const method = push ? "pushState" : "replaceState";
   history[method]({}, "", url);
+}
+
+function routePath(route) {
+  if (route === "sites" && state.siteID) {
+    return `/sites/${encodeURIComponent(state.siteID)}`;
+  }
+  return routes[route].path;
 }
 
 function viewQuery(extra = {}) {
   const params = new URLSearchParams();
   if (state.range && state.range !== "24h") params.set("range", state.range);
-  if (state.siteID) params.set("site_id", state.siteID);
   const from = localInputToISO(state.from);
   const to = localInputToISO(state.to);
   if (state.range === "custom" && from) params.set("from", from);
   if (state.range === "custom" && to) params.set("to", to);
+  if (state.route === "sites") return params;
+  if (state.siteID) params.set("site_id", state.siteID);
   if (state.route === "logs" && state.logType && state.logType !== "nginx-access") params.set("log_type", state.logType);
   if (state.route === "signals" && state.signalFilter && state.signalFilter !== "all") params.set("signal_filter", state.signalFilter);
   Object.entries({ ...state.viewContext, ...extra }).forEach(([key, value]) => {
@@ -1327,17 +1353,373 @@ function renderRecentErrors(items) {
 }
 
 function renderSites() {
-  const sites = state.data.sites || [];
+  const sites = aggregateSiteRows();
   renderPager("#sitesPager", "sites", sites);
+  const selectedID = currentSiteIDForView(sites);
   const rows = paginate("sites", sites).map((site) => `
     <tr>
-      <td><strong>${escapeHTML(site.name || site.id)}</strong><br><span>${escapeHTML(site.id)}</span></td>
-      <td>${escapeHTML((site.envs || []).join(", ") || "live")}</td>
-      <td>${escapeHTML((site.tags || []).join(", ") || "-")}</td>
-      <td><code>${escapeHTML(site.pantheon_site_id || "-")}</code></td>
+      <td><strong>${escapeHTML(site.name || site.id)}</strong><br><span>${escapeHTML(site.id)}${site.envs?.length ? ` / ${escapeHTML(site.envs.join(", "))}` : ""}</span></td>
+      <td><span class="severity severity-${escapeHTML(site.severity)}">${escapeHTML(site.status)}</span><br><span>${escapeHTML(site.lastSeen ? `last ${shortDateTime(site.lastSeen)}` : "no indexed events")}</span></td>
+      <td>${formatNumber(site.requests || 0)}</td>
+      <td>${formatPercent(site.status5xxRate || 0)}<br><span>${formatNumber(site.status5xx || 0)} responses</span></td>
+      <td>${formatNumber(site.signalCount || 0)}<br><span>${formatNumber(site.securitySignals || 0)} security</span></td>
+      <td class="row-actions">
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: site.id, origin: "sites" })}'>Open</button>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: site.id, origin: "sites" })}'>Logs</button>
+      </td>
     </tr>
   `);
-  qs("#sitesTable").innerHTML = rows.join("") || emptyRow(4, "No enabled sites configured.");
+  qs("#sitesTable").innerHTML = rows.join("") || emptyRow(6, "No enabled sites configured.");
+  renderSiteDetail(sites.find((site) => site.id === selectedID) || sites[0] || null);
+}
+
+function aggregateSiteRows() {
+  const configs = new Map((state.data.sites || []).map((site) => [site.id, { ...site }]));
+  const metrics = new Map();
+  (state.data.analysis?.sites || []).forEach((item) => {
+    const id = item.site_id || "";
+    if (!id) return;
+    const existing = metrics.get(id) || {
+      id,
+      requests: 0,
+      uniqueIPs: 0,
+      status4xx: 0,
+      status5xx: 0,
+      p95: 0,
+      firstSeen: "",
+      lastSeen: "",
+      envs: new Set(),
+    };
+    existing.requests += Number(item.requests || 0);
+    existing.uniqueIPs += Number(item.unique_ips || 0);
+    existing.status4xx += Number(item.status_4xx || 0);
+    existing.status5xx += Number(item.status_5xx || 0);
+    existing.p95 = Math.max(existing.p95, Number(item.p95_request_time_ms || 0));
+    if (item.env) existing.envs.add(item.env);
+    if (!existing.firstSeen || new Date(item.first_seen || 0) < new Date(existing.firstSeen || 0)) existing.firstSeen = item.first_seen;
+    if (!existing.lastSeen || new Date(item.last_seen || 0) > new Date(existing.lastSeen || 0)) existing.lastSeen = item.last_seen;
+    metrics.set(id, existing);
+  });
+
+  const ids = new Set([...configs.keys(), ...metrics.keys()]);
+  return Array.from(ids).map((id) => {
+    const config = configs.get(id) || { id, name: id, envs: [], tags: [] };
+    const metric = metrics.get(id) || {};
+    const signals = siteSignalItems(id);
+    const securitySignals = signals.filter((item) => item.group === "security").length;
+    const status5xxRate = ratio(metric.status5xx || 0, metric.requests || 0);
+    const status4xxRate = ratio(metric.status4xx || 0, metric.requests || 0);
+    const status = siteStatus({ ...metric, signalCount: signals.length, securitySignals, status5xxRate });
+    return {
+      ...config,
+      id,
+      envs: Array.from(new Set([...(config.envs || []), ...Array.from(metric.envs || [])])),
+      requests: metric.requests || 0,
+      uniqueIPs: metric.uniqueIPs || 0,
+      status4xx: metric.status4xx || 0,
+      status5xx: metric.status5xx || 0,
+      status4xxRate,
+      status5xxRate,
+      p95: metric.p95 || 0,
+      firstSeen: metric.firstSeen || "",
+      lastSeen: metric.lastSeen || "",
+      signalCount: signals.length,
+      securitySignals,
+      status: status.label,
+      severity: status.severity,
+      statusRank: status.rank,
+    };
+  }).sort((a, b) => {
+    if (state.siteID && a.id === state.siteID) return -1;
+    if (state.siteID && b.id === state.siteID) return 1;
+    return (b.statusRank - a.statusRank) || (b.signalCount - a.signalCount) || (b.requests - a.requests) || String(a.name || a.id).localeCompare(String(b.name || b.id));
+  });
+}
+
+function siteStatus(site) {
+  if (!site.requests && !site.lastSeen) return { label: "stale", severity: "medium", rank: 2 };
+  if ((site.status5xxRate || 0) >= 0.05 || (site.signalCount || 0) >= 10) return { label: "degraded", severity: "critical", rank: 5 };
+  if ((site.status5xxRate || 0) >= 0.01 || (site.securitySignals || 0) >= 3) return { label: "elevated", severity: "high", rank: 4 };
+  if ((site.signalCount || 0) > 0 || (site.status4xxRate || 0) >= 0.1) return { label: "watch", severity: "medium", rank: 3 };
+  return { label: "healthy", severity: "low", rank: 1 };
+}
+
+function currentSiteIDForView(sites) {
+  if (state.siteID) return state.siteID;
+  return sites[0]?.id || "";
+}
+
+function renderSiteDetail(site) {
+  if (!site) {
+    setText("#siteDetailName", "No sites configured");
+    setText("#siteDetailMeta", "Add sites to start building a workspace.");
+    setText("#siteTabSummary", "-");
+    qs("#siteRiskStrip").innerHTML = "";
+    qs("#siteTabBody").innerHTML = `<div class="empty">No enabled sites configured.</div>`;
+    return;
+  }
+  const focused = state.siteID === site.id;
+  const signals = siteSignalItems(site.id);
+  const topIP = siteTopSourceIPs(site.id)[0];
+  const topPath = siteTopPaths(site.id)[0];
+  setText("#siteDetailName", site.name || site.id);
+  setText("#siteDetailMeta", `${site.id} / ${site.pantheon_site_id || "no Pantheon UUID"} / ${activeFilterLabel()}${focused ? "" : " / preview"}`);
+  const status = qs("#siteDetailStatus");
+  status.textContent = site.status || "healthy";
+  status.className = `severity severity-${site.severity || "low"}`;
+  qs("#siteRiskStrip").innerHTML = [
+    ["Requests", formatNumber(site.requests || 0)],
+    ["4xx / 5xx", `${formatPercent(site.status4xxRate || 0)} / ${formatPercent(site.status5xxRate || 0)}`],
+    ["Slow p95", formatMs(site.p95 || 0)],
+    ["Active signals", formatNumber(signals.length)],
+    ["Top source IP", topIP?.ip || "-"],
+    ["Top path", topPath?.path || "-"],
+  ].map(statTile).join("");
+  qs("#siteFocusButton").textContent = focused ? "Focused" : "Focus site";
+  qs("#siteFocusButton").disabled = focused;
+  qsa("[data-site-tab]").forEach((button) => {
+    const active = button.dataset.siteTab === state.siteTab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  renderSiteTab(site);
+}
+
+function renderSiteTab(site) {
+  const id = site.id;
+  const signals = siteSignalItems(id);
+  const recentErrors = siteRecentErrors(id);
+  const title = formatCategory(state.siteTab || "overview");
+  setText("#siteTabTitle", `${title} / ${site.name || site.id}`);
+  const body = qs("#siteTabBody");
+  if (state.siteTab === "security") {
+    const probes = [
+      ...siteScopedRows(state.data.analysis?.injection_probes || [], id).map((item) => ({ ...item, kind: "Injection probe" })),
+      ...siteScopedRows(state.data.analysis?.admin_probes || [], id).map((item) => ({ ...item, kind: "Admin probe" })),
+      ...siteScopedRows(state.data.analysis?.tor_sources || [], id).map((item) => ({ ...item, kind: "Tor source" })),
+    ].sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0));
+    setText("#siteTabSummary", `${formatNumber(Math.min(30, probes.length))} of ${formatNumber(probes.length)} shown`);
+    body.innerHTML = siteRowsMarkup(probes.slice(0, 30), siteSecurityRow, "No security probes for this site in scope.");
+    return;
+  }
+  if (state.siteTab === "reliability") {
+    const rows = [
+      ...recentErrors.map((item) => ({ ...item, kind: "Recent error" })),
+      ...siteScopedRows(state.data.analysis?.slow_paths || [], id).map((item) => ({ ...item, kind: "Slow path" })),
+    ];
+    setText("#siteTabSummary", `${formatNumber(Math.min(30, rows.length))} of ${formatNumber(rows.length)} shown`);
+    body.innerHTML = siteRowsMarkup(rows.slice(0, 30), siteReliabilityRow, "No reliability findings for this site in scope.");
+    return;
+  }
+  if (state.siteTab === "actors") {
+    const rows = [
+      ...siteTopSourceIPs(id).map((item) => ({ ...item, kind: "Source IP" })),
+      ...siteTopUserAgents(id).map((item) => ({ ...item, kind: "User agent" })),
+    ];
+    setText("#siteTabSummary", `${formatNumber(Math.min(30, rows.length))} of ${formatNumber(rows.length)} shown`);
+    body.innerHTML = siteRowsMarkup(rows.slice(0, 30), siteActorRow, "No actor data for this site in scope.");
+    return;
+  }
+  if (state.siteTab === "paths") {
+    const rows = siteTopPaths(id);
+    setText("#siteTabSummary", `${formatNumber(Math.min(30, rows.length))} of ${formatNumber(rows.length)} shown`);
+    body.innerHTML = siteRowsMarkup(rows.slice(0, 30), sitePathRow, "No path data for this site in scope.");
+    return;
+  }
+  if (state.siteTab === "logs") {
+    const rows = siteLogEvidence(id).slice(0, 30);
+    setText("#siteTabSummary", `${formatNumber(rows.length)} evidence rows`);
+    body.innerHTML = siteRowsMarkup(rows, logEvidenceRow, "No matching log evidence for this site in scope.");
+    return;
+  }
+  if (state.siteTab === "reports") {
+    const rows = siteReports(id);
+    setText("#siteTabSummary", `${formatNumber(Math.min(30, rows.length))} of ${formatNumber(rows.length)} shown`);
+    body.innerHTML = siteRowsMarkup(rows.slice(0, 30), siteReportRow, "No generated reports are scoped to this site yet.");
+    return;
+  }
+  setText("#siteTabSummary", `${formatNumber(signals.length)} signals / ${formatNumber(recentErrors.length)} errors`);
+  body.innerHTML = `
+    <section class="site-tab-grid">
+      <div class="site-subsection">
+        <h3>Priority signals</h3>
+        <div class="signal-stack">${signals.slice(0, 8).map(signalRow).join("") || `<div class="empty">No active signals for this site.</div>`}</div>
+      </div>
+      <div class="site-subsection">
+        <h3>Recent errors</h3>
+        <div class="signal-list">${recentErrors.slice(0, 10).map(siteRecentErrorRow).join("") || `<div class="empty">No recent errors for this site.</div>`}</div>
+      </div>
+    </section>
+  `;
+}
+
+function siteRowsMarkup(rows, renderer, emptyMessage) {
+  return `<div class="signal-list">${rows.map(renderer).join("") || `<div class="empty">${escapeHTML(emptyMessage)}</div>`}</div>`;
+}
+
+function siteScopedRows(rows, siteID) {
+  return (rows || []).filter((item) => item.site_id === siteID || (state.siteID === siteID && !item.site_id));
+}
+
+function siteSignalItems(siteID) {
+  return buildSignalItems().filter((item) => item.siteID === siteID || (state.siteID === siteID && !item.siteID));
+}
+
+function siteRecentErrors(siteID) {
+  return siteScopedRows(state.data.traffic?.recent_errors || [], siteID).sort((a, b) => new Date(b.ts || 0) - new Date(a.ts || 0));
+}
+
+function siteTopSourceIPs(siteID) {
+  if (state.siteID === siteID) return state.data.analysis?.source_ips || [];
+  return [];
+}
+
+function siteTopUserAgents(siteID) {
+  if (state.siteID === siteID) return state.data.analysis?.user_agents || [];
+  return [];
+}
+
+function siteTopPaths(siteID) {
+  const trafficPaths = state.siteID === siteID ? (state.data.traffic?.top_paths || []) : [];
+  const slowPaths = siteScopedRows(state.data.analysis?.slow_paths || [], siteID);
+  const byPath = new Map();
+  [...trafficPaths, ...slowPaths].forEach((item) => {
+    const key = item.path || "/";
+    const existing = byPath.get(key) || { ...item, path: key, requests: 0, status_4xx: 0, status_5xx: 0, bytes_sent: 0, p95_request_time_ms: 0 };
+    existing.requests += Number(item.requests || 0);
+    existing.status_4xx += Number(item.status_4xx || 0);
+    existing.status_5xx += Number(item.status_5xx || 0);
+    existing.bytes_sent += Number(item.bytes_sent || 0);
+    existing.p95_request_time_ms = Math.max(existing.p95_request_time_ms || 0, Number(item.p95_request_time_ms || 0));
+    byPath.set(key, existing);
+  });
+  return Array.from(byPath.values()).sort((a, b) => (b.status_5xx - a.status_5xx) || (b.requests - a.requests));
+}
+
+function siteLogEvidence(siteID) {
+  return filteredLogEvidence().filter((item) => item.site_id === siteID || (state.siteID === siteID && !item.site_id));
+}
+
+function siteReports(siteID) {
+  return (state.data.reports || []).filter((report) => report.site_id === siteID);
+}
+
+function siteSecurityRow(item) {
+  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  const path = item.path || "/";
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(item.kind || formatCategory(item.category || "Security"))}: ${escapeHTML(path)}</strong>
+        <span>${escapeHTML([item.ip, formatCategory(item.match_reason || item.category || ""), `${formatNumber(item.requests || 0)} requests`, `${formatNumber(errors)} errors`].filter(Boolean).join(" - "))}</span>
+        ${item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: item.site_id, origin: "site" })}'>Open IP</button>` : ""}
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path, ip: item.ip || "", site_id: item.site_id || "", status_class: errors ? "errors" : "", origin: "site" })}'>Open logs</button>
+      </div>
+      <div class="signal-numbers"><span>risk</span><b>${escapeHTML(item.risk_score || 0)}</b></div>
+    </div>
+  `;
+}
+
+function siteReliabilityRow(item) {
+  if (item.kind === "Recent error") return siteRecentErrorRow(item);
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(item.path || "/")}</strong>
+        <span>${escapeHTML(`p95 ${formatMs(item.p95_request_time_ms || 0)} - avg ${formatMs(item.avg_request_time_ms || 0)} - ${formatNumber(item.status_5xx || 0)} 5xx`)}</span>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "/", site_id: item.site_id || "", status_class: Number(item.status_5xx || 0) ? "errors" : "", origin: "site" })}'>Open logs</button>
+      </div>
+      <div class="signal-numbers"><span>requests</span><b>${formatNumber(item.requests || 0)}</b></div>
+    </div>
+  `;
+}
+
+function siteRecentErrorRow(item) {
+  return logEvidenceRow({
+    kind: "Recent error",
+    ts: item.ts,
+    site_id: item.site_id,
+    env: item.env,
+    ip: item.client_ip,
+    method: item.method,
+    path: item.path,
+    query: item.query,
+    status: item.status,
+    requests: 1,
+    errors: 1,
+    user_agent: item.user_agent,
+  });
+}
+
+function siteActorRow(item) {
+  const isIP = item.kind === "Source IP";
+  const label = isIP ? item.ip : item.family || item.known_actor || "User agent";
+  const meta = isIP
+    ? [item.reverse_dns, item.known_actor, item.actor_type, `${formatNumber((item.status_4xx || 0) + (item.status_5xx || 0))} errors`].filter(Boolean).join(" - ")
+    : [item.actor_type, `${formatNumber(item.unique_ips || 0)} IPs`, `${formatNumber((item.status_4xx || 0) + (item.status_5xx || 0))} errors`].filter(Boolean).join(" - ");
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(label)}</strong>
+        <span>${escapeHTML(meta)}</span>
+        ${isIP ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: state.siteID, origin: "site" })}'>Open IP</button>` : ""}
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ip: isIP ? item.ip : "", user_agent: isIP ? "" : item.sample || "", site_id: state.siteID, origin: "site" })}'>Open logs</button>
+      </div>
+      <div class="signal-numbers"><span>requests</span><b>${formatNumber(item.requests || 0)}</b></div>
+    </div>
+  `;
+}
+
+function sitePathRow(item) {
+  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(item.path || "/")}</strong>
+        <span>${escapeHTML(`${formatNumber(errors)} errors - ${formatBytes(item.bytes_sent || 0)} - p95 ${formatMs(item.p95_request_time_ms || 0)}`)}</span>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "/", site_id: state.siteID || item.site_id || "", status_class: errors ? "errors" : "", origin: "site" })}'>Open logs</button>
+      </div>
+      <div class="signal-numbers"><span>requests</span><b>${formatNumber(item.requests || 0)}</b></div>
+    </div>
+  `;
+}
+
+function siteReportRow(report) {
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(reportListLabel(report))}</strong>
+        <span>${escapeHTML(reportWindowLabel(report))}</span>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), origin: "site" }))}'>Open report</button>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "log_filter", site_id: report.site_id || "", origin: "site" }))}'>Open logs</button>
+      </div>
+      <div class="signal-numbers"><span>${escapeHTML(report.model || "local")}</span><b>${formatNumber(report.summary?.requests || 0)}</b></div>
+    </div>
+  `;
+}
+
+async function handleSiteAction(action) {
+  const site = aggregateSiteRows().find((item) => item.id === currentSiteIDForView(aggregateSiteRows()));
+  if (!site) return;
+  if (action === "logs") {
+    await handlePivot({ kind: "log_filter", site_id: site.id, origin: "site" });
+    return;
+  }
+  if (action === "signals") {
+    state.siteID = site.id;
+    state.viewContext = {};
+    showRoute("signals", true);
+    await refreshWithValidation();
+    return;
+  }
+  if (action === "reports") {
+    state.siteID = site.id;
+    state.viewContext = {};
+    showRoute("reports", true);
+    await refreshWithValidation();
+    return;
+  }
+  await handlePivot({ kind: "site", value: site.id, origin: "site" });
 }
 
 function renderAlerts() {
@@ -1428,6 +1810,12 @@ function reportDetailMarkup(report) {
             ["Open alerts", formatNumber(summary.open_alerts || 0)],
           ])}
         </dl>
+        <div class="report-actions">
+          ${summary.top_site ? `<button class="ghost small" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "site", value: summary.top_site, site_id: summary.top_site, origin: "report" }))}'>Open top site</button>` : ""}
+          ${summary.top_source_ip ? `<button class="ghost small" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "ip", value: summary.top_source_ip, site_id: report.site_id || "", origin: "report" }))}'>Open top IP</button>` : ""}
+          ${summary.top_path ? `<button class="ghost small" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "log_filter", path: summary.top_path, site_id: report.site_id || "", status_class: "errors", origin: "report" }))}'>Open top path logs</button>` : ""}
+          <button class="ghost small" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "log_filter", site_id: report.site_id || "", origin: "report" }))}'>Open report logs</button>
+        </div>
       </article>
     </section>
 
@@ -1523,6 +1911,18 @@ function reportKey(report) {
     report.range_end || "",
     report.created_at || "",
   ].join("|"));
+}
+
+function reportPivot(report, extra = {}) {
+  return {
+    ...extra,
+    range: "custom",
+    from: report?.range_start || "",
+    to: report?.range_end || "",
+    site_id: extra.site_id || report?.site_id || "",
+    log_type: "nginx-access",
+    origin: "report",
+  };
 }
 
 function reportListRow(report, active) {
@@ -1643,18 +2043,21 @@ function reportDrilldownPanel(report, key, limit) {
         <span class="pill">${formatNumber(drilldown.items?.length || 0)} rows</span>
       </div>
       <div class="signal-list">
-        ${items.map((item, index) => reportDrilldownRow(key, item, index)).join("") || `<div class="empty">No rows for this report.</div>`}
+        ${items.map((item, index) => reportDrilldownRow(report, key, item, index)).join("") || `<div class="empty">No rows for this report.</div>`}
       </div>
     </article>
   `;
 }
 
-function reportDrilldownRow(key, item, index) {
+function reportDrilldownRow(report, key, item, index) {
   const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
   const value = reportDrilldownValue(item);
   const meta = reportDrilldownMeta(item, errors);
+  const siteID = item.site_id || report.site_id || "";
   const detailButtons = `
-    ${item.ip ? `<button class="ghost mini inline-action" type="button" data-report-ip="${escapeHTML(item.ip)}">Open IP</button>` : ""}
+    ${siteID ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "site", value: siteID, site_id: siteID, origin: "report" }))}'>Open site</button>` : ""}
+    ${item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "ip", value: item.ip, site_id: siteID, origin: "report" }))}'>Open IP</button>` : ""}
+    ${item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "log_filter", path: item.path, ip: item.ip || "", site_id: siteID, status_class: errors || item.status >= 400 ? "errors" : "", origin: "report" }))}'>Open logs</button>` : ""}
     <button class="ghost mini inline-action" type="button" data-report-detail-key="${escapeHTML(key)}" data-report-detail-index="${index}">Details</button>
   `;
   return `
@@ -2212,7 +2615,33 @@ function decodePivot(value) {
 
 async function handlePivot(pivot) {
   if (!pivot?.kind) return;
+  const needsRefresh = applyPivotWindow(pivot);
+  if (pivot.kind === "site" && (pivot.value || pivot.site_id)) {
+    state.siteID = pivot.value || pivot.site_id || "";
+    state.viewContext = {};
+    resetContextPages();
+    showRoute("sites", true);
+    await refreshWithValidation();
+    return;
+  }
+  if (pivot.kind === "report") {
+    state.reportTab = pivot.report_tab || state.reportTab || "daily";
+    if (pivot.value) state.selectedReportIDs[state.reportTab] = pivot.value;
+    if (pivot.site_id) state.siteID = pivot.site_id;
+    state.viewContext = {};
+    resetContextPages();
+    showRoute("reports", true);
+    if (needsRefresh) await refreshWithValidation();
+    else {
+      renderReports();
+      requestAnimationFrame(drawReportCharts);
+    }
+    return;
+  }
   state.viewContext = pivotContext(pivot);
+  if (pivot.origin === "report" && pivot.site_id) {
+    state.siteID = pivot.site_id;
+  }
   resetContextPages();
   if (pivot.kind === "signal") {
     showSignalDetail(pivot.key);
@@ -2221,20 +2650,49 @@ async function handlePivot(pivot) {
   }
   if (pivot.kind === "ip") {
     showRoute("investigate", true);
-    renderInvestigate();
+    if (needsRefresh) await refreshWithValidation();
+    else renderInvestigate();
     await showIPDetailByValue(pivot.value, pivot);
     return;
   }
   if (pivot.kind === "actor") {
     showRoute("investigate", true);
-    renderInvestigate();
+    if (needsRefresh) await refreshWithValidation();
+    else renderInvestigate();
     showActorDetail(pivot);
     return;
   }
   if (pivot.kind === "log_filter") {
     showRoute("logs", true);
-    renderLogs();
+    if (needsRefresh) await refreshWithValidation();
+    else renderLogs();
   }
+}
+
+function applyPivotWindow(pivot) {
+  let changed = false;
+  if (pivot.range) {
+    if (state.range !== pivot.range) changed = true;
+    state.range = pivot.range;
+  }
+  if (pivot.from) {
+    const next = dateToLocalInput(new Date(pivot.from));
+    if (state.from !== next) changed = true;
+    state.from = next;
+  }
+  if (pivot.to) {
+    const next = dateToLocalInput(new Date(pivot.to));
+    if (state.to !== next) changed = true;
+    state.to = next;
+  }
+  if (pivot.log_type) {
+    if (state.logType !== pivot.log_type) changed = true;
+    state.logType = pivot.log_type;
+  }
+  if (pivot.origin === "report" && pivot.site_id && state.siteID !== pivot.site_id) {
+    changed = true;
+  }
+  return changed;
 }
 
 function pivotContext(pivot) {
@@ -2248,7 +2706,7 @@ function pivotContext(pivot) {
 }
 
 function resetContextPages() {
-  ["sourceIPs", "userAgents"].forEach((key) => {
+  ["sourceIPs", "userAgents", "sites", "signals"].forEach((key) => {
     state.pages[key] = 0;
   });
 }
