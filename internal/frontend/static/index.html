@@ -28,17 +28,18 @@
 
     <div class="shell hidden">
       <aside class="rail" aria-label="Primary">
-        <a class="mark" href="/" data-route="dashboard" aria-label="OriginPulse dashboard">
+        <a class="mark" href="/" data-route="overview" aria-label="OriginPulse overview">
           <img src="/logo.png" alt="OriginPulse">
         </a>
         <nav>
-          <a href="/" data-route="dashboard">Dashboard</a>
-          <a href="/analysis" data-route="analysis">Analysis</a>
+          <a href="/" data-route="overview">Overview</a>
           <a href="/sites" data-route="sites">Sites</a>
-          <a href="/alerts" data-route="alerts">Alerts</a>
+          <a href="/logs" data-route="logs">Logs</a>
+          <a href="/signals" data-route="signals">Signals</a>
+          <a href="/investigate" data-route="investigate">Investigate</a>
           <a href="/reports" data-route="reports">Reports</a>
           <a href="/system" data-route="system">System</a>
-          <a href="/users" data-route="users">Users</a>
+          <a href="/settings" data-route="settings">Settings</a>
         </nav>
       </aside>
 
@@ -101,46 +102,58 @@
           <div id="detailBody" class="detail-body"></div>
         </aside>
 
-        <section id="dashboardView" class="view" data-view="dashboard">
-          <section class="metrics compact" aria-label="Overview metrics">
+        <section id="overviewView" class="view" data-view="overview">
+          <section class="situation-bar" aria-label="Operational situation">
             <article>
-              <span>Requests</span>
-              <strong id="metricRequests">-</strong>
+              <span>Overall state</span>
+              <strong id="situationState">-</strong>
+              <small id="situationScope">All sites / 24h</small>
             </article>
             <article>
-              <span>5xx rate</span>
-              <strong id="metric5xxRate">-</strong>
+              <span>Data freshness</span>
+              <strong id="situationFreshness">-</strong>
+              <small id="situationFreshnessMeta">latest indexed event</small>
             </article>
             <article>
-              <span>4xx rate</span>
-              <strong id="metric4xxRate">-</strong>
+              <span>Active signals</span>
+              <strong id="situationSignals">-</strong>
+              <small id="situationSignalsMeta">critical/high/medium</small>
             </article>
             <article>
-              <span>Unique IPs</span>
-              <strong id="metricUniqueIPs">-</strong>
+              <span>Traffic now</span>
+              <strong id="situationTraffic">-</strong>
+              <small id="situationTrafficMeta">requests in range</small>
             </article>
             <article>
-              <span>User agents</span>
-              <strong id="metricUserAgents">-</strong>
+              <span>Reliability</span>
+              <strong id="situationReliability">-</strong>
+              <small id="situationReliabilityMeta">5xx and slow rate</small>
             </article>
             <article>
-              <span>Slow requests</span>
-              <strong id="metricSlowRate">-</strong>
-            </article>
-            <article>
-              <span>Bytes sent</span>
-              <strong id="metricBytes">-</strong>
-            </article>
-            <article>
-              <span>Detected issues</span>
-              <strong id="metricIssues">-</strong>
+              <span>Security</span>
+              <strong id="situationSecurity">-</strong>
+              <small id="situationSecurityMeta">probe pressure</small>
             </article>
           </section>
 
-          <section class="dashboard-grid dashboard-main">
+          <section class="overview-grid">
+            <article id="prioritySignalsPanel" class="panel overview-wide">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Triage</p>
+                  <h2>Prioritized signals</h2>
+                </div>
+                <button class="ghost small" type="button" data-route-target="signals">Open Signals</button>
+              </div>
+              <div id="prioritySignalsList" class="signal-stack"></div>
+            </article>
+
             <article id="timelinePanel" class="panel">
               <div class="panel-head">
-                <h2>Traffic timeline</h2>
+                <div>
+                  <p class="eyebrow">Traffic and health</p>
+                  <h2>Traffic timeline</h2>
+                </div>
                 <span id="timelineRange" class="pill">24h</span>
               </div>
               <div class="chart-box">
@@ -161,7 +174,7 @@
             <article id="sitePanel" class="panel">
               <div class="panel-head">
                 <h2>Sites</h2>
-                <span id="siteCount" class="pill">-</span>
+                <button class="ghost mini" type="button" data-route-target="sites">Open Sites</button>
               </div>
               <div class="chart-box small-chart">
                 <canvas id="siteChart"></canvas>
@@ -170,8 +183,11 @@
 
             <article id="sourcePanel" class="panel">
               <div class="panel-head">
-                <h2>Source IP concentration</h2>
-                <span id="sourceIPCount" class="pill">-</span>
+                <div>
+                  <p class="eyebrow">Actors and attack surface</p>
+                  <h2>Source IP concentration</h2>
+                </div>
+                <button class="ghost mini" type="button" data-route-target="investigate">Open IPs</button>
               </div>
               <div class="chart-box small-chart">
                 <canvas id="sourceChart"></canvas>
@@ -188,54 +204,95 @@
               </div>
             </article>
 
-            <article id="issuesPanel" class="panel">
-              <div class="panel-head">
-                <h2>Detected issues</h2>
-                <div id="issuesPager" class="pager"></div>
-              </div>
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Severity</th>
-                      <th>Issue</th>
-                      <th>Actor</th>
-                      <th>Requests</th>
-                      <th>Last seen</th>
-                    </tr>
-                  </thead>
-                  <tbody id="issuesTable"></tbody>
-                </table>
-              </div>
-            </article>
-
             <article id="recentErrorsPanel" class="panel">
               <div class="panel-head">
                 <h2>Recent errors</h2>
-                <span id="recentErrorsSummary" class="pill">-</span>
+                <button class="ghost mini" type="button" data-pivot='{"kind":"log_filter","status_class":"errors","origin":"overview"}'>Open Logs</button>
               </div>
               <div id="recentErrorsList" class="signal-list"></div>
             </article>
           </section>
         </section>
 
-        <section id="analysisView" class="view hidden" data-view="analysis">
-          <div class="analysis-tabs" role="tablist" aria-label="Analysis sections">
-            <button class="analysis-tab active" type="button" role="tab" aria-selected="true" data-analysis-tab="sourceIPs">Source IPs</button>
-            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-analysis-tab="userAgents">User agents</button>
-            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-analysis-tab="adminProbes">Admin probes</button>
-            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-analysis-tab="injectionProbes">Injection probes</button>
-            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-analysis-tab="torSources">Tor network</button>
-            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-analysis-tab="topPaths">Top paths</button>
-            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-analysis-tab="slowPaths">Slow paths</button>
+        <section id="logsView" class="view hidden" data-view="logs">
+          <div class="analysis-tabs" role="tablist" aria-label="Log types">
+            <button class="analysis-tab active" type="button" role="tab" aria-selected="true" data-log-type="nginx-access">Access</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-log-type="nginx-error">Nginx error</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-log-type="php-error">PHP error</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-log-type="php-slow">PHP slow</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-log-type="mysql-slow">MySQL slow</button>
           </div>
-
-          <section class="analysis-tab-panels">
-            <article class="panel analysis-tab-panel active" data-analysis-panel="sourceIPs">
+          <section class="explorer-layout">
+            <article class="panel">
               <div class="panel-head">
-                <h2>Source IPs</h2>
+                <div>
+                  <p class="eyebrow">Log explorer</p>
+                  <h2 id="logsTitle">Access logs</h2>
+                </div>
+                <span id="logsContext" class="pill">Current scope</span>
+              </div>
+              <div id="logsFieldStats" class="field-grid"></div>
+            </article>
+            <article class="panel explorer-main">
+              <div class="panel-head">
+                <h2>Recent matching evidence</h2>
+                <span id="logsEvidenceCount" class="pill">-</span>
+              </div>
+              <div id="logsEvidenceList" class="signal-list"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-head">
+                <h2>Top paths</h2>
+                <span id="logsTopPathCount" class="pill">-</span>
+              </div>
+              <div id="logsTopPathsList" class="signal-list"></div>
+            </article>
+          </section>
+        </section>
+
+        <section id="signalsView" class="view hidden" data-view="signals">
+          <div class="analysis-tabs" role="tablist" aria-label="Signal groups">
+            <button class="analysis-tab active" type="button" role="tab" aria-selected="true" data-signal-filter="all">All</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-signal-filter="security">Security</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-signal-filter="reliability">Reliability</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-signal-filter="traffic">Traffic</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-signal-filter="pipeline">Pipeline</button>
+          </div>
+          <section class="signals-layout">
+            <article class="panel signals-primary">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Signals</p>
+                  <h2>Ranked findings</h2>
+                </div>
                 <div class="panel-tools">
+                  <button id="evaluateAlertsButton" class="ghost small" type="button">Evaluate</button>
                   <button id="refreshIntelButton" class="ghost small" type="button">Refresh IP intel</button>
+                  <div id="signalsPager" class="pager"></div>
+                </div>
+              </div>
+              <div id="signalsList" class="signal-stack"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-head">
+                <h2>Signal groups</h2>
+                <span id="signalsSummary" class="pill">-</span>
+              </div>
+              <div id="signalsGroupStats" class="field-grid"></div>
+            </article>
+          </section>
+        </section>
+
+        <section id="investigateView" class="view hidden" data-view="investigate">
+          <section class="entity-grid">
+            <article class="panel span-2">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Entities</p>
+                  <h2>Source IPs</h2>
+                </div>
+                <div class="panel-tools">
+                  <button id="refreshIntelButtonInvestigate" class="ghost small" type="button">Refresh IP intel</button>
                   <div id="sourceIPPagers" class="pager"></div>
                 </div>
               </div>
@@ -249,6 +306,7 @@
                       <th>Actor</th>
                       <th>Source</th>
                       <th>Risk</th>
+                      <th></th>
                     </tr>
                   </thead>
                   <tbody id="sourceIPsTable"></tbody>
@@ -256,7 +314,15 @@
               </div>
             </article>
 
-            <article class="panel analysis-tab-panel hidden" data-analysis-panel="userAgents">
+            <article class="panel">
+              <div class="panel-head">
+                <h2>Known actors and services</h2>
+                <span id="actorSummary" class="pill">-</span>
+              </div>
+              <div id="actorsList" class="signal-list"></div>
+            </article>
+
+            <article class="panel">
               <div class="panel-head">
                 <h2>User agents</h2>
                 <div id="userAgentPager" class="pager"></div>
@@ -276,99 +342,6 @@
                   <tbody id="userAgentsTable"></tbody>
                 </table>
               </div>
-            </article>
-
-            <article class="panel analysis-tab-panel hidden" data-analysis-panel="adminProbes">
-              <div class="panel-head">
-                <h2>Admin probes</h2>
-                <div class="panel-tools">
-                  <span id="adminProbeSummary" class="pill">-</span>
-                  <div id="adminProbePager" class="pager"></div>
-                </div>
-              </div>
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Category</th>
-                      <th>Source</th>
-                      <th>Request</th>
-                      <th>Requests</th>
-                      <th>IP hits</th>
-                      <th>Errors</th>
-                      <th>Last seen</th>
-                    </tr>
-                  </thead>
-                  <tbody id="adminProbesTable"></tbody>
-                </table>
-              </div>
-            </article>
-
-            <article class="panel analysis-tab-panel hidden" data-analysis-panel="injectionProbes">
-              <div class="panel-head">
-                <h2>Injection probes</h2>
-                <div class="panel-tools">
-                  <span id="injectionProbeSummary" class="pill">-</span>
-                  <div id="injectionProbePager" class="pager"></div>
-                </div>
-              </div>
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Category</th>
-                      <th>Source</th>
-                      <th>Request</th>
-                      <th>Requests</th>
-                      <th>IP hits</th>
-                      <th>Errors</th>
-                      <th>Last seen</th>
-                    </tr>
-                  </thead>
-                  <tbody id="injectionProbesTable"></tbody>
-                </table>
-              </div>
-            </article>
-
-            <article class="panel analysis-tab-panel hidden" data-analysis-panel="torSources">
-              <div class="panel-head">
-                <h2>Tor network</h2>
-                <div class="panel-tools">
-                  <span id="torSourceSummary" class="pill">-</span>
-                  <div id="torSourcePager" class="pager"></div>
-                </div>
-              </div>
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Source</th>
-                      <th>Site</th>
-                      <th>Requests</th>
-                      <th>Admin</th>
-                      <th>Errors</th>
-                      <th>Intel</th>
-                    </tr>
-                  </thead>
-                  <tbody id="torSourcesTable"></tbody>
-                </table>
-              </div>
-            </article>
-
-            <article class="panel analysis-tab-panel hidden" data-analysis-panel="topPaths">
-              <div class="panel-head">
-                <h2>Top paths</h2>
-                <span id="topPathSummary" class="pill">-</span>
-              </div>
-              <div id="topPathsList" class="signal-list"></div>
-            </article>
-
-            <article class="panel analysis-tab-panel hidden" data-analysis-panel="slowPaths">
-              <div class="panel-head">
-                <h2>Slow paths</h2>
-                <span id="slowPathSummary" class="pill">-</span>
-              </div>
-              <div id="slowPathsList" class="signal-list"></div>
             </article>
           </section>
         </section>
@@ -400,7 +373,7 @@
             <div class="panel-head">
               <h2>Open alerts</h2>
               <div class="panel-tools">
-                <button id="evaluateAlertsButton" class="ghost small" type="button">Evaluate</button>
+                <button id="evaluateAlertsButtonLegacy" class="ghost small" type="button">Evaluate</button>
                 <div id="alertsPager" class="pager"></div>
               </div>
             </div>
@@ -536,7 +509,7 @@
           </section>
         </section>
 
-        <section id="usersView" class="view hidden" data-view="users">
+        <section id="settingsView" class="view hidden" data-view="settings">
           <section class="dashboard-grid">
             <article class="panel">
               <div class="panel-head">

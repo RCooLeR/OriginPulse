@@ -2,13 +2,21 @@ const qs = (selector, root = document) => root.querySelector(selector);
 const qsa = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
 const routes = {
-  dashboard: { title: "Dashboard", path: "/" },
-  analysis: { title: "Access-log analysis", path: "/analysis" },
+  overview: { title: "Overview", path: "/" },
   sites: { title: "Sites", path: "/sites" },
-  alerts: { title: "Alerts", path: "/alerts" },
+  logs: { title: "Logs", path: "/logs" },
+  signals: { title: "Signals", path: "/signals" },
+  investigate: { title: "Investigate", path: "/investigate" },
   reports: { title: "Reports", path: "/reports" },
   system: { title: "System", path: "/system" },
-  users: { title: "Users", path: "/users" },
+  settings: { title: "Settings", path: "/settings" },
+};
+
+const routeAliases = {
+  dashboard: "overview",
+  analysis: "signals",
+  alerts: "signals",
+  users: "settings",
 };
 
 const pageSize = {
@@ -24,6 +32,7 @@ const pageSize = {
   jobs: 12,
   segments: 12,
   users: 12,
+  signals: 25,
 };
 
 const state = {
@@ -33,6 +42,9 @@ const state = {
   from: "",
   to: "",
   analysisTab: "sourceIPs",
+  logType: "nginx-access",
+  signalFilter: "all",
+  viewContext: {},
   reportTab: "daily",
   selectedReportIDs: {},
   currentUser: null,
@@ -79,6 +91,7 @@ async function fetchJSON(path, options = {}) {
 }
 
 async function boot() {
+  syncContextFromURL();
   wireEvents();
   try {
     const session = await fetchJSON("/api/v1/auth/me");
@@ -100,12 +113,17 @@ function wireEvents() {
   qsa("[data-route]").forEach((link) => {
     link.addEventListener("click", (event) => {
       event.preventDefault();
-      const route = link.dataset.route || "dashboard";
+      const route = link.dataset.route || "overview";
+      state.viewContext = {};
       showRoute(route, true);
     });
   });
 
-  window.addEventListener("popstate", () => showRoute(routeFromPath(location.pathname), false));
+  window.addEventListener("popstate", () => {
+    syncContextFromURL();
+    showRoute(state.route, false);
+    render();
+  });
   window.addEventListener("resize", () => renderCharts());
 
   qs("#rangeSelect").addEventListener("change", async (event) => {
@@ -118,11 +136,13 @@ function wireEvents() {
       syncWindowInputs();
     }
     resetPages();
+    updateURL(false);
     await refreshWithValidation();
   });
   qs("#siteSelect").addEventListener("change", async (event) => {
     state.siteID = event.target.value;
     resetPages();
+    updateURL(false);
     await refreshWithValidation();
   });
   qs("#fromInput").addEventListener("change", (event) => {
@@ -139,6 +159,7 @@ function wireEvents() {
   });
   qs("#applyWindowButton").addEventListener("click", async () => {
     resetPages();
+    updateURL(false);
     await refreshWithValidation();
   });
 
@@ -157,6 +178,21 @@ function wireEvents() {
       requestAnimationFrame(drawReportCharts);
     });
   });
+  qsa("[data-log-type]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.logType = button.dataset.logType || "nginx-access";
+      updateURL(false);
+      renderLogs();
+    });
+  });
+  qsa("[data-signal-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.signalFilter = button.dataset.signalFilter || "all";
+      state.pages.signals = 0;
+      updateURL(false);
+      renderSignals();
+    });
+  });
   qs("#collectButton").addEventListener("click", () => runAction(qs("#collectButton"), "Collect queued", async () => {
     await fetchJSON("/api/v1/system/collect", { method: "POST" });
   }));
@@ -170,6 +206,12 @@ function wireEvents() {
     });
   }));
   qs("#refreshIntelButton").addEventListener("click", () => runAction(qs("#refreshIntelButton"), "IP intel refreshed", async () => {
+    await fetchJSON("/api/v1/system/refresh-ip-intel", {
+      method: "POST",
+      body: JSON.stringify({ range: state.range, limit: 50 }),
+    });
+  }));
+  qs("#refreshIntelButtonInvestigate").addEventListener("click", () => runAction(qs("#refreshIntelButtonInvestigate"), "IP intel refreshed", async () => {
     await fetchJSON("/api/v1/system/refresh-ip-intel", {
       method: "POST",
       body: JSON.stringify({ range: state.range, limit: 50 }),
@@ -193,6 +235,19 @@ function wireEvents() {
   qs("#userForm").addEventListener("submit", createUser);
 
   document.addEventListener("click", async (event) => {
+    const routeButton = event.target.closest("[data-route-target]");
+    if (routeButton) {
+      state.viewContext = {};
+      showRoute(routeButton.dataset.routeTarget || "overview", true);
+      return;
+    }
+
+    const pivotButton = event.target.closest("[data-pivot]");
+    if (pivotButton) {
+      await handlePivot(decodePivot(pivotButton.dataset.pivot || "{}"));
+      return;
+    }
+
     const pageButton = event.target.closest("[data-page-key]");
     if (pageButton) {
       const key = pageButton.dataset.pageKey;
@@ -339,7 +394,9 @@ function render() {
   renderUserBadge();
   renderFilters();
   renderDashboard();
-  renderAnalysis();
+  renderLogs();
+  renderSignals();
+  renderInvestigate();
   renderSites();
   renderAlerts();
   renderReports();
@@ -388,6 +445,50 @@ function buildReportsQuery() {
   return params.toString();
 }
 
+function syncContextFromURL() {
+  const params = new URLSearchParams(location.search);
+  state.route = routeFromPath(location.pathname);
+  state.range = params.get("range") || state.range || "24h";
+  state.siteID = params.has("site_id") ? params.get("site_id") || "" : state.siteID || "";
+  state.from = params.get("from") ? dateToLocalInput(new Date(params.get("from"))) : "";
+  state.to = params.get("to") ? dateToLocalInput(new Date(params.get("to"))) : "";
+  if (state.range !== "custom") {
+    state.from = "";
+    state.to = "";
+  }
+  state.logType = params.get("log_type") || state.logType || "nginx-access";
+  state.signalFilter = params.get("signal_filter") || state.signalFilter || "all";
+  state.viewContext = {};
+  ["ip", "path", "known_actor", "actor_type", "status_class", "site_id", "user_agent"].forEach((key) => {
+    const value = params.get(key);
+    if (value) state.viewContext[key] = value;
+  });
+}
+
+function updateURL(push) {
+  const route = normalizeRoute(state.route);
+  const query = viewQuery().toString();
+  const url = `${routes[route].path}${query ? `?${query}` : ""}`;
+  const method = push ? "pushState" : "replaceState";
+  history[method]({}, "", url);
+}
+
+function viewQuery(extra = {}) {
+  const params = new URLSearchParams();
+  if (state.range && state.range !== "24h") params.set("range", state.range);
+  if (state.siteID) params.set("site_id", state.siteID);
+  const from = localInputToISO(state.from);
+  const to = localInputToISO(state.to);
+  if (state.range === "custom" && from) params.set("from", from);
+  if (state.range === "custom" && to) params.set("to", to);
+  if (state.route === "logs" && state.logType && state.logType !== "nginx-access") params.set("log_type", state.logType);
+  if (state.route === "signals" && state.signalFilter && state.signalFilter !== "all") params.set("signal_filter", state.signalFilter);
+  Object.entries({ ...state.viewContext, ...extra }).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") params.set(key, value);
+  });
+  return params;
+}
+
 function seedCustomWindow() {
   if (state.from && state.to) return;
   const currentUntil = state.to ? new Date(state.to) : new Date();
@@ -429,23 +530,254 @@ function renderDashboard() {
   const analysis = state.data.analysis || {};
   const totals = analysis.totals || {};
   const traffic = state.data.traffic || {};
+  const signals = buildSignalItems();
+  const critical = signals.filter((item) => item.severity === "critical").length;
+  const high = signals.filter((item) => item.severity === "high").length;
+  const medium = signals.filter((item) => item.severity === "medium").length;
+  const overall = critical ? "Critical" : high ? "Elevated" : medium ? "Watch" : "Normal";
+  const topSignal = signals[0];
+  const latestEvent = latestObservedTime();
+  const securityPressure = (analysis.admin_probes || []).reduce((sum, item) => sum + Number(item.requests || 0), 0)
+    + (analysis.injection_probes || []).reduce((sum, item) => sum + Number(item.requests || 0), 0)
+    + (analysis.tor_sources || []).reduce((sum, item) => sum + Number(item.requests || 0), 0);
 
-  setText("#metricRequests", formatNumber(totals.requests || 0));
-  setText("#metric5xxRate", formatPercent(totals.status_5xx_rate || 0));
-  setText("#metric4xxRate", formatPercent(totals.status_4xx_rate || 0));
-  setText("#metricUniqueIPs", formatNumber(totals.unique_ips || 0));
-  setText("#metricUserAgents", formatNumber(totals.unique_user_agents || 0));
-  setText("#metricSlowRate", formatPercent(totals.slow_requests_rate || 0));
-  setText("#metricBytes", formatBytes(totals.bytes_sent || 0));
-  setText("#metricIssues", formatNumber((analysis.issues || []).length));
+  setText("#situationState", overall);
+  setText("#situationScope", activeFilterLabel());
+  setText("#situationFreshness", latestEvent ? shortDateTime(latestEvent) : "-");
+  setText("#situationFreshnessMeta", latestEvent ? "latest indexed event" : "no indexed events in scope");
+  setText("#situationSignals", `${critical}/${high}/${medium}`);
+  setText("#situationSignalsMeta", `${formatNumber(signals.length)} ranked signals`);
+  setText("#situationTraffic", formatNumber(totals.requests || 0));
+  setText("#situationTrafficMeta", `${formatNumber(totals.unique_ips || 0)} IPs / ${formatNumber(totals.unique_user_agents || 0)} user agents`);
+  setText("#situationReliability", `${formatPercent(totals.status_5xx_rate || 0)} 5xx`);
+  setText("#situationReliabilityMeta", `${formatPercent(totals.slow_requests_rate || 0)} slow / ${formatPercent(totals.status_4xx_rate || 0)} 4xx`);
+  setText("#situationSecurity", formatNumber(securityPressure));
+  setText("#situationSecurityMeta", topSignal ? topSignal.title : "no active security signal");
   setText("#timelineRange", analysis.range || state.range);
   setText("#statusTotal", formatNumber(totals.requests || 0));
-  setText("#siteCount", `${(analysis.sites || []).length} sites`);
-  setText("#sourceIPCount", `${(analysis.source_ips || []).length} IPs`);
   setText("#agentClassCount", `${aggregateAgentClasses(analysis.user_agents || []).length} classes`);
 
-  renderIssuesTable();
+  renderPrioritySignals(signals.slice(0, 6));
   renderRecentErrors(traffic.recent_errors || []);
+}
+
+function renderPrioritySignals(items) {
+  const container = qs("#prioritySignalsList");
+  if (!container) return;
+  container.innerHTML = items.map(signalRow).join("") || `<div class="empty">No active signals in this scope.</div>`;
+}
+
+function buildSignalItems() {
+  const analysis = state.data.analysis || {};
+  const traffic = state.data.traffic || {};
+  const out = [];
+
+  (analysis.issues || []).forEach((item, index) => {
+    out.push({
+      key: `issue:${index}:${item.rule_key || item.title || ""}`,
+      group: issueGroup(item),
+      severity: item.severity || severityForScore(item.score || 0),
+      title: item.title || item.rule_key || "Detected issue",
+      summary: item.summary || "",
+      siteID: item.site_id || "",
+      actor: item.actor_value || item.actor_type || "",
+      requests: Number(item.requests || item.events || 0),
+      errors: 0,
+      risk: Number(item.score || 0),
+      lastSeen: item.last_seen || item.last_seen_at || "",
+      sourceKind: "issue",
+      sourceIndex: index,
+      details: item.evidence || item.details || null,
+    });
+  });
+
+  (analysis.injection_probes || []).forEach((item, index) => {
+    const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+    out.push({
+      key: `injection:${index}:${item.ip || ""}:${item.path || ""}`,
+      group: "security",
+      severity: severityForScore(item.risk_score || 70),
+      title: `${formatCategory(item.category || "Injection probe")} against ${item.path || "/"}`,
+      summary: `${formatCategory(item.match_reason || "probe")} from ${item.ip || "unknown IP"}`,
+      siteID: item.site_id || "",
+      env: item.env || "",
+      ip: item.ip || "",
+      path: item.path || "",
+      requests: Number(item.requests || 0),
+      errors,
+      risk: Number(item.risk_score || 0),
+      lastSeen: item.last_seen || "",
+      sourceKind: "injectionProbe",
+      sourceIndex: index,
+      details: item.evidence || null,
+    });
+  });
+
+  (analysis.admin_probes || []).forEach((item, index) => {
+    const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+    out.push({
+      key: `admin:${index}:${item.ip || ""}:${item.path || ""}`,
+      group: "security",
+      severity: severityForScore(item.risk_score || 65),
+      title: `${formatCategory(item.category || "Admin probe")} on ${item.path || "/"}`,
+      summary: `${formatNumber(item.total_ip_hits || item.requests || 0)} total IP hits from ${item.ip || "unknown IP"}`,
+      siteID: item.site_id || "",
+      env: item.env || "",
+      ip: item.ip || "",
+      path: item.path || "",
+      requests: Number(item.requests || 0),
+      errors,
+      risk: Number(item.risk_score || 0),
+      lastSeen: item.last_seen || "",
+      sourceKind: "adminProbe",
+      sourceIndex: index,
+      details: item.evidence || null,
+    });
+  });
+
+  (analysis.tor_sources || []).forEach((item, index) => {
+    const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+    out.push({
+      key: `tor:${index}:${item.ip || ""}`,
+      group: "security",
+      severity: item.admin_requests ? "high" : "medium",
+      title: `Tor exit traffic from ${item.ip || "unknown IP"}`,
+      summary: `${formatNumber(item.admin_requests || 0)} admin requests / ${formatNumber(errors)} errors`,
+      siteID: item.site_id || "",
+      env: item.env || "",
+      ip: item.ip || "",
+      requests: Number(item.requests || 0),
+      errors,
+      risk: Number(item.risk_score || 80),
+      lastSeen: item.last_seen || "",
+      sourceKind: "torSource",
+      sourceIndex: index,
+    });
+  });
+
+  (analysis.slow_paths || []).forEach((item, index) => {
+    out.push({
+      key: `slow:${index}:${item.site_id || ""}:${item.path || ""}`,
+      group: "reliability",
+      severity: Number(item.p95_request_time_ms || 0) >= 5000 ? "high" : "medium",
+      title: `Slow path p95 on ${item.path || "/"}`,
+      summary: `${formatMs(item.p95_request_time_ms || 0)} p95 / avg ${formatMs(item.avg_request_time_ms || 0)}`,
+      siteID: item.site_id || "",
+      path: item.path || "",
+      requests: Number(item.requests || 0),
+      errors: Number(item.status_4xx || 0) + Number(item.status_5xx || 0),
+      risk: Math.min(90, Math.round(Number(item.p95_request_time_ms || 0) / 100)),
+      lastSeen: item.last_seen || "",
+      sourceKind: "slowPath",
+      sourceIndex: index,
+    });
+  });
+
+  (traffic.recent_errors || []).slice(0, 20).forEach((item, index) => {
+    out.push({
+      key: `recent-error:${index}:${item.client_ip || ""}:${item.path || ""}:${item.ts || ""}`,
+      group: "reliability",
+      severity: Number(item.status || 0) >= 500 ? "high" : "medium",
+      title: `${item.status || "-"} on ${item.path || "/"}`,
+      summary: `${item.method || "GET"} from ${item.client_ip || "unknown IP"}`,
+      siteID: item.site_id || "",
+      ip: item.client_ip || "",
+      path: item.path || "",
+      requests: 1,
+      errors: 1,
+      risk: Number(item.status || 0) >= 500 ? 70 : 45,
+      lastSeen: item.ts || "",
+      sourceKind: "recentError",
+      sourceIndex: index,
+    });
+  });
+
+  (state.data.jobs || []).filter((job) => job.status === "failed").slice(0, 8).forEach((job, index) => {
+    out.push({
+      key: `job:${index}:${job.id || job.type || ""}`,
+      group: "pipeline",
+      severity: "high",
+      title: `Pipeline job failed: ${job.type || "job"}`,
+      summary: job.message || job.last_error || "Background job needs attention",
+      requests: 0,
+      errors: 0,
+      risk: 75,
+      lastSeen: job.started_at || job.updated_at || job.created_at || "",
+      sourceKind: "job",
+      sourceIndex: index,
+    });
+  });
+
+  return out.sort((a, b) => {
+    const severityDelta = severityRank(b.severity) - severityRank(a.severity);
+    if (severityDelta) return severityDelta;
+    if ((b.risk || 0) !== (a.risk || 0)) return (b.risk || 0) - (a.risk || 0);
+    return new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0);
+  });
+}
+
+function signalRow(item) {
+  const actions = [
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: item.key, origin: state.route })}'>Open signal</button>`,
+    item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: item.siteID, origin: "signal" })}'>Open IP</button>` : "",
+    item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path, ip: item.ip, site_id: item.siteID, status_class: item.errors ? "errors" : "", origin: "signal" })}'>Open logs</button>` : "",
+  ].filter(Boolean).join("");
+  const meta = [
+    formatCategory(item.group || "signal"),
+    item.siteID ? `${item.siteID}${item.env ? `/${item.env}` : ""}` : "",
+    item.ip || item.actor || "",
+    item.requests ? `${formatNumber(item.requests)} requests` : "",
+    item.errors ? `${formatNumber(item.errors)} errors` : "",
+    item.lastSeen ? formatTime(item.lastSeen) : "",
+  ].filter(Boolean).join(" - ");
+  return `
+    <div class="signal-card">
+      <div class="signal-card-main">
+        <span class="severity severity-${escapeHTML(item.severity || "low")}">${escapeHTML(item.severity || "low")}</span>
+        <div>
+          <strong>${escapeHTML(item.title || "Signal")}</strong>
+          <span>${escapeHTML(item.summary || meta || "No extra context")}</span>
+          <small>${escapeHTML(meta)}</small>
+          <div class="signal-actions">${actions}</div>
+        </div>
+      </div>
+      <div class="signal-score">
+        <span>risk</span>
+        <b>${escapeHTML(item.risk || severityRank(item.severity) * 20 || 0)}</b>
+      </div>
+    </div>
+  `;
+}
+
+function latestObservedTime() {
+  const candidates = [
+    ...(state.data.traffic?.recent_errors || []).map((item) => item.ts),
+    ...(state.data.analysis?.source_ips || []).map((item) => item.last_seen),
+    ...(state.data.analysis?.admin_probes || []).map((item) => item.last_seen),
+    ...(state.data.analysis?.injection_probes || []).map((item) => item.last_seen),
+    ...(state.data.analysis?.slow_paths || []).map((item) => item.last_seen),
+  ].filter(Boolean).map((value) => new Date(value)).filter((date) => !Number.isNaN(date.getTime()));
+  if (!candidates.length) return "";
+  return new Date(Math.max(...candidates.map((date) => date.getTime()))).toISOString();
+}
+
+function issueGroup(item) {
+  const key = String(item.rule_key || item.title || "").toLowerCase();
+  if (key.includes("probe") || key.includes("crawler") || key.includes("tor") || key.includes("user_agent")) return "security";
+  if (key.includes("slow") || key.includes("5xx") || key.includes("error")) return "reliability";
+  return "traffic";
+}
+
+function severityForScore(score) {
+  const value = Number(score || 0);
+  if (value >= 90) return "critical";
+  if (value >= 70) return "high";
+  if (value >= 40) return "medium";
+  return "low";
+}
+
+function severityRank(severity) {
+  return { low: 1, medium: 2, high: 3, critical: 4 }[severity] || 0;
 }
 
 function renderAnalysis() {
@@ -457,6 +789,352 @@ function renderAnalysis() {
   renderTorSources();
   renderTopPaths(state.data.traffic?.top_paths || []);
   renderSlowPaths(state.data.analysis?.slow_paths || []);
+}
+
+function renderLogs() {
+  qsa("[data-log-type]").forEach((button) => {
+    const active = button.dataset.logType === state.logType;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  const supported = state.logType === "nginx-access";
+  setText("#logsTitle", supported ? "Access logs" : `${formatLogType(state.logType)} logs`);
+  setText("#logsContext", logContextLabel());
+
+  const analysis = state.data.analysis || {};
+  const totals = analysis.totals || {};
+  const evidence = supported ? filteredLogEvidence() : [];
+  const topPaths = supported ? filteredTopPaths() : [];
+  const fieldStats = supported ? [
+    ["Log type", "Access"],
+    ["Requests", formatNumber(totals.requests || 0)],
+    ["Sites", formatNumber((analysis.sites || []).length)],
+    ["Source IPs", formatNumber(totals.unique_ips || 0)],
+    ["User agents", formatNumber(totals.unique_user_agents || 0)],
+    ["4xx", formatPercent(totals.status_4xx_rate || 0)],
+    ["5xx", formatPercent(totals.status_5xx_rate || 0)],
+    ["Slow", formatPercent(totals.slow_requests_rate || 0)],
+  ] : [
+    ["Log type", formatLogType(state.logType)],
+    ["Status", "Collection-ready"],
+    ["Parser", "Pending"],
+    ["Explorer", "Pattern reserved"],
+  ];
+  qs("#logsFieldStats").innerHTML = fieldStats.map(statTile).join("");
+  setText("#logsEvidenceCount", supported ? `${formatNumber(evidence.length)} rows` : "not parsed yet");
+  qs("#logsEvidenceList").innerHTML = supported
+    ? evidence.slice(0, 25).map(logEvidenceRow).join("") || `<div class="empty">No matching access-log evidence in this scope.</div>`
+    : `<div class="empty">${escapeHTML(formatLogType(state.logType))} ingestion is planned; this workspace is ready for the parser and field stats.</div>`;
+  setText("#logsTopPathCount", `${formatNumber(topPaths.length)} paths`);
+  qs("#logsTopPathsList").innerHTML = topPaths.slice(0, 12).map((item) => `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(item.path || "/")}</strong>
+        <span>${escapeHTML(item.site_id || "all sites")} - ${formatStatusBuckets(item)}</span>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "/", site_id: item.site_id || "", origin: "logs" })}'>Open logs</button>
+      </div>
+      <div class="signal-numbers">
+        <span>${formatBytes(item.bytes_sent || 0)}</span>
+        <b>${formatNumber(item.requests || 0)}</b>
+      </div>
+    </div>
+  `).join("") || `<div class="empty">No paths match this scope.</div>`;
+}
+
+function formatLogType(type) {
+  return {
+    "nginx-access": "Access",
+    "nginx-error": "Nginx error",
+    "php-error": "PHP error",
+    "php-slow": "PHP slow",
+    "mysql-slow": "MySQL slow",
+  }[type] || formatCategory(type || "log");
+}
+
+function logContextLabel() {
+  const context = state.viewContext || {};
+  const parts = [activeFilterLabel()];
+  if (context.ip) parts.push(`IP ${context.ip}`);
+  if (context.path) parts.push(context.path);
+  if (context.known_actor) parts.push(context.known_actor);
+  if (context.actor_type) parts.push(formatCategory(context.actor_type));
+  if (context.status_class === "errors") parts.push("Errors only");
+  return parts.join(" / ");
+}
+
+function filteredLogEvidence() {
+  const traffic = state.data.traffic || {};
+  const analysis = state.data.analysis || {};
+  const rows = [];
+  (traffic.recent_errors || []).forEach((item) => {
+    rows.push({
+      kind: "Recent error",
+      ts: item.ts,
+      site_id: item.site_id || "",
+      env: item.env || "",
+      ip: item.client_ip || "",
+      method: item.method || "GET",
+      path: item.path || "/",
+      query: item.query || "",
+      status: item.status || "",
+      requests: 1,
+      errors: Number(item.status || 0) >= 400 ? 1 : 0,
+      user_agent: item.user_agent || "",
+    });
+  });
+  (analysis.admin_probes || []).forEach((item) => rows.push(analysisEvidenceRow("Admin probe", item)));
+  (analysis.injection_probes || []).forEach((item) => rows.push(analysisEvidenceRow("Injection probe", item)));
+  (analysis.tor_sources || []).forEach((item) => rows.push({
+    kind: "Tor source",
+    ts: item.last_seen,
+    site_id: item.site_id || "",
+    env: item.env || "",
+    ip: item.ip || "",
+    path: "/",
+    status: "",
+    requests: Number(item.requests || 0),
+    errors: Number(item.status_4xx || 0) + Number(item.status_5xx || 0),
+    known_actor: item.known_actor || "Tor exit",
+    actor_type: item.actor_type || "tor",
+  }));
+  (analysis.slow_paths || []).forEach((item) => rows.push({
+    kind: "Slow path",
+    ts: item.last_seen,
+    site_id: item.site_id || "",
+    env: item.env || "",
+    path: item.path || "/",
+    status: "",
+    requests: Number(item.requests || 0),
+    errors: Number(item.status_4xx || 0) + Number(item.status_5xx || 0),
+    p95_request_time_ms: item.p95_request_time_ms || 0,
+  }));
+  return rows
+    .filter(logMatchesContext)
+    .sort((a, b) => new Date(b.ts || 0) - new Date(a.ts || 0));
+}
+
+function analysisEvidenceRow(kind, item) {
+  return {
+    kind,
+    ts: item.last_seen,
+    site_id: item.site_id || "",
+    env: item.env || "",
+    ip: item.ip || "",
+    method: item.method || "GET",
+    path: item.path || "/",
+    query: item.sample_query || item.query || "",
+    status: item.status || "",
+    requests: Number(item.requests || 0),
+    errors: Number(item.status_4xx || 0) + Number(item.status_5xx || 0),
+    category: item.category || "",
+    match_reason: item.match_reason || "",
+    risk_score: item.risk_score || 0,
+  };
+}
+
+function filteredTopPaths() {
+  const rows = [
+    ...(state.data.traffic?.top_paths || []),
+    ...(state.data.analysis?.slow_paths || []).map((item) => ({
+      ...item,
+      status_4xx: item.status_4xx || 0,
+      status_5xx: item.status_5xx || 0,
+    })),
+  ];
+  const seen = new Map();
+  rows.forEach((item) => {
+    if (!logMatchesContext({ ...item, errors: Number(item.status_4xx || 0) + Number(item.status_5xx || 0) })) return;
+    const key = `${item.site_id || ""}|${item.path || "/"}`;
+    const existing = seen.get(key) || { site_id: item.site_id || "", path: item.path || "/", requests: 0, bytes_sent: 0, status_2xx: 0, status_3xx: 0, status_4xx: 0, status_5xx: 0 };
+    existing.requests += Number(item.requests || 0);
+    existing.bytes_sent += Number(item.bytes_sent || 0);
+    existing.status_2xx += Number(item.status_2xx || 0);
+    existing.status_3xx += Number(item.status_3xx || 0);
+    existing.status_4xx += Number(item.status_4xx || 0);
+    existing.status_5xx += Number(item.status_5xx || 0);
+    seen.set(key, existing);
+  });
+  return Array.from(seen.values()).sort((a, b) => b.requests - a.requests);
+}
+
+function logMatchesContext(item) {
+  const context = state.viewContext || {};
+  if (context.site_id && item.site_id !== context.site_id) return false;
+  if (context.ip && item.ip !== context.ip) return false;
+  if (context.path && !pathMatches(item.path, context.path)) return false;
+  if (context.status_class === "errors") {
+    const status = Number(item.status || 0);
+    const errors = Number(item.errors || 0) + Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+    if (status < 400 && errors <= 0) return false;
+  }
+  if (context.known_actor || context.actor_type) {
+    const ips = contextActorIPs(context);
+    if (item.ip && ips.size && !ips.has(item.ip)) return false;
+    if (!item.ip && ips.size) return false;
+  }
+  if (context.user_agent && !String(item.user_agent || "").includes(context.user_agent)) return false;
+  return true;
+}
+
+function pathMatches(value, expected) {
+  const path = String(value || "");
+  const target = String(expected || "");
+  if (!target) return true;
+  return path === target || path.startsWith(target) || target.startsWith(path);
+}
+
+function logEvidenceRow(item) {
+  const title = [item.kind, item.method, item.path || "/"].filter(Boolean).join(" ");
+  const meta = [
+    item.ip,
+    item.site_id ? `${item.site_id}${item.env ? `/${item.env}` : ""}` : "",
+    item.query ? `?${item.query}` : "",
+    item.category ? formatCategory(item.category) : "",
+    item.match_reason ? formatCategory(item.match_reason) : "",
+    item.p95_request_time_ms ? `p95 ${formatMs(item.p95_request_time_ms)}` : "",
+    formatTime(item.ts),
+  ].filter(Boolean).join(" - ");
+  const actions = [
+    item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: item.site_id, origin: "logs" })}'>Open IP</button>` : "",
+    item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path, ip: item.ip, site_id: item.site_id, status_class: item.errors ? "errors" : "", origin: "logs" })}'>Refine</button>` : "",
+  ].filter(Boolean).join("");
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(title)}</strong>
+        <span>${escapeHTML(meta)}</span>
+        ${actions}
+      </div>
+      <div class="signal-numbers">
+        ${item.status ? `<span>${escapeHTML(item.status)}</span>` : item.errors ? `<span>${formatNumber(item.errors)} errors</span>` : ""}
+        <b>${formatNumber(item.requests || 0)}</b>
+      </div>
+    </div>
+  `;
+}
+
+function statTile([label, value]) {
+  return `
+    <article class="stat-tile">
+      <span>${escapeHTML(label)}</span>
+      <strong>${escapeHTML(value)}</strong>
+    </article>
+  `;
+}
+
+function renderSignals() {
+  qsa("[data-signal-filter]").forEach((button) => {
+    const active = button.dataset.signalFilter === state.signalFilter;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  const allSignals = buildSignalItems();
+  const signals = state.signalFilter === "all" ? allSignals : allSignals.filter((item) => item.group === state.signalFilter);
+  renderPager("#signalsPager", "signals", signals);
+  const pageItems = paginate("signals", signals);
+  qs("#signalsList").innerHTML = pageItems.map(signalRow).join("") || `<div class="empty">No ${escapeHTML(state.signalFilter)} signals in this scope.</div>`;
+  setText("#signalsSummary", `${formatNumber(pageItems.length)} of ${formatNumber(signals.length)} shown`);
+  const groups = ["security", "reliability", "traffic", "pipeline"].map((group) => {
+    const count = allSignals.filter((item) => item.group === group).length;
+    return [formatCategory(group), formatNumber(count)];
+  });
+  qs("#signalsGroupStats").innerHTML = groups.map(statTile).join("");
+}
+
+function renderInvestigate() {
+  renderSourceIPs();
+  renderUserAgents();
+  renderActors();
+}
+
+function renderActors() {
+  const actors = aggregateActors();
+  setText("#actorSummary", `${formatNumber(actors.length)} actors`);
+  qs("#actorsList").innerHTML = actors.map((actor) => `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(actor.label)}</strong>
+        <span>${escapeHTML(actor.type)} - ${formatNumber(actor.ips)} IPs - ${formatNumber(actor.requests)} requests</span>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: actor.label, actor_type: actor.type, origin: "investigate" })}'>Open actor</button>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", known_actor: actor.label, origin: "investigate" })}'>Open logs</button>
+      </div>
+      <div class="signal-numbers">
+        <span>risk</span>
+        <b>${escapeHTML(actor.risk)}</b>
+      </div>
+    </div>
+  `).join("") || `<div class="empty">No known actors have been classified in this scope.</div>`;
+}
+
+function aggregateActors() {
+  const groups = new Map();
+  (state.data.analysis?.source_ips || []).forEach((item) => {
+    const label = item.known_actor || actorLabelFromType(item.actor_type);
+    if (!label) return;
+    const key = `${item.actor_type || "service"}|${label}`;
+    const existing = groups.get(key) || {
+      label,
+      type: item.actor_type || "service",
+      requests: 0,
+      errors: 0,
+      risk: 0,
+      ips: new Set(),
+      ipCount: 0,
+      lastSeen: "",
+    };
+    existing.requests += Number(item.requests || 0);
+    existing.errors += Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+    existing.risk = Math.max(existing.risk, Number(item.risk_score || 0));
+    if (item.ip) existing.ips.add(item.ip);
+    if (new Date(item.last_seen || 0) > new Date(existing.lastSeen || 0)) existing.lastSeen = item.last_seen;
+    groups.set(key, existing);
+  });
+  (state.data.analysis?.user_agents || []).forEach((item) => {
+    if (!item.actor_type || item.actor_type === "browser" || item.actor_type === "unknown") return;
+    const label = item.family || formatCategory(item.actor_type);
+    const key = `${item.actor_type}|${label}`;
+    const existing = groups.get(key) || {
+      label,
+      type: item.actor_type,
+      requests: 0,
+      errors: 0,
+      risk: 0,
+      ips: new Set(),
+      ipCount: 0,
+      lastSeen: "",
+    };
+    existing.requests += Number(item.requests || 0);
+    existing.errors += Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+    existing.risk = Math.max(existing.risk, Number(item.risk_score || 0));
+    existing.ipCount = Math.max(existing.ipCount, Number(item.unique_ips || 0));
+    if (new Date(item.last_seen || 0) > new Date(existing.lastSeen || 0)) existing.lastSeen = item.last_seen;
+    groups.set(key, existing);
+  });
+  return Array.from(groups.values())
+    .map((item) => ({ ...item, ips: Math.max(item.ips.size, item.ipCount || 0) }))
+    .sort((a, b) => (b.risk - a.risk) || (b.requests - a.requests))
+    .slice(0, 14);
+}
+
+function actorLabelFromType(type) {
+  const normalized = String(type || "").toLowerCase();
+  if (!normalized || normalized === "unknown" || normalized === "browser") return "";
+  return formatCategory(normalized);
+}
+
+function contextActorIPs(context = state.viewContext || {}) {
+  const label = String(context.known_actor || "").toLowerCase();
+  const type = String(context.actor_type || "").toLowerCase();
+  const ips = new Set();
+  (state.data.analysis?.source_ips || []).forEach((item) => {
+    const actor = String(item.known_actor || "").toLowerCase();
+    const actorType = String(item.actor_type || "").toLowerCase();
+    const typeLabel = actorLabelFromType(actorType).toLowerCase();
+    if (label && actor !== label && typeLabel !== label) return;
+    if (type && actorType !== type) return;
+    if (item.ip) ips.add(item.ip);
+  });
+  return ips;
 }
 
 function renderAnalysisTabs() {
@@ -492,18 +1170,24 @@ function renderSourceIPs() {
   const rows = paginateWithIndex("sourceIPs", items).map(({ item, index }) => {
     const actor = [item.actor_type, item.known_actor].filter(Boolean).join(" / ") || "-";
     const source = item.verified_source ? "verified" : item.reverse_dns ? "reverse DNS" : "unverified";
+    const actions = [
+      `<button class="ghost mini inline-action" type="button" data-detail-kind="sourceIP" data-detail-index="${index}">Details</button>`,
+      `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: item.site_id, origin: "investigate" })}'>Open IP</button>`,
+      `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ip: item.ip, site_id: item.site_id, origin: "investigate" })}'>Logs</button>`,
+    ].join("");
     return `
       <tr>
-        <td><strong>${escapeHTML(item.ip)}</strong><br><span>${escapeHTML(item.reverse_dns || "")}</span><br><button class="ghost mini inline-action" type="button" data-detail-kind="sourceIP" data-detail-index="${index}">Details</button></td>
+        <td><strong>${escapeHTML(item.ip)}</strong><br><span>${escapeHTML(item.reverse_dns || "")}</span></td>
         <td>${formatNumber(item.requests || 0)}</td>
         <td>${formatNumber((item.status_4xx || 0) + (item.status_5xx || 0))}</td>
         <td>${escapeHTML(actor)}</td>
         <td>${escapeHTML(source)}</td>
         <td>${item.risk_score === undefined ? "-" : escapeHTML(item.risk_score)}</td>
+        <td class="row-actions">${actions}</td>
       </tr>
     `;
   });
-  qs("#sourceIPsTable").innerHTML = rows.join("") || emptyRow(6, "No source IPs found.");
+  qs("#sourceIPsTable").innerHTML = rows.join("") || emptyRow(7, "No source IPs found.");
 }
 
 function renderUserAgents() {
@@ -620,15 +1304,19 @@ function renderSlowPaths(items) {
 }
 
 function renderRecentErrors(items) {
-  setText("#recentErrorsSummary", `${items.length} rows`);
   qs("#recentErrorsList").innerHTML = items.slice(0, 10).map((item) => {
     const path = `${item.method || "GET"} ${item.path || "/"}`;
     const meta = [item.client_ip, item.site_id, formatTime(item.ts)].filter(Boolean).join(" - ");
+    const actions = [
+      item.client_ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.client_ip, site_id: item.site_id, origin: "recent_errors" })}'>Open IP</button>` : "",
+      `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "/", ip: item.client_ip || "", site_id: item.site_id || "", status_class: "errors", origin: "recent_errors" })}'>Open logs</button>`,
+    ].filter(Boolean).join("");
     return `
       <div class="signal-row">
         <div>
           <strong>${escapeHTML(path)}</strong>
           <span>${escapeHTML(meta)}</span>
+          ${actions}
         </div>
         <div class="signal-numbers">
           <b class="${Number(item.status) >= 500 ? "status-failed" : "status-skipped"}">${escapeHTML(item.status || "-")}</b>
@@ -1491,18 +2179,151 @@ function showApp() {
 }
 
 function showRoute(route, push) {
-  if (!routes[route]) route = "dashboard";
+  route = normalizeRoute(route);
   state.route = route;
   qsa("[data-view]").forEach((view) => view.classList.toggle("hidden", view.dataset.view !== route));
   qsa("[data-route]").forEach((link) => link.classList.toggle("active", link.dataset.route === route));
   setText("#pageTitle", routes[route].title);
-  if (push) history.pushState({}, "", routes[route].path);
+  updateURL(Boolean(push));
   requestAnimationFrame(() => renderCharts());
 }
 
 function routeFromPath(path) {
   const cleaned = path.replace(/^\/+/, "").split("/")[0];
-  return cleaned && routes[cleaned] ? cleaned : "dashboard";
+  return normalizeRoute(cleaned || "overview");
+}
+
+function normalizeRoute(route) {
+  const key = routeAliases[route] || route;
+  return routes[key] ? key : "overview";
+}
+
+function encodePivot(pivot) {
+  return escapeHTML(JSON.stringify(pivot || {}));
+}
+
+function decodePivot(value) {
+  try {
+    return JSON.parse(value || "{}");
+  } catch {
+    return {};
+  }
+}
+
+async function handlePivot(pivot) {
+  if (!pivot?.kind) return;
+  state.viewContext = pivotContext(pivot);
+  resetContextPages();
+  if (pivot.kind === "signal") {
+    showSignalDetail(pivot.key);
+    updateURL(false);
+    return;
+  }
+  if (pivot.kind === "ip") {
+    showRoute("investigate", true);
+    renderInvestigate();
+    await showIPDetailByValue(pivot.value, pivot);
+    return;
+  }
+  if (pivot.kind === "actor") {
+    showRoute("investigate", true);
+    renderInvestigate();
+    showActorDetail(pivot);
+    return;
+  }
+  if (pivot.kind === "log_filter") {
+    showRoute("logs", true);
+    renderLogs();
+  }
+}
+
+function pivotContext(pivot) {
+  const context = {};
+  ["ip", "path", "known_actor", "actor_type", "status_class", "site_id", "user_agent"].forEach((key) => {
+    if (pivot[key]) context[key] = pivot[key];
+  });
+  if (pivot.kind === "ip" && pivot.value) context.ip = pivot.value;
+  if (pivot.kind === "actor" && pivot.value) context.known_actor = pivot.value;
+  return context;
+}
+
+function resetContextPages() {
+  ["sourceIPs", "userAgents"].forEach((key) => {
+    state.pages[key] = 0;
+  });
+}
+
+function showSignalDetail(key) {
+  const item = buildSignalItems().find((candidate) => candidate.key === key);
+  if (!item) return;
+  renderDetail({
+    eyebrow: `${formatCategory(item.group || "Signal")} signal`,
+    title: item.title || "Signal",
+    facts: [
+      ["Severity", item.severity || "-"],
+      ["Risk", item.risk || "-"],
+      ["Requests", formatNumber(item.requests || 0)],
+      ["Errors", formatNumber(item.errors || 0)],
+      ["Source IP", item.ip || "-"],
+      ["Site", item.siteID ? `${item.siteID}${item.env ? ` / ${item.env}` : ""}` : "-"],
+      ["Path", item.path || "-"],
+      ["Last seen", formatTime(item.lastSeen)],
+      ["Summary", item.summary || "-"],
+    ],
+    details: item.details ? JSON.stringify(item.details, null, 2) : "",
+  });
+  qs("#detailDrawer").classList.remove("hidden");
+}
+
+async function showIPDetailByValue(ip, pivot = {}) {
+  if (!ip) return;
+  const item = (state.data.analysis?.source_ips || []).find((candidate) => candidate.ip === ip) || { ip, site_id: pivot.site_id || "" };
+  renderDetail({
+    eyebrow: "Source IP",
+    title: ip,
+    facts: [
+      ["Site", pivot.site_id || item.site_id || "-"],
+      ["Requests", formatNumber(item.requests || 0)],
+      ["Risk", item.risk_score === undefined ? "-" : item.risk_score],
+    ],
+    sections: [{ title: "Lookup", text: "Loading DNS, ASN, Whois, URLs, and recent requests..." }],
+  });
+  qs("#detailDrawer").classList.remove("hidden");
+  try {
+    const detail = await fetchJSON(`/api/v1/investigate/ip/${encodeURIComponent(ip)}?${buildFilterQuery({ limit: 30, site_id: pivot.site_id || state.viewContext.site_id || "" })}`);
+    renderDetail(sourceIPDetailFor(item, detail));
+  } catch (error) {
+    renderDetail({
+      eyebrow: "Source IP",
+      title: ip,
+      facts: [["Lookup failed", error.message]],
+    });
+  }
+}
+
+function showActorDetail(pivot) {
+  const actors = aggregateActors();
+  const actor = actors.find((item) => item.label === pivot.value && (!pivot.actor_type || item.type === pivot.actor_type));
+  if (!actor) return;
+  const ips = Array.from(contextActorIPs({ known_actor: actor.label, actor_type: actor.type }));
+  renderDetail({
+    eyebrow: "Known actor or service",
+    title: actor.label,
+    facts: [
+      ["Type", formatCategory(actor.type || "-")],
+      ["Requests", formatNumber(actor.requests || 0)],
+      ["Errors", formatNumber(actor.errors || 0)],
+      ["Source IPs", formatNumber(actor.ips || ips.length)],
+      ["Risk", actor.risk || "-"],
+      ["Last seen", formatTime(actor.lastSeen)],
+    ],
+    sections: [{
+      title: "Known IPs in scope",
+      items: ips.slice(0, 25).map((ip) => ({ title: ip, meta: actor.label, value: "" })),
+      empty: "No IPs found for this actor in the current window.",
+    }],
+  });
+  qs("#detailDrawer").classList.remove("hidden");
 }
 
 function renderUserBadge() {
