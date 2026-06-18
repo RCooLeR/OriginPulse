@@ -1,0 +1,14 @@
+.git
+.idea
+
+data
+data/**
+
+config.yml
+*.local.yml
+
+originpulse
+originpulse.exe
+data/originpulse-dev.exe
+*.tmp
+*.log

@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>OriginPulse</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <section id="loginView" class="login-view hidden" aria-label="Login">
+      <form id="loginForm" class="login-box">
+        <div>
+          <img class="login-logo" src="/logo.png" alt="OriginPulse">
+          <h1>Sign in</h1>
+        </div>
+        <label>
+          <span>Email</span>
+          <input id="emailInput" type="email" autocomplete="email" required>
+        </label>
+        <label>
+          <span>Password</span>
+          <input id="passwordInput" type="password" autocomplete="current-password" required>
+        </label>
+        <p id="loginError" class="error-text" role="alert"></p>
+        <button class="primary" type="submit">Sign in</button>
+      </form>
+    </section>
+
+    <div class="shell hidden">
+      <aside class="rail" aria-label="Primary">
+        <a class="mark" href="/" data-route="dashboard" aria-label="OriginPulse dashboard">
+          <img src="/logo.png" alt="OriginPulse">
+        </a>
+        <nav>
+          <a href="/" data-route="dashboard">Dashboard</a>
+          <a href="/analysis" data-route="analysis">Analysis</a>
+          <a href="/sites" data-route="sites">Sites</a>
+          <a href="/alerts" data-route="alerts">Alerts</a>
+          <a href="/reports" data-route="reports">Reports</a>
+          <a href="/system" data-route="system">System</a>
+          <a href="/users" data-route="users">Users</a>
+        </nav>
+      </aside>
+
+      <main>
+        <header class="topbar">
+          <div class="title-block">
+            <p class="eyebrow">OriginPulse</p>
+            <h1 id="pageTitle">Dashboard</h1>
+          </div>
+          <div class="actions">
+            <span id="userBadge" class="pill hidden"></span>
+            <button id="refreshButton" class="ghost" type="button">Refresh</button>
+            <button id="pipelineButton" class="ghost" type="button">Pipeline</button>
+            <button id="collectButton" class="primary" type="button">Collect</button>
+            <button id="logoutButton" class="ghost hidden" type="button">Sign out</button>
+          </div>
+        </header>
+
+        <section class="filter-bar" aria-label="Global filters">
+          <label class="control-wrap">
+            <span>Site</span>
+            <select id="siteSelect">
+              <option value="">All sites</option>
+            </select>
+          </label>
+          <label class="control-wrap">
+            <span>Range</span>
+            <select id="rangeSelect">
+              <option value="1h">1h</option>
+              <option value="6h">6h</option>
+              <option value="24h" selected>24h</option>
+              <option value="7d">7d</option>
+              <option value="30d">30d</option>
+              <option value="90d">90d</option>
+              <option value="365d">365d</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          <label class="control-wrap time-control">
+            <span>From</span>
+            <input id="fromInput" type="datetime-local">
+          </label>
+          <label class="control-wrap time-control">
+            <span>To</span>
+            <input id="toInput" type="datetime-local">
+          </label>
+          <button id="applyWindowButton" class="ghost" type="button">Apply</button>
+          <span id="activeFilterSummary" class="pill">All sites / 24h</span>
+        </section>
+
+        <div id="toast" class="toast hidden" role="status"></div>
+        <aside id="detailDrawer" class="detail-drawer hidden" aria-label="Detail panel">
+          <div class="detail-head">
+            <div>
+              <p id="detailEyebrow" class="eyebrow">Detail</p>
+              <h2 id="detailTitle">Detail</h2>
+            </div>
+            <button id="detailCloseButton" class="ghost small" type="button">Close</button>
+          </div>
+          <div id="detailBody" class="detail-body"></div>
+        </aside>
+
+        <section id="dashboardView" class="view" data-view="dashboard">
+          <section class="metrics compact" aria-label="Overview metrics">
+            <article>
+              <span>Requests</span>
+              <strong id="metricRequests">-</strong>
+            </article>
+            <article>
+              <span>5xx rate</span>
+              <strong id="metric5xxRate">-</strong>
+            </article>
+            <article>
+              <span>4xx rate</span>
+              <strong id="metric4xxRate">-</strong>
+            </article>
+            <article>
+              <span>Unique IPs</span>
+              <strong id="metricUniqueIPs">-</strong>
+            </article>
+            <article>
+              <span>User agents</span>
+              <strong id="metricUserAgents">-</strong>
+            </article>
+            <article>
+              <span>Slow requests</span>
+              <strong id="metricSlowRate">-</strong>
+            </article>
+            <article>
+              <span>Bytes sent</span>
+              <strong id="metricBytes">-</strong>
+            </article>
+            <article>
+              <span>Detected issues</span>
+              <strong id="metricIssues">-</strong>
+            </article>
+          </section>
+
+          <section class="dashboard-grid dashboard-main">
+            <article id="timelinePanel" class="panel">
+              <div class="panel-head">
+                <h2>Traffic timeline</h2>
+                <span id="timelineRange" class="pill">24h</span>
+              </div>
+              <div class="chart-box">
+                <canvas id="timelineChart"></canvas>
+              </div>
+            </article>
+
+            <article id="statusPanel" class="panel">
+              <div class="panel-head">
+                <h2>Status mix</h2>
+                <span id="statusTotal" class="pill">-</span>
+              </div>
+              <div class="chart-box small-chart">
+                <canvas id="statusChart"></canvas>
+              </div>
+            </article>
+
+            <article id="sitePanel" class="panel">
+              <div class="panel-head">
+                <h2>Sites</h2>
+                <span id="siteCount" class="pill">-</span>
+              </div>
+              <div class="chart-box small-chart">
+                <canvas id="siteChart"></canvas>
+              </div>
+            </article>
+
+            <article id="sourcePanel" class="panel">
+              <div class="panel-head">
+                <h2>Source IP concentration</h2>
+                <span id="sourceIPCount" class="pill">-</span>
+              </div>
+              <div class="chart-box small-chart">
+                <canvas id="sourceChart"></canvas>
+              </div>
+            </article>
+
+            <article id="agentPanel" class="panel">
+              <div class="panel-head">
+                <h2>User-agent classes</h2>
+                <span id="agentClassCount" class="pill">-</span>
+              </div>
+              <div class="chart-box small-chart">
+                <canvas id="agentChart"></canvas>
+              </div>
+            </article>
+
+            <article id="issuesPanel" class="panel">
+              <div class="panel-head">
+                <h2>Detected issues</h2>
+                <div id="issuesPager" class="pager"></div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Severity</th>
+                      <th>Issue</th>
+                      <th>Actor</th>
+                      <th>Requests</th>
+                      <th>Last seen</th>
+                    </tr>
+                  </thead>
+                  <tbody id="issuesTable"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <article id="recentErrorsPanel" class="panel">
+              <div class="panel-head">
+                <h2>Recent errors</h2>
+                <span id="recentErrorsSummary" class="pill">-</span>
+              </div>
+              <div id="recentErrorsList" class="signal-list"></div>
+            </article>
+          </section>
+        </section>
+
+        <section id="analysisView" class="view hidden" data-view="analysis">
+          <div class="analysis-tabs" role="tablist" aria-label="Analysis sections">
+            <button class="analysis-tab active" type="button" role="tab" aria-selected="true" data-analysis-tab="sourceIPs">Source IPs</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-analysis-tab="userAgents">User agents</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-analysis-tab="adminProbes">Admin probes</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-analysis-tab="injectionProbes">Injection probes</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-analysis-tab="torSources">Tor network</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-analysis-tab="topPaths">Top paths</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-analysis-tab="slowPaths">Slow paths</button>
+          </div>
+
+          <section class="analysis-tab-panels">
+            <article class="panel analysis-tab-panel active" data-analysis-panel="sourceIPs">
+              <div class="panel-head">
+                <h2>Source IPs</h2>
+                <div class="panel-tools">
+                  <button id="refreshIntelButton" class="ghost small" type="button">Refresh IP intel</button>
+                  <div id="sourceIPPagers" class="pager"></div>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>IP</th>
+                      <th>Requests</th>
+                      <th>Errors</th>
+                      <th>Actor</th>
+                      <th>Source</th>
+                      <th>Risk</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sourceIPsTable"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="panel analysis-tab-panel hidden" data-analysis-panel="userAgents">
+              <div class="panel-head">
+                <h2>User agents</h2>
+                <div id="userAgentPager" class="pager"></div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Family</th>
+                      <th>Sample</th>
+                      <th>Requests</th>
+                      <th>IPs</th>
+                      <th>Errors</th>
+                      <th>Risk</th>
+                    </tr>
+                  </thead>
+                  <tbody id="userAgentsTable"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="panel analysis-tab-panel hidden" data-analysis-panel="adminProbes">
+              <div class="panel-head">
+                <h2>Admin probes</h2>
+                <div class="panel-tools">
+                  <span id="adminProbeSummary" class="pill">-</span>
+                  <div id="adminProbePager" class="pager"></div>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Category</th>
+                      <th>Source</th>
+                      <th>Request</th>
+                      <th>Requests</th>
+                      <th>IP hits</th>
+                      <th>Errors</th>
+                      <th>Last seen</th>
+                    </tr>
+                  </thead>
+                  <tbody id="adminProbesTable"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="panel analysis-tab-panel hidden" data-analysis-panel="injectionProbes">
+              <div class="panel-head">
+                <h2>Injection probes</h2>
+                <div class="panel-tools">
+                  <span id="injectionProbeSummary" class="pill">-</span>
+                  <div id="injectionProbePager" class="pager"></div>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Category</th>
+                      <th>Source</th>
+                      <th>Request</th>
+                      <th>Requests</th>
+                      <th>IP hits</th>
+                      <th>Errors</th>
+                      <th>Last seen</th>
+                    </tr>
+                  </thead>
+                  <tbody id="injectionProbesTable"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="panel analysis-tab-panel hidden" data-analysis-panel="torSources">
+              <div class="panel-head">
+                <h2>Tor network</h2>
+                <div class="panel-tools">
+                  <span id="torSourceSummary" class="pill">-</span>
+                  <div id="torSourcePager" class="pager"></div>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Source</th>
+                      <th>Site</th>
+                      <th>Requests</th>
+                      <th>Admin</th>
+                      <th>Errors</th>
+                      <th>Intel</th>
+                    </tr>
+                  </thead>
+                  <tbody id="torSourcesTable"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="panel analysis-tab-panel hidden" data-analysis-panel="topPaths">
+              <div class="panel-head">
+                <h2>Top paths</h2>
+                <span id="topPathSummary" class="pill">-</span>
+              </div>
+              <div id="topPathsList" class="signal-list"></div>
+            </article>
+
+            <article class="panel analysis-tab-panel hidden" data-analysis-panel="slowPaths">
+              <div class="panel-head">
+                <h2>Slow paths</h2>
+                <span id="slowPathSummary" class="pill">-</span>
+              </div>
+              <div id="slowPathsList" class="signal-list"></div>
+            </article>
+          </section>
+        </section>
+
+        <section id="sitesView" class="view hidden" data-view="sites">
+          <article class="panel">
+            <div class="panel-head">
+              <h2>Configured sites</h2>
+              <div id="sitesPager" class="pager"></div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Site</th>
+                    <th>Environments</th>
+                    <th>Tags</th>
+                    <th>Pantheon UUID</th>
+                  </tr>
+                </thead>
+                <tbody id="sitesTable"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section id="alertsView" class="view hidden" data-view="alerts">
+          <article class="panel">
+            <div class="panel-head">
+              <h2>Open alerts</h2>
+              <div class="panel-tools">
+                <button id="evaluateAlertsButton" class="ghost small" type="button">Evaluate</button>
+                <div id="alertsPager" class="pager"></div>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Severity</th>
+                    <th>Rule</th>
+                    <th>Actor</th>
+                    <th>Score</th>
+                    <th>Last seen</th>
+                  </tr>
+                </thead>
+                <tbody id="alertsTable"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section id="reportsView" class="view hidden" data-view="reports">
+          <div class="analysis-tabs report-tabs" role="tablist" aria-label="Report periods">
+            <button class="analysis-tab active" type="button" role="tab" aria-selected="true" data-report-tab="daily">Daily</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-report-tab="weekly">Weekly</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-report-tab="monthly">Monthly</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-report-tab="quarterly">Quarterly</button>
+            <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-report-tab="annual">Annual</button>
+          </div>
+
+          <article class="panel report-toolbar">
+            <div>
+              <p class="eyebrow">LLM reports</p>
+              <h2 id="reportPeriodTitle">Daily reports</h2>
+            </div>
+            <div class="panel-tools">
+              <button class="ghost small report-button" type="button" data-report-range="24h">Day</button>
+              <button class="ghost small report-button" type="button" data-report-range="7d">Week</button>
+              <button class="ghost small report-button" type="button" data-report-range="30d">Month</button>
+              <button class="ghost small report-button" type="button" data-report-range="90d">Quarter</button>
+              <button class="ghost small report-button" type="button" data-report-range="365d">Year</button>
+              <div id="reportsPager" class="pager"></div>
+            </div>
+          </article>
+
+          <section id="reportsBody" class="reports-body"></section>
+        </section>
+
+        <section id="systemView" class="view hidden" data-view="system">
+          <section class="dashboard-grid">
+            <article class="panel">
+              <div class="panel-head">
+                <h2>Pantheon access</h2>
+                <span id="credentialState" class="pill">-</span>
+              </div>
+              <dl class="facts" id="credentialFacts"></dl>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <h2>Retention</h2>
+                <button id="retentionButton" class="ghost small" type="button">Dry run</button>
+              </div>
+              <dl class="facts" id="retentionFacts"></dl>
+            </article>
+
+            <article class="panel span-2">
+              <div class="panel-head">
+                <h2>Notifications</h2>
+                <div class="panel-tools">
+                  <span id="browserPushState" class="pill">Browser push -</span>
+                  <button id="enableBrowserPushButton" class="ghost small" type="button">Enable browser push</button>
+                  <button id="disableBrowserPushButton" class="ghost small" type="button">Disable browser push</button>
+                  <button id="sendNotificationsButton" class="ghost small" type="button">Send open alerts</button>
+                  <button id="testNotificationsButton" class="ghost small" type="button">Test</button>
+                </div>
+              </div>
+              <dl class="facts" id="notificationFacts"></dl>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Channel</th>
+                      <th>Target</th>
+                      <th>Status</th>
+                      <th>Title</th>
+                      <th>Created</th>
+                    </tr>
+                  </thead>
+                  <tbody id="notificationsTable"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="panel span-2">
+              <div class="panel-head">
+                <h2>Jobs</h2>
+                <div id="jobsPager" class="pager"></div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Type</th>
+                      <th>Status</th>
+                      <th>Message</th>
+                      <th>Started</th>
+                    </tr>
+                  </thead>
+                  <tbody id="jobsTable"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="panel span-2">
+              <div class="panel-head">
+                <h2>Combined segments</h2>
+                <div id="segmentsPager" class="pager"></div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Bucket</th>
+                      <th>Status</th>
+                      <th>Lines</th>
+                      <th>Indexed</th>
+                    </tr>
+                  </thead>
+                  <tbody id="segmentsTable"></tbody>
+                </table>
+              </div>
+            </article>
+          </section>
+        </section>
+
+        <section id="usersView" class="view hidden" data-view="users">
+          <section class="dashboard-grid">
+            <article class="panel">
+              <div class="panel-head">
+                <h2>Create user</h2>
+              </div>
+              <form id="userForm" class="form-grid">
+                <label>
+                  <span>Email</span>
+                  <input id="newUserEmail" type="email" autocomplete="off" required>
+                </label>
+                <label>
+                  <span>Display name</span>
+                  <input id="newUserDisplay" type="text" autocomplete="off">
+                </label>
+                <label>
+                  <span>Password</span>
+                  <input id="newUserPassword" type="password" autocomplete="new-password" required>
+                </label>
+                <button class="primary" type="submit">Create</button>
+              </form>
+            </article>
+
+            <article class="panel span-2">
+              <div class="panel-head">
+                <h2>Users</h2>
+                <div id="usersPager" class="pager"></div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>User</th>
+                      <th>Role</th>
+                      <th>Status</th>
+                      <th>Last login</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="usersTable"></tbody>
+                </table>
+              </div>
+            </article>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

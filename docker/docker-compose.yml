@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: originpulse
+      POSTGRES_USER: originpulse
+      POSTGRES_PASSWORD: originpulse_dev_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U originpulse -d originpulse"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  ollama:
+    image: ollama/ollama
+    profiles: ["ollama"]
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+
+  originpulse:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["server", "-config", "/app/config.yml"]
+    environment:
+      DATABASE_URL: postgres://originpulse:originpulse_dev_password@postgres:5432/originpulse?sslmode=disable
+      ORIGINPULSE_CONFIG: /app/config.yml
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: gemma4:12b
+      PANTHEON_EMAIL: ""
+      ORIGINPULSE_SMTP_USERNAME: ""
+      ORIGINPULSE_SMTP_PASSWORD: ""
+      ORIGINPULSE_PUSH_WEBHOOK_URLS: ""
+      ORIGINPULSE_VAPID_PUBLIC_KEY: ""
+      ORIGINPULSE_VAPID_PRIVATE_KEY: ""
+      ORIGINPULSE_VAPID_SUBJECT: "mailto:originpulse@localhost"
+      LOG_LEVEL: info
+    volumes:
+      - ../config.example.yml:/app/config.yml:ro
+      - originpulse_data:/data
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  ollama:
+  originpulse_data:

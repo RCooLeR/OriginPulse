@@ -1,0 +1,2198 @@
+const qs = (selector, root = document) => root.querySelector(selector);
+const qsa = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+
+const routes = {
+  dashboard: { title: "Dashboard", path: "/" },
+  analysis: { title: "Access-log analysis", path: "/analysis" },
+  sites: { title: "Sites", path: "/sites" },
+  alerts: { title: "Alerts", path: "/alerts" },
+  reports: { title: "Reports", path: "/reports" },
+  system: { title: "System", path: "/system" },
+  users: { title: "Users", path: "/users" },
+};
+
+const pageSize = {
+  issues: 6,
+  sourceIPs: 12,
+  userAgents: 12,
+  adminProbes: 12,
+  injectionProbes: 12,
+  torSources: 12,
+  sites: 12,
+  alerts: 12,
+  reports: 5,
+  jobs: 12,
+  segments: 12,
+  users: 12,
+};
+
+const state = {
+  route: routeFromPath(location.pathname),
+  range: "24h",
+  siteID: "",
+  from: "",
+  to: "",
+  analysisTab: "sourceIPs",
+  reportTab: "daily",
+  selectedReportIDs: {},
+  currentUser: null,
+  loading: false,
+  pages: {},
+  data: {
+    overview: {},
+    analysis: {},
+    traffic: {},
+    sites: [],
+    jobs: [],
+    credentials: {},
+    collectorHealth: {},
+    alerts: [],
+    reports: [],
+    retention: {},
+    notifications: {},
+    webPush: {},
+    segments: [],
+    users: [],
+  },
+};
+
+class AuthError extends Error {
+  constructor() {
+    super("login required");
+    this.name = "AuthError";
+  }
+}
+
+async function fetchJSON(path, options = {}) {
+  const response = await fetch(path, {
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    ...options,
+  });
+  if (response.status === 401) {
+    throw new AuthError();
+  }
+  if (!response.ok) {
+    const detail = await response.json().catch(() => null);
+    throw new Error(detail?.error?.message || `${response.status} ${response.statusText}`);
+  }
+  return response.json();
+}
+
+async function boot() {
+  wireEvents();
+  try {
+    const session = await fetchJSON("/api/v1/auth/me");
+    state.currentUser = session.user || null;
+    showApp();
+    showRoute(state.route, false);
+    await refreshAll();
+  } catch (error) {
+    if (error instanceof AuthError) {
+      showLogin();
+      return;
+    }
+    showApp();
+    toast(error.message, true);
+  }
+}
+
+function wireEvents() {
+  qsa("[data-route]").forEach((link) => {
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      const route = link.dataset.route || "dashboard";
+      showRoute(route, true);
+    });
+  });
+
+  window.addEventListener("popstate", () => showRoute(routeFromPath(location.pathname), false));
+  window.addEventListener("resize", () => renderCharts());
+
+  qs("#rangeSelect").addEventListener("change", async (event) => {
+    state.range = event.target.value;
+    if (state.range === "custom") {
+      seedCustomWindow();
+    } else {
+      state.from = "";
+      state.to = "";
+      syncWindowInputs();
+    }
+    resetPages();
+    await refreshWithValidation();
+  });
+  qs("#siteSelect").addEventListener("change", async (event) => {
+    state.siteID = event.target.value;
+    resetPages();
+    await refreshWithValidation();
+  });
+  qs("#fromInput").addEventListener("change", (event) => {
+    state.from = event.target.value;
+    state.range = "custom";
+    qs("#rangeSelect").value = "custom";
+    syncWindowInputs();
+  });
+  qs("#toInput").addEventListener("change", (event) => {
+    state.to = event.target.value;
+    state.range = "custom";
+    qs("#rangeSelect").value = "custom";
+    syncWindowInputs();
+  });
+  qs("#applyWindowButton").addEventListener("click", async () => {
+    resetPages();
+    await refreshWithValidation();
+  });
+
+  qs("#refreshButton").addEventListener("click", () => refreshWithValidation());
+  qsa("[data-analysis-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.analysisTab = button.dataset.analysisTab || "sourceIPs";
+      renderAnalysisTabs();
+    });
+  });
+  qsa("[data-report-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.reportTab = button.dataset.reportTab || "daily";
+      state.pages.reports = 0;
+      renderReports();
+      requestAnimationFrame(drawReportCharts);
+    });
+  });
+  qs("#collectButton").addEventListener("click", () => runAction(qs("#collectButton"), "Collect queued", async () => {
+    await fetchJSON("/api/v1/system/collect", { method: "POST" });
+  }));
+  qs("#pipelineButton").addEventListener("click", () => runAction(qs("#pipelineButton"), "Pipeline complete", async () => {
+    await fetchJSON("/api/v1/system/pipeline", { method: "POST", body: "{}" });
+  }));
+  qs("#evaluateAlertsButton").addEventListener("click", () => runAction(qs("#evaluateAlertsButton"), "Alert evaluation complete", async () => {
+    await fetchJSON("/api/v1/alerts/evaluate", {
+      method: "POST",
+      body: JSON.stringify({ range: state.range, limit: 200 }),
+    });
+  }));
+  qs("#refreshIntelButton").addEventListener("click", () => runAction(qs("#refreshIntelButton"), "IP intel refreshed", async () => {
+    await fetchJSON("/api/v1/system/refresh-ip-intel", {
+      method: "POST",
+      body: JSON.stringify({ range: state.range, limit: 50 }),
+    });
+  }));
+  qs("#retentionButton").addEventListener("click", () => runAction(qs("#retentionButton"), "Retention dry run complete", async () => {
+    state.data.retention = await fetchJSON("/api/v1/system/retention");
+    renderSystem();
+  }, false));
+  qs("#sendNotificationsButton").addEventListener("click", () => runAction(qs("#sendNotificationsButton"), "Notification run complete", async () => {
+    await fetchJSON("/api/v1/notifications/send", { method: "POST", body: "{}" });
+  }));
+  qs("#testNotificationsButton").addEventListener("click", () => runAction(qs("#testNotificationsButton"), "Notification test complete", async () => {
+    await fetchJSON("/api/v1/notifications/test", { method: "POST", body: "{}" });
+  }));
+  qs("#enableBrowserPushButton").addEventListener("click", () => runAction(qs("#enableBrowserPushButton"), "Browser push enabled", enableBrowserPush));
+  qs("#disableBrowserPushButton").addEventListener("click", () => runAction(qs("#disableBrowserPushButton"), "Browser push disabled", disableBrowserPush));
+  qs("#detailCloseButton").addEventListener("click", hideDetail);
+  qs("#logoutButton").addEventListener("click", logout);
+  qs("#loginForm").addEventListener("submit", login);
+  qs("#userForm").addEventListener("submit", createUser);
+
+  document.addEventListener("click", async (event) => {
+    const pageButton = event.target.closest("[data-page-key]");
+    if (pageButton) {
+      const key = pageButton.dataset.pageKey;
+      const delta = Number(pageButton.dataset.pageDelta || 0);
+      state.pages[key] = Math.max(0, (state.pages[key] || 0) + delta);
+      render();
+      return;
+    }
+
+    const deleteButton = event.target.closest("[data-user-delete]");
+    if (deleteButton) {
+      const id = deleteButton.dataset.userDelete;
+      await runAction(deleteButton, "User deactivated", async () => {
+        await fetchJSON(`/api/v1/users/${encodeURIComponent(id)}`, { method: "DELETE" });
+      });
+    }
+
+    const reportButton = event.target.closest("[data-report-range]");
+    if (reportButton) {
+      const range = reportButton.dataset.reportRange;
+      await runAction(reportButton, "Report generated", async () => {
+        const report = await fetchJSON("/api/v1/reports/generate", {
+          method: "POST",
+          body: JSON.stringify({ range, site_id: state.siteID }),
+        });
+        state.data.reports = [report, ...(state.data.reports || [])];
+        state.reportTab = reportTabForReport(report);
+        state.selectedReportIDs[state.reportTab] = reportKey(report);
+        state.pages.reports = 0;
+        renderReports();
+        requestAnimationFrame(drawReportCharts);
+      }, false);
+    }
+
+    const reportSelectButton = event.target.closest("[data-report-select]");
+    if (reportSelectButton) {
+      state.selectedReportIDs[state.reportTab] = reportSelectButton.dataset.reportSelect || "";
+      renderReports();
+      requestAnimationFrame(drawReportCharts);
+      return;
+    }
+
+    const reportIPButton = event.target.closest("[data-report-ip]");
+    if (reportIPButton) {
+      await showReportSourceIPDetail(reportIPButton.dataset.reportIp || "");
+      return;
+    }
+
+    const reportDetailButton = event.target.closest("[data-report-detail-key]");
+    if (reportDetailButton) {
+      showReportDrilldownDetail(reportDetailButton.dataset.reportDetailKey || "", Number(reportDetailButton.dataset.reportDetailIndex || 0));
+      return;
+    }
+
+    const detailButton = event.target.closest("[data-detail-kind]");
+    if (detailButton) {
+      await showDetail(detailButton.dataset.detailKind, Number(detailButton.dataset.detailIndex || 0));
+    }
+  });
+}
+
+async function refreshAll() {
+  if (state.loading) return;
+  state.loading = true;
+  setBusy(true);
+  try {
+    const filterQuery = buildFilterQuery();
+    const analysisQuery = buildFilterQuery({ limit: 100 });
+    const trafficQuery = buildFilterQuery({ limit: 50 });
+    const [
+      overview,
+      analysis,
+      traffic,
+      sites,
+      jobs,
+      credentials,
+      collectorHealth,
+      alerts,
+      reports,
+      retention,
+      notifications,
+      webPush,
+      segments,
+      users,
+    ] = await Promise.all([
+      fetchJSON(`/api/v1/dashboard/overview?${filterQuery}`),
+      fetchJSON(`/api/v1/analysis/access-log?${analysisQuery}`),
+      fetchJSON(`/api/v1/investigate/traffic?${trafficQuery}`),
+      fetchJSON("/api/v1/sites"),
+      fetchJSON("/api/v1/system/jobs"),
+      fetchJSON("/api/v1/system/credentials"),
+      fetchJSON("/api/v1/system/collector-health"),
+      fetchJSON("/api/v1/alerts?limit=100"),
+      fetchJSON(`/api/v1/reports/recent?${buildReportsQuery()}`),
+      fetchJSON("/api/v1/system/retention"),
+      fetchJSON("/api/v1/notifications?limit=25"),
+      fetchJSON("/api/v1/notifications/web-push/public-key"),
+      fetchJSON("/api/v1/system/segments?limit=100"),
+      fetchJSON("/api/v1/users"),
+    ]);
+
+    state.data = {
+      overview,
+      analysis,
+      traffic,
+      sites: sites.sites || [],
+      jobs: jobs.jobs || [],
+      credentials,
+      collectorHealth,
+      alerts: alerts.alerts || [],
+      reports: reports.reports || [],
+      retention,
+      notifications,
+      webPush,
+      segments: segments.segments || [],
+      users: users.users || [],
+    };
+    render();
+  } catch (error) {
+    if (error instanceof AuthError) {
+      showLogin();
+      return;
+    }
+    toast(error.message, true);
+  } finally {
+    state.loading = false;
+    setBusy(false);
+  }
+}
+
+async function refreshWithValidation() {
+  if (state.range === "custom") {
+    seedCustomWindow();
+    const validation = validateCustomWindow();
+    if (validation) {
+      toast(validation, true);
+      return;
+    }
+  }
+  await refreshAll();
+}
+
+function render() {
+  renderUserBadge();
+  renderFilters();
+  renderDashboard();
+  renderAnalysis();
+  renderSites();
+  renderAlerts();
+  renderReports();
+  renderSystem();
+  renderNotifications();
+  renderUsers();
+  renderCharts();
+}
+
+function renderFilters() {
+  const sites = state.data.sites || [];
+  const siteSelect = qs("#siteSelect");
+  const knownSites = new Set(sites.map((site) => site.id));
+  const options = [
+    `<option value="">All sites</option>`,
+    ...sites.map((site) => `<option value="${escapeHTML(site.id)}">${escapeHTML(site.name || site.id)}</option>`),
+  ];
+  if (state.siteID && !knownSites.has(state.siteID)) {
+    options.push(`<option value="${escapeHTML(state.siteID)}">${escapeHTML(state.siteID)}</option>`);
+  }
+  siteSelect.innerHTML = options.join("");
+  siteSelect.value = state.siteID;
+  qs("#rangeSelect").value = state.range;
+  syncWindowInputs();
+  setText("#activeFilterSummary", activeFilterLabel());
+}
+
+function buildFilterQuery(extra = {}) {
+  const params = new URLSearchParams();
+  params.set("range", state.range || "24h");
+  if (state.siteID) params.set("site_id", state.siteID);
+  const from = localInputToISO(state.from);
+  const to = localInputToISO(state.to);
+  if (state.range === "custom" && from) params.set("from", from);
+  if (state.range === "custom" && to) params.set("to", to);
+  Object.entries(extra).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") params.set(key, value);
+  });
+  return params.toString();
+}
+
+function buildReportsQuery() {
+  const params = new URLSearchParams();
+  params.set("limit", "100");
+  if (state.siteID) params.set("site_id", state.siteID);
+  return params.toString();
+}
+
+function seedCustomWindow() {
+  if (state.from && state.to) return;
+  const currentUntil = state.to ? new Date(state.to) : new Date();
+  const currentSince = state.from ? new Date(state.from) : new Date(currentUntil.getTime() - 24 * 60 * 60 * 1000);
+  state.from = dateToLocalInput(currentSince);
+  state.to = dateToLocalInput(currentUntil);
+  syncWindowInputs();
+}
+
+function syncWindowInputs() {
+  const custom = state.range === "custom";
+  const fromInput = qs("#fromInput");
+  const toInput = qs("#toInput");
+  fromInput.disabled = !custom;
+  toInput.disabled = !custom;
+  fromInput.value = state.from;
+  toInput.value = state.to;
+}
+
+function validateCustomWindow() {
+  if (!state.from || !state.to) return "Custom windows need both from and to.";
+  const from = new Date(state.from);
+  const to = new Date(state.to);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return "Custom window dates are invalid.";
+  if (to <= from) return "Custom window end must be after start.";
+  return "";
+}
+
+function activeFilterLabel() {
+  const site = (state.data.sites || []).find((item) => item.id === state.siteID);
+  const siteLabel = site ? site.name || site.id : state.siteID || "All sites";
+  if (state.range === "custom" && state.from && state.to) {
+    return `${siteLabel} / ${shortDateTime(state.from)} to ${shortDateTime(state.to)}`;
+  }
+  return `${siteLabel} / ${state.range || "24h"}`;
+}
+
+function renderDashboard() {
+  const analysis = state.data.analysis || {};
+  const totals = analysis.totals || {};
+  const traffic = state.data.traffic || {};
+
+  setText("#metricRequests", formatNumber(totals.requests || 0));
+  setText("#metric5xxRate", formatPercent(totals.status_5xx_rate || 0));
+  setText("#metric4xxRate", formatPercent(totals.status_4xx_rate || 0));
+  setText("#metricUniqueIPs", formatNumber(totals.unique_ips || 0));
+  setText("#metricUserAgents", formatNumber(totals.unique_user_agents || 0));
+  setText("#metricSlowRate", formatPercent(totals.slow_requests_rate || 0));
+  setText("#metricBytes", formatBytes(totals.bytes_sent || 0));
+  setText("#metricIssues", formatNumber((analysis.issues || []).length));
+  setText("#timelineRange", analysis.range || state.range);
+  setText("#statusTotal", formatNumber(totals.requests || 0));
+  setText("#siteCount", `${(analysis.sites || []).length} sites`);
+  setText("#sourceIPCount", `${(analysis.source_ips || []).length} IPs`);
+  setText("#agentClassCount", `${aggregateAgentClasses(analysis.user_agents || []).length} classes`);
+
+  renderIssuesTable();
+  renderRecentErrors(traffic.recent_errors || []);
+}
+
+function renderAnalysis() {
+  renderAnalysisTabs();
+  renderSourceIPs();
+  renderUserAgents();
+  renderAdminProbes();
+  renderInjectionProbes();
+  renderTorSources();
+  renderTopPaths(state.data.traffic?.top_paths || []);
+  renderSlowPaths(state.data.analysis?.slow_paths || []);
+}
+
+function renderAnalysisTabs() {
+  qsa("[data-analysis-tab]").forEach((button) => {
+    const active = button.dataset.analysisTab === state.analysisTab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  qsa("[data-analysis-panel]").forEach((panel) => {
+    panel.classList.toggle("hidden", panel.dataset.analysisPanel !== state.analysisTab);
+    panel.classList.toggle("active", panel.dataset.analysisPanel === state.analysisTab);
+  });
+}
+
+function renderIssuesTable() {
+  const issues = state.data.analysis?.issues || [];
+  renderPager("#issuesPager", "issues", issues);
+  const rows = paginateWithIndex("issues", issues).map(({ item: issue, index }) => `
+    <tr>
+      <td><span class="severity severity-${escapeHTML(issue.severity || "low")}">${escapeHTML(issue.severity || "low")}</span></td>
+      <td><strong>${escapeHTML(issue.title || issue.rule_key)}</strong><br><span>${escapeHTML(issue.summary || "")}</span><br><button class="ghost mini inline-action" type="button" data-detail-kind="issue" data-detail-index="${index}">Details</button></td>
+      <td>${escapeHTML(issue.actor_value || issue.site_id || "-")}</td>
+      <td>${formatNumber(issue.requests || 0)}</td>
+      <td>${formatTime(issue.last_seen)}</td>
+    </tr>
+  `);
+  qs("#issuesTable").innerHTML = rows.join("") || emptyRow(5, "No issues detected.");
+}
+
+function renderSourceIPs() {
+  const items = state.data.analysis?.source_ips || [];
+  renderPager("#sourceIPPagers", "sourceIPs", items);
+  const rows = paginateWithIndex("sourceIPs", items).map(({ item, index }) => {
+    const actor = [item.actor_type, item.known_actor].filter(Boolean).join(" / ") || "-";
+    const source = item.verified_source ? "verified" : item.reverse_dns ? "reverse DNS" : "unverified";
+    return `
+      <tr>
+        <td><strong>${escapeHTML(item.ip)}</strong><br><span>${escapeHTML(item.reverse_dns || "")}</span><br><button class="ghost mini inline-action" type="button" data-detail-kind="sourceIP" data-detail-index="${index}">Details</button></td>
+        <td>${formatNumber(item.requests || 0)}</td>
+        <td>${formatNumber((item.status_4xx || 0) + (item.status_5xx || 0))}</td>
+        <td>${escapeHTML(actor)}</td>
+        <td>${escapeHTML(source)}</td>
+        <td>${item.risk_score === undefined ? "-" : escapeHTML(item.risk_score)}</td>
+      </tr>
+    `;
+  });
+  qs("#sourceIPsTable").innerHTML = rows.join("") || emptyRow(6, "No source IPs found.");
+}
+
+function renderUserAgents() {
+  const items = state.data.analysis?.user_agents || [];
+  renderPager("#userAgentPager", "userAgents", items);
+  const rows = paginateWithIndex("userAgents", items).map(({ item, index }) => `
+    <tr>
+      <td><strong>${escapeHTML(item.family || "unknown")}</strong><br><span>${escapeHTML(item.actor_type || "")}</span><br><button class="ghost mini inline-action" type="button" data-detail-kind="userAgent" data-detail-index="${index}">Details</button></td>
+      <td class="clip">${escapeHTML(item.sample || "(empty)")}</td>
+      <td>${formatNumber(item.requests || 0)}</td>
+      <td>${formatNumber(item.unique_ips || 0)}</td>
+      <td>${formatNumber((item.status_4xx || 0) + (item.status_5xx || 0))}</td>
+      <td>${escapeHTML(item.risk_score || 0)}</td>
+    </tr>
+  `);
+  qs("#userAgentsTable").innerHTML = rows.join("") || emptyRow(6, "No user agents found.");
+}
+
+function renderAdminProbes() {
+  const items = state.data.analysis?.admin_probes || [];
+  renderPager("#adminProbePager", "adminProbes", items);
+  setText("#adminProbeSummary", `${items.length} probes`);
+  const rows = paginateWithIndex("adminProbes", items).map(({ item, index }) => {
+    const target = `${item.method || "GET"} ${item.path || "/"}`;
+    const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+    return `
+      <tr>
+        <td><strong>${escapeHTML(formatCategory(item.category || "admin"))}</strong><br><span>${escapeHTML(item.site_id || "-")} / ${escapeHTML(item.env || "-")}</span></td>
+        <td><strong>${escapeHTML(item.ip || "-")}</strong><br><button class="ghost mini inline-action" type="button" data-detail-kind="adminProbe" data-detail-index="${index}">Details</button></td>
+        <td class="clip">${escapeHTML(target)}${item.sample_query ? `<br><span>${escapeHTML(item.sample_query)}</span>` : ""}</td>
+        <td>${formatNumber(item.requests || 0)}</td>
+        <td>${formatNumber(item.total_ip_hits || item.requests || 0)}</td>
+        <td>${formatNumber(errors)}</td>
+        <td>${formatTime(item.last_seen)}</td>
+      </tr>
+    `;
+  });
+  qs("#adminProbesTable").innerHTML = rows.join("") || emptyRow(7, "No admin probes found.");
+}
+
+function renderInjectionProbes() {
+  const items = state.data.analysis?.injection_probes || [];
+  renderPager("#injectionProbePager", "injectionProbes", items);
+  setText("#injectionProbeSummary", `${items.length} probes`);
+  const rows = paginateWithIndex("injectionProbes", items).map(({ item, index }) => {
+    const target = `${item.method || "GET"} ${item.path || "/"}`;
+    const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+    return `
+      <tr>
+        <td><strong>${escapeHTML(formatCategory(item.category || "probe"))}</strong><br><span>${escapeHTML(item.match_reason ? `${formatCategory(item.match_reason)} - risk ${item.risk_score || 0}` : `risk ${item.risk_score || 0}`)}</span></td>
+        <td><strong>${escapeHTML(item.ip || "-")}</strong><br><button class="ghost mini inline-action" type="button" data-detail-kind="injectionProbe" data-detail-index="${index}">Details</button></td>
+        <td class="clip">${escapeHTML(target)}${item.sample_query ? `<br><span>${escapeHTML(item.sample_query)}</span>` : ""}</td>
+        <td>${formatNumber(item.requests || 0)}</td>
+        <td>${formatNumber(item.total_ip_hits || item.requests || 0)}</td>
+        <td>${formatNumber(errors)}</td>
+        <td>${formatTime(item.last_seen)}</td>
+      </tr>
+    `;
+  });
+  qs("#injectionProbesTable").innerHTML = rows.join("") || emptyRow(7, "No injection probes found.");
+}
+
+function renderTorSources() {
+  const items = state.data.analysis?.tor_sources || [];
+  renderPager("#torSourcePager", "torSources", items);
+  setText("#torSourceSummary", `${items.length} sources`);
+  const rows = paginateWithIndex("torSources", items).map(({ item, index }) => {
+    const actor = [item.actor_type, item.known_actor].filter(Boolean).join(" / ") || "tor";
+    const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+    return `
+      <tr>
+        <td><strong>${escapeHTML(item.ip || "-")}</strong><br><span>${escapeHTML(item.reverse_dns || "")}</span><br><button class="ghost mini inline-action" type="button" data-detail-kind="torSource" data-detail-index="${index}">Details</button></td>
+        <td>${escapeHTML(item.site_id || "-")}<br><span>${escapeHTML(item.env || "-")}</span></td>
+        <td>${formatNumber(item.requests || 0)}</td>
+        <td>${formatNumber(item.admin_requests || 0)}</td>
+        <td>${formatNumber(errors)}</td>
+        <td>${escapeHTML(actor)}<br><span>risk ${escapeHTML(item.risk_score || 0)}</span></td>
+      </tr>
+    `;
+  });
+  qs("#torSourcesTable").innerHTML = rows.join("") || emptyRow(6, "No Tor exit traffic found.");
+}
+
+function renderTopPaths(items) {
+  setText("#topPathSummary", `${items.length} paths`);
+  qs("#topPathsList").innerHTML = items.slice(0, 12).map((item) => `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(item.path || "/")}</strong>
+        <span>${formatNumber(item.status_4xx || 0)} 4xx - ${formatNumber(item.status_5xx || 0)} 5xx</span>
+      </div>
+      <div class="signal-numbers">
+        <span>${formatBytes(item.bytes_sent || 0)}</span>
+        <b>${formatNumber(item.requests || 0)}</b>
+      </div>
+    </div>
+  `).join("") || `<div class="empty">No paths found.</div>`;
+}
+
+function renderSlowPaths(items) {
+  setText("#slowPathSummary", `${items.length} paths`);
+  qs("#slowPathsList").innerHTML = items.slice(0, 12).map((item) => `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(item.path || "/")}</strong>
+        <span>${escapeHTML(item.site_id || "")} - p95 ${formatMs(item.p95_request_time_ms || 0)}</span>
+      </div>
+      <div class="signal-numbers">
+        <span>avg ${formatMs(item.avg_request_time_ms || 0)}</span>
+        <b>${formatNumber(item.requests || 0)}</b>
+      </div>
+    </div>
+  `).join("") || `<div class="empty">No slow paths found.</div>`;
+}
+
+function renderRecentErrors(items) {
+  setText("#recentErrorsSummary", `${items.length} rows`);
+  qs("#recentErrorsList").innerHTML = items.slice(0, 10).map((item) => {
+    const path = `${item.method || "GET"} ${item.path || "/"}`;
+    const meta = [item.client_ip, item.site_id, formatTime(item.ts)].filter(Boolean).join(" - ");
+    return `
+      <div class="signal-row">
+        <div>
+          <strong>${escapeHTML(path)}</strong>
+          <span>${escapeHTML(meta)}</span>
+        </div>
+        <div class="signal-numbers">
+          <b class="${Number(item.status) >= 500 ? "status-failed" : "status-skipped"}">${escapeHTML(item.status || "-")}</b>
+        </div>
+      </div>
+    `;
+  }).join("") || `<div class="empty">No recent 4xx or 5xx responses.</div>`;
+}
+
+function renderSites() {
+  const sites = state.data.sites || [];
+  renderPager("#sitesPager", "sites", sites);
+  const rows = paginate("sites", sites).map((site) => `
+    <tr>
+      <td><strong>${escapeHTML(site.name || site.id)}</strong><br><span>${escapeHTML(site.id)}</span></td>
+      <td>${escapeHTML((site.envs || []).join(", ") || "live")}</td>
+      <td>${escapeHTML((site.tags || []).join(", ") || "-")}</td>
+      <td><code>${escapeHTML(site.pantheon_site_id || "-")}</code></td>
+    </tr>
+  `);
+  qs("#sitesTable").innerHTML = rows.join("") || emptyRow(4, "No enabled sites configured.");
+}
+
+function renderAlerts() {
+  const alerts = state.data.alerts || [];
+  renderPager("#alertsPager", "alerts", alerts);
+  const rows = paginateWithIndex("alerts", alerts).map(({ item: alert, index }) => `
+    <tr>
+      <td><span class="severity severity-${escapeHTML(alert.severity || "low")}">${escapeHTML(alert.severity || "low")}</span></td>
+      <td><strong>${escapeHTML(alert.title || alert.rule_key)}</strong><br><span>${escapeHTML(alert.summary || "")}</span><br><button class="ghost mini inline-action" type="button" data-detail-kind="alert" data-detail-index="${index}">Details</button></td>
+      <td>${escapeHTML(alert.actor_value || "-")}</td>
+      <td>${escapeHTML(alert.score || 0)}</td>
+      <td>${formatTime(alert.last_seen_at)}</td>
+    </tr>
+  `);
+  qs("#alertsTable").innerHTML = rows.join("") || emptyRow(5, "No alerts are open.");
+}
+
+function renderReports() {
+  const reports = state.data.reports || [];
+  renderReportTabs(reports);
+  const selected = reportsForCurrentTab(reports);
+  const report = selectedReportFromList(selected);
+  const countLabel = `${formatNumber(selected.length)} ${selected.length === 1 ? "report" : "reports"}`;
+  const reportsPager = qs("#reportsPager");
+  if (reportsPager) reportsPager.innerHTML = `<span class="pill">${escapeHTML(countLabel)}</span>`;
+  setText("#reportPeriodTitle", `${formatCategory(state.reportTab)} reports`);
+
+  qs("#reportsBody").innerHTML = `
+    <section class="report-browser">
+      <aside class="panel report-list-panel">
+        <div class="panel-head">
+          <h2>${escapeHTML(reportListTitle(state.reportTab))}</h2>
+          <span class="pill">${escapeHTML(countLabel)}</span>
+        </div>
+        <div class="report-date-list">
+          ${selected.map((item) => reportListRow(item, report && reportKey(item) === reportKey(report))).join("") || `<div class="empty">No ${escapeHTML(state.reportTab)} reports yet.</div>`}
+        </div>
+      </aside>
+      <section class="report-detail-stack">
+        ${report ? reportDetailMarkup(report) : `
+          <article class="panel">
+            <div class="empty">No ${escapeHTML(state.reportTab)} reports have been generated yet.</div>
+          </article>
+        `}
+      </section>
+    </section>
+  `;
+}
+
+function reportDetailMarkup(report) {
+  const summary = report.summary || {};
+  return `
+    <section class="metrics report-metrics" aria-label="Report metrics">
+      ${reportMetric("Requests", formatNumber(summary.requests || 0))}
+      ${reportMetric("5xx rate", formatPercent(summary.status_5xx_rate || 0))}
+      ${reportMetric("4xx rate", formatPercent(summary.status_4xx_rate || 0))}
+      ${reportMetric("Issues", formatNumber(summary.issue_count || 0))}
+      ${reportMetric("Security probes", formatNumber((summary.admin_probe_requests || 0) + (summary.injection_probe_requests || 0)))}
+      ${reportMetric("Tor requests", formatNumber(summary.tor_requests || 0))}
+      ${reportMetric("Unique IPs", formatNumber(summary.unique_ips || 0))}
+      ${reportMetric("Slow rate", formatPercent(summary.slow_requests_rate || 0))}
+    </section>
+
+    <section class="report-layout">
+      <article class="panel report-summary-panel">
+        <div class="panel-head">
+          <h2>LLM summary</h2>
+          <div class="panel-tools">
+            <span class="pill">${escapeHTML(report.model || "local")}</span>
+            <span class="pill">${escapeHTML(report.site_id || "All sites")}</span>
+            <span class="pill">${formatTime(report.created_at)}</span>
+          </div>
+        </div>
+        <div class="report-copy markdown-body">${renderMarkdown(report.output || "No LLM summary stored.")}</div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Report facts</h2>
+        </div>
+        <dl class="facts">
+          ${facts([
+            ["Window", `${formatTime(report.range_start)} to ${formatTime(report.range_end)}`],
+            ["Top site", summary.top_site || "-"],
+            ["Top path", summary.top_path || "-"],
+            ["Top source IP", summary.top_source_ip || "-"],
+            ["Top user agent", summary.top_user_agent || "-"],
+            ["Open alerts", formatNumber(summary.open_alerts || 0)],
+          ])}
+        </dl>
+      </article>
+    </section>
+
+    <section class="report-chart-grid">
+      ${reportChartsMarkup(report)}
+    </section>
+
+    <section class="report-drilldown-grid">
+      ${reportDrilldownsMarkup(report)}
+    </section>
+  `;
+}
+
+function renderReportTabs(reports) {
+  qsa("[data-report-tab]").forEach((button) => {
+    const tab = button.dataset.reportTab || "daily";
+    const count = reportsForTab(reports, tab).length;
+    const active = tab === state.reportTab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    button.textContent = `${reportPeriodLabel(tab)} (${count})`;
+  });
+}
+
+function reportsForCurrentTab(reports) {
+  return reportsForTab(reports, state.reportTab);
+}
+
+function selectedReportFromList(reports) {
+  if (!reports.length) return null;
+  const selectedKey = state.selectedReportIDs[state.reportTab];
+  const selected = reports.find((report) => reportKey(report) === selectedKey) || reports[0];
+  state.selectedReportIDs[state.reportTab] = reportKey(selected);
+  return selected;
+}
+
+function reportsForTab(reports, tab) {
+  return [...(reports || [])]
+    .filter((report) => reportTabForReport(report) === tab)
+    .sort((a, b) => new Date(b.created_at || b.range_end || 0) - new Date(a.created_at || a.range_end || 0));
+}
+
+function reportTabForReport(report) {
+  const type = String(report?.report_type || "").toLowerCase();
+  if (["daily", "weekly", "monthly", "quarterly", "annual"].includes(type)) return type;
+  switch (report?.range) {
+    case "24h":
+      return "daily";
+    case "7d":
+      return "weekly";
+    case "30d":
+      return "monthly";
+    case "90d":
+      return "quarterly";
+    case "365d":
+      return "annual";
+    default:
+      if (type.includes("week")) return "weekly";
+      if (type.includes("month")) return "monthly";
+      if (type.includes("quarter")) return "quarterly";
+      if (type.includes("annual") || type.includes("year")) return "annual";
+      return "daily";
+  }
+}
+
+function reportPeriodLabel(tab) {
+  return {
+    daily: "Daily",
+    weekly: "Weekly",
+    monthly: "Monthly",
+    quarterly: "Quarterly",
+    annual: "Annual",
+  }[tab] || "Reports";
+}
+
+function reportListTitle(tab) {
+  return {
+    daily: "Days",
+    weekly: "Weeks",
+    monthly: "Months",
+    quarterly: "Quarters",
+    annual: "Years",
+  }[tab] || "Reports";
+}
+
+function reportKey(report) {
+  if (!report) return "";
+  return String(report.id || [
+    reportTabForReport(report),
+    report.range || "",
+    report.site_id || "",
+    report.range_start || "",
+    report.range_end || "",
+    report.created_at || "",
+  ].join("|"));
+}
+
+function reportListRow(report, active) {
+  const summary = report.summary || {};
+  const errors = (Number(summary.status_5xx_rate || 0) + Number(summary.status_4xx_rate || 0));
+  const meta = [
+    report.site_id || "All sites",
+    `${formatNumber(summary.requests || 0)} requests`,
+    `${formatPercent(summary.status_5xx_rate || 0)} 5xx`,
+    summary.issue_count ? `${formatNumber(summary.issue_count)} issues` : "",
+  ].filter(Boolean).join(" - ");
+  return `
+    <button class="report-list-row ${active ? "active" : ""}" type="button" data-report-select="${escapeHTML(reportKey(report))}" aria-pressed="${active ? "true" : "false"}">
+      <span class="report-list-title">${escapeHTML(reportListLabel(report))}</span>
+      <span class="report-list-window">${escapeHTML(reportWindowLabel(report))}</span>
+      <span class="report-list-meta">${escapeHTML(meta)}</span>
+      <span class="report-list-foot">${escapeHTML(report.model || "local")} - generated ${formatTime(report.created_at)}${errors ? ` - ${formatPercent(errors)} error rate` : ""}</span>
+    </button>
+  `;
+}
+
+function reportListLabel(report) {
+  const date = reportPeriodDate(report);
+  if (!date) return reportPeriodLabel(reportTabForReport(report));
+  const tab = reportTabForReport(report);
+  if (tab === "daily") {
+    return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  }
+  if (tab === "weekly") {
+    return `Week ending ${date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
+  }
+  if (tab === "monthly") {
+    return date.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  }
+  if (tab === "quarterly") {
+    return `Q${Math.floor(date.getMonth() / 3) + 1} ${date.getFullYear()}`;
+  }
+  if (tab === "annual") {
+    return String(date.getFullYear());
+  }
+  return reportPeriodLabel(tab);
+}
+
+function reportWindowLabel(report) {
+  if (!report?.range_start || !report?.range_end) return report.range || "";
+  return `${shortDateTime(report.range_start)} to ${shortDateTime(report.range_end)}`;
+}
+
+function reportPeriodDate(report) {
+  const value = report?.range_end || report?.created_at || report?.range_start;
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function reportMetric(label, value) {
+  return `
+    <article>
+      <span>${escapeHTML(label)}</span>
+      <strong>${escapeHTML(value)}</strong>
+    </article>
+  `;
+}
+
+function reportChartsMarkup(report) {
+  const charts = report.charts || [];
+  if (!charts.length) {
+    return `
+      <article class="panel report-empty-panel">
+        <div class="empty">No chart data stored for this report.</div>
+      </article>
+    `;
+  }
+  return charts.map(reportChartPanel).join("");
+}
+
+function reportChartPanel(chart) {
+  return `
+    <article class="panel report-chart-panel">
+      <div class="panel-head">
+        <h2>${escapeHTML(chart.title || chart.key || "Chart")}</h2>
+        <span class="pill">${escapeHTML(chart.unit || chart.kind || "")}</span>
+      </div>
+      <div class="chart-box small-chart">
+        <canvas id="${escapeHTML(reportChartID(chart.key))}"></canvas>
+      </div>
+    </article>
+  `;
+}
+
+function reportDrilldownsMarkup(report) {
+  const panels = [
+    reportDrilldownPanel(report, "source_ips", 10),
+    reportDrilldownPanel(report, "issues", 8),
+    reportDrilldownPanel(report, "admin_probes", 8),
+    reportDrilldownPanel(report, "injection_probes", 8),
+    reportDrilldownPanel(report, "tor_sources", 8),
+    reportDrilldownPanel(report, "top_paths", 8),
+    reportDrilldownPanel(report, "slow_paths", 8),
+    reportDrilldownPanel(report, "recent_errors", 8),
+  ].filter(Boolean).join("");
+  if (panels) return panels;
+  return `
+    <article class="panel report-empty-panel">
+      <div class="empty">No drilldown data stored for this report.</div>
+    </article>
+  `;
+}
+
+function reportDrilldownPanel(report, key, limit) {
+  const drilldown = (report.drilldowns || []).find((item) => item.key === key);
+  if (!drilldown) return "";
+  const items = (drilldown.items || []).slice(0, limit);
+  return `
+    <article class="panel report-drilldown">
+      <div class="panel-head">
+        <h2>${escapeHTML(drilldown.title || formatCategory(key))}</h2>
+        <span class="pill">${formatNumber(drilldown.items?.length || 0)} rows</span>
+      </div>
+      <div class="signal-list">
+        ${items.map((item, index) => reportDrilldownRow(key, item, index)).join("") || `<div class="empty">No rows for this report.</div>`}
+      </div>
+    </article>
+  `;
+}
+
+function reportDrilldownRow(key, item, index) {
+  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  const value = reportDrilldownValue(item);
+  const meta = reportDrilldownMeta(item, errors);
+  const detailButtons = `
+    ${item.ip ? `<button class="ghost mini inline-action" type="button" data-report-ip="${escapeHTML(item.ip)}">Open IP</button>` : ""}
+    <button class="ghost mini inline-action" type="button" data-report-detail-key="${escapeHTML(key)}" data-report-detail-index="${index}">Details</button>
+  `;
+  return `
+    <div class="signal-row report-drilldown-row">
+      <div>
+        <strong>${escapeHTML(item.label || item.ip || item.path || "-")}</strong>
+        <span>${escapeHTML(meta)}</span>
+        ${detailButtons}
+      </div>
+      <div class="signal-numbers">
+        ${errors ? `<span>${formatNumber(errors)} errors</span>` : ""}
+        <b>${escapeHTML(value)}</b>
+      </div>
+    </div>
+  `;
+}
+
+function reportDrilldownValue(item) {
+  if (item.status) return String(item.status);
+  if (item.p95_request_time_ms) return formatMs(item.p95_request_time_ms);
+  if (item.score) return String(item.score);
+  if (item.risk_score) return `risk ${item.risk_score}`;
+  return formatNumber(item.requests || item.events || 0);
+}
+
+function reportDrilldownMeta(item, errors) {
+  const parts = [];
+  if (item.site_id) parts.push(item.env ? `${item.site_id}/${item.env}` : item.site_id);
+  if (item.category) parts.push(formatCategory(item.category));
+  if (item.match_reason) parts.push(formatCategory(item.match_reason));
+  if (item.meta) parts.push(item.meta);
+  if (item.known_actor) parts.push(item.known_actor);
+  if (item.requests) parts.push(`${formatNumber(item.requests)} requests`);
+  if (item.total_ip_hits) parts.push(`${formatNumber(item.total_ip_hits)} IP hits`);
+  if (errors) parts.push(`${formatNumber(errors)} errors`);
+  const when = item.last_seen || item.timestamp;
+  if (when) parts.push(formatTime(when));
+  return parts.filter(Boolean).join(" - ");
+}
+
+function renderSystem() {
+  const credentials = state.data.credentials || {};
+  const summary = credentials.summary || {};
+  const collector = state.data.collectorHealth || {};
+  const rawStats = collector.raw_files?.stats || {};
+  const retention = state.data.retention || {};
+  const overview = state.data.overview || {};
+
+  setText("#credentialState", summary.ssh_key_configured ? "ready" : "missing SSH");
+  qs("#credentialFacts").innerHTML = facts([
+    ["Database", overview.database_configured ? "On" : "Off"],
+    ["Collection", `${overview.collection_enabled ? "On" : "Off"} / ${overview.collection_interval || "-"}`],
+    ["Downloaded raw files", formatNumber(rawStats.downloaded || 0)],
+    ["Pending raw files", formatNumber(rawStats.discovered || 0)],
+    ["SSH key", summary.ssh_key_configured ? "Configured" : "Missing"],
+    ["Machine token", summary.machine_token_configured ? "Configured" : "Optional"],
+  ]);
+
+  qs("#retentionFacts").innerHTML = facts([
+    ["Enabled", retention.enabled ? "Yes" : "No"],
+    ["Max age", retention.max_age || overview.retention_max_age || "-"],
+    ["Cutoff", formatTime(retention.cutoff)],
+    ["Raw files matched", formatNumber(retention.raw_files_matched || 0)],
+    ["Segments matched", formatNumber(retention.combined_segments_matched || 0)],
+    ["Events matched", formatNumber(retention.access_events_matched || 0)],
+  ]);
+
+  renderJobs();
+  renderSegments();
+}
+
+function renderNotifications() {
+  const notifications = state.data.notifications || {};
+  const webPush = state.data.webPush || {};
+  const channels = notifications.channels || [];
+  const recent = notifications.recent || [];
+  const browserPushAvailable = Boolean(webPush.enabled && webPush.configured && webPush.public_key);
+  setText("#browserPushState", browserPushAvailable ? `${formatNumber(webPush.active_subscriptions || 0)} browser subscriptions` : "Browser push unavailable");
+  qs("#enableBrowserPushButton").disabled = !browserPushAvailable || !browserPushSupported();
+  qs("#disableBrowserPushButton").disabled = !browserPushSupported();
+  qs("#notificationFacts").innerHTML = facts([
+    ["Enabled", notifications.enabled ? "Yes" : "No"],
+    ["Minimum severity", notifications.min_severity || "-"],
+    ["Browser push", webPush.configured ? `${formatNumber(webPush.active_subscriptions || 0)} active subscriptions` : "Not configured"],
+    ...channels.map((channel) => [
+      channel.name,
+      `${channel.enabled ? "enabled" : "disabled"} / ${channel.configured ? "configured" : "not configured"}${channel.targets?.length ? ` / ${channel.targets.join(", ")}` : ""}`,
+    ]),
+  ]);
+  qs("#notificationsTable").innerHTML = recent.map((item) => `
+    <tr>
+      <td>${escapeHTML(item.channel || "-")}</td>
+      <td>${escapeHTML(item.target || "-")}</td>
+      <td><span class="status-${escapeHTML(item.status || "pending")}">${escapeHTML(item.status || "pending")}</span></td>
+      <td><strong>${escapeHTML(item.title || "-")}</strong><br><span>${escapeHTML(item.error || item.severity || "")}</span></td>
+      <td>${formatTime(item.created_at)}</td>
+    </tr>
+  `).join("") || emptyRow(5, "No notification deliveries yet.");
+}
+
+function renderJobs() {
+  const jobs = state.data.jobs || [];
+  renderPager("#jobsPager", "jobs", jobs);
+  const rows = paginate("jobs", jobs).map((job) => `
+    <tr>
+      <td><strong>${escapeHTML(job.type || "-")}</strong></td>
+      <td><span class="status-${escapeHTML(job.status || "pending")}">${escapeHTML(job.status || "pending")}</span></td>
+      <td>${escapeHTML(job.message || job.last_error || "")}</td>
+      <td>${formatTime(job.started_at || job.created_at)}</td>
+    </tr>
+  `);
+  qs("#jobsTable").innerHTML = rows.join("") || emptyRow(4, "No jobs have run yet.");
+}
+
+function renderSegments() {
+  const segments = state.data.segments || [];
+  renderPager("#segmentsPager", "segments", segments);
+  const rows = paginate("segments", segments).map((segment) => `
+    <tr>
+      <td><strong>${formatTime(segment.bucket_start)}</strong><br><span>${formatTime(segment.bucket_end)}</span></td>
+      <td><span class="status-${escapeHTML(segment.status || "pending")}">${escapeHTML(segment.status || "pending")}</span></td>
+      <td>${formatNumber(segment.line_count || segment.lines_combined || 0)}</td>
+      <td>${formatTime(segment.indexed_at)}</td>
+    </tr>
+  `);
+  qs("#segmentsTable").innerHTML = rows.join("") || emptyRow(4, "No combined segments found.");
+}
+
+function renderUsers() {
+  const users = state.data.users || [];
+  renderPager("#usersPager", "users", users);
+  const rows = paginate("users", users).map((user) => {
+    const disabled = state.currentUser?.id === user.id || !user.is_active ? "disabled" : "";
+    return `
+      <tr>
+        <td><strong>${escapeHTML(user.display_name || user.email)}</strong><br><span>${escapeHTML(user.email)}</span></td>
+        <td>${escapeHTML(user.role || "user")}</td>
+        <td>${user.is_active ? "active" : "inactive"}</td>
+        <td>${formatTime(user.last_login_at)}</td>
+        <td class="row-actions"><button class="ghost small" type="button" data-user-delete="${escapeHTML(user.id)}" ${disabled}>Deactivate</button></td>
+      </tr>
+    `;
+  });
+  qs("#usersTable").innerHTML = rows.join("") || emptyRow(5, "No users found.");
+}
+
+function renderCharts() {
+  drawTimeline(qs("#timelineChart"), state.data.traffic?.timeline || []);
+  drawStatus(qs("#statusChart"), state.data.analysis?.status_breakdown || []);
+  drawSites(qs("#siteChart"), state.data.analysis?.sites || []);
+  drawSourceIPs(qs("#sourceChart"), state.data.analysis?.source_ips || []);
+  drawAgentClasses(qs("#agentChart"), state.data.analysis?.user_agents || []);
+  drawReportCharts();
+}
+
+function drawTimeline(canvas, timeline) {
+  const chart = setupCanvas(canvas);
+  if (!chart) return;
+  const { ctx, width, height } = chart;
+  const rows = [...timeline].sort((a, b) => new Date(a.bucket_ts) - new Date(b.bucket_ts)).slice(-90);
+  drawFrame(ctx, width, height);
+  if (!rows.length) {
+    drawEmptyChart(ctx, width, height);
+    return;
+  }
+  const maxValue = Math.max(1, ...rows.map((item) => item.value || item.requests || 0));
+  const maxErrors = Math.max(1, ...rows.map((item) => (item.status_4xx || 0) + (item.status_5xx || 0)));
+  drawLine(ctx, rows.map((item) => item.requests || 0), maxValue, width, height, "#2364aa", 2);
+  drawLine(ctx, rows.map((item) => (item.status_4xx || 0) + (item.status_5xx || 0)), maxErrors, width, height, "#b93232", 2);
+  drawLegend(ctx, [["requests", "#2364aa"], ["errors", "#b93232"]], width);
+}
+
+function drawStatus(canvas, rows) {
+  const chart = setupCanvas(canvas);
+  if (!chart) return;
+  const { ctx, width, height } = chart;
+  const groups = [
+    { label: "2xx", value: sumStatus(rows, 200, 299), color: "#178a5f" },
+    { label: "3xx", value: sumStatus(rows, 300, 399), color: "#2364aa" },
+    { label: "4xx", value: sumStatus(rows, 400, 499), color: "#a96216" },
+    { label: "5xx", value: sumStatus(rows, 500, 599), color: "#b93232" },
+  ];
+  const total = groups.reduce((sum, item) => sum + item.value, 0);
+  drawFrame(ctx, width, height);
+  if (!total) {
+    drawEmptyChart(ctx, width, height);
+    return;
+  }
+  const barWidth = Math.max(24, (width - 72) / groups.length);
+  groups.forEach((item, index) => {
+    const barHeight = Math.max(2, (height - 58) * (item.value / total));
+    const x = 34 + index * barWidth;
+    const y = height - 34 - barHeight;
+    ctx.fillStyle = item.color;
+    ctx.fillRect(x, y, barWidth - 12, barHeight);
+    ctx.fillStyle = "#64707d";
+    ctx.font = "12px sans-serif";
+    ctx.fillText(item.label, x, height - 14);
+  });
+}
+
+function drawSites(canvas, sites) {
+  const rows = sites.slice(0, 8).map((item) => ({
+    label: item.site_id || "site",
+    value: item.requests || 0,
+    color: item.status_5xx_rate >= 0.02 ? "#b93232" : "#178a5f",
+  }));
+  drawBars(canvas, rows);
+}
+
+function drawSourceIPs(canvas, items) {
+  const rows = items.slice(0, 8).map((item) => ({
+    label: item.ip || "unknown",
+    value: item.requests || 0,
+    color: item.verified_source ? "#178a5f" : item.status_5xx > 0 ? "#b93232" : "#2364aa",
+  }));
+  drawBars(canvas, rows);
+}
+
+function drawAgentClasses(canvas, agents) {
+  drawBars(canvas, aggregateAgentClasses(agents), {
+    colors: {
+      browser: "#178a5f",
+      crawler: "#2364aa",
+      tool: "#a96216",
+      monitor: "#0f766e",
+      missing: "#b93232",
+      unknown: "#64707d",
+    },
+  });
+}
+
+function drawReportCharts() {
+  const report = currentReport();
+  (report?.charts || []).forEach((chart) => {
+    const canvas = document.getElementById(reportChartID(chart.key));
+    if (!canvas) return;
+    if (chart.kind === "line") {
+      drawReportLine(canvas, chart);
+      return;
+    }
+    drawBars(canvas, (chart.data || []).map((item) => ({
+      label: item.label || "",
+      value: item.value || 0,
+      color: item.color || "#2364aa",
+    })));
+  });
+}
+
+function drawReportLine(canvas, chart) {
+  const frame = setupCanvas(canvas);
+  if (!frame) return;
+  const { ctx, width, height } = frame;
+  const rows = [...(chart.data || [])].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
+  drawFrame(ctx, width, height);
+  if (!rows.length) {
+    drawEmptyChart(ctx, width, height);
+    return;
+  }
+  const primary = rows.map((item) => Number(item.value || 0));
+  const secondary = rows.map((item) => Number(item.secondary || 0));
+  drawLine(ctx, primary, Math.max(1, ...primary), width, height, "#2364aa", 2);
+  drawLine(ctx, secondary, Math.max(1, ...secondary), width, height, "#b93232", 2);
+  drawLegend(ctx, [["requests", "#2364aa"], ["errors", "#b93232"]], width);
+}
+
+function currentReport() {
+  return selectedReportFromList(reportsForCurrentTab(state.data.reports || []));
+}
+
+function reportChartID(key) {
+  return `reportChart_${String(key || "chart").replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+}
+
+function drawBars(canvas, rows, options = {}) {
+  const chart = setupCanvas(canvas);
+  if (!chart) return;
+  const { ctx, width, height } = chart;
+  drawFrame(ctx, width, height);
+  if (!rows.length) {
+    drawEmptyChart(ctx, width, height);
+    return;
+  }
+  const maxValue = Math.max(1, ...rows.map((item) => item.value || item.requests || 0));
+  const labelWidth = Math.min(118, Math.max(76, width * 0.34));
+  const valueWidth = 52;
+  const barLeft = labelWidth + 10;
+  const barMax = Math.max(20, width - barLeft - valueWidth - 18);
+  const rowHeight = Math.min(26, (height - 46) / rows.length);
+  rows.forEach((item, index) => {
+    const value = item.value || item.requests || 0;
+    const label = shortLabel(item.label || item.site_id || "", Math.max(8, Math.floor(labelWidth / 7)));
+    const y = 24 + index * rowHeight;
+    const barWidth = barMax * (value / maxValue);
+    const color = item.color || options.colors?.[item.key || item.label] || "#2364aa";
+    ctx.fillStyle = "#e8edf3";
+    ctx.fillRect(barLeft, y, barMax, 12);
+    ctx.fillStyle = color;
+    ctx.fillRect(barLeft, y, barWidth, 12);
+    ctx.fillStyle = "#1d252d";
+    ctx.font = "12px sans-serif";
+    ctx.fillText(label, 12, y + 10);
+    ctx.fillStyle = "#64707d";
+    ctx.fillText(compactNumber(value), barLeft + barMax + 8, y + 10);
+  });
+}
+
+function setupCanvas(canvas) {
+  if (!canvas) return null;
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(rect.width * dpr);
+  canvas.height = Math.floor(rect.height * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  return { ctx, width: rect.width, height: rect.height };
+}
+
+function drawFrame(ctx, width, height) {
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = "#d9dee5";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(28, 18);
+  ctx.lineTo(28, height - 28);
+  ctx.lineTo(width - 16, height - 28);
+  ctx.stroke();
+}
+
+function drawLine(ctx, values, maxValue, width, height, color, lineWidth) {
+  const left = 28;
+  const right = width - 16;
+  const top = 18;
+  const bottom = height - 28;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  ctx.beginPath();
+  values.forEach((value, index) => {
+    const x = left + ((right - left) * index) / Math.max(1, values.length - 1);
+    const y = bottom - ((bottom - top) * value) / maxValue;
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+function drawLegend(ctx, items, width) {
+  let x = width - 170;
+  items.forEach(([label, color]) => {
+    ctx.fillStyle = color;
+    ctx.fillRect(x, 14, 10, 10);
+    ctx.fillStyle = "#64707d";
+    ctx.font = "12px sans-serif";
+    ctx.fillText(label, x + 14, 23);
+    x += 78;
+  });
+}
+
+function drawEmptyChart(ctx, width, height) {
+  ctx.fillStyle = "#64707d";
+  ctx.font = "13px sans-serif";
+  ctx.fillText("No data", width / 2 - 24, height / 2);
+}
+
+function sumStatus(rows, low, high) {
+  return rows.reduce((sum, item) => {
+    const status = Number(item.status || 0);
+    if (status >= low && status <= high) return sum + Number(item.requests || 0);
+    return sum;
+  }, 0);
+}
+
+function aggregateAgentClasses(agents) {
+  const groups = new Map();
+  (agents || []).forEach((item) => {
+    const key = item.actor_type || "unknown";
+    const existing = groups.get(key) || { key, label: key, value: 0 };
+    existing.value += Number(item.requests || 0);
+    groups.set(key, existing);
+  });
+  return Array.from(groups.values()).sort((a, b) => b.value - a.value).slice(0, 8);
+}
+
+function shortLabel(value, maxLength) {
+  const text = String(value || "");
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(1, maxLength - 3))}...`;
+}
+
+function compactNumber(value) {
+  return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(Number(value || 0));
+}
+
+async function login(event) {
+  event.preventDefault();
+  setText("#loginError", "");
+  const button = event.currentTarget.querySelector("button");
+  button.disabled = true;
+  try {
+    const result = await fetchJSON("/api/v1/auth/login", {
+      method: "POST",
+      body: JSON.stringify({
+        email: qs("#emailInput").value,
+        password: qs("#passwordInput").value,
+      }),
+    });
+    state.currentUser = result.user || null;
+    showApp();
+    await refreshAll();
+  } catch (error) {
+    setText("#loginError", error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function logout() {
+  await fetchJSON("/api/v1/auth/logout", { method: "POST" });
+  state.currentUser = null;
+  showLogin();
+}
+
+async function createUser(event) {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector("button");
+  await runAction(button, "User created", async () => {
+    await fetchJSON("/api/v1/users", {
+      method: "POST",
+      body: JSON.stringify({
+        email: qs("#newUserEmail").value,
+        display_name: qs("#newUserDisplay").value,
+        password: qs("#newUserPassword").value,
+      }),
+    });
+    qs("#userForm").reset();
+  });
+}
+
+async function enableBrowserPush() {
+  if (!browserPushSupported()) {
+    throw new Error("Browser push is not supported by this browser");
+  }
+  const webPush = state.data.webPush?.public_key ? state.data.webPush : await fetchJSON("/api/v1/notifications/web-push/public-key");
+  if (!webPush.enabled || !webPush.configured || !webPush.public_key) {
+    throw new Error("Browser push is not configured");
+  }
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") {
+    throw new Error("Notification permission was not granted");
+  }
+  const registration = await navigator.serviceWorker.register("/sw.js");
+  const existing = await registration.pushManager.getSubscription();
+  if (existing) {
+    await fetchJSON("/api/v1/notifications/web-push/subscribe", {
+      method: "POST",
+      body: JSON.stringify(existing),
+    });
+    return;
+  }
+  const subscription = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(webPush.public_key),
+  });
+  await fetchJSON("/api/v1/notifications/web-push/subscribe", {
+    method: "POST",
+    body: JSON.stringify(subscription),
+  });
+}
+
+async function disableBrowserPush() {
+  if (!("serviceWorker" in navigator)) return;
+  const registration = await navigator.serviceWorker.getRegistration("/sw.js");
+  const subscription = await registration?.pushManager.getSubscription();
+  if (subscription) {
+    await fetchJSON("/api/v1/notifications/web-push/subscribe", {
+      method: "DELETE",
+      body: JSON.stringify({ endpoint: subscription.endpoint }),
+    });
+    await subscription.unsubscribe();
+  }
+}
+
+function browserPushSupported() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+
+function urlBase64ToUint8Array(value) {
+  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+  const base64 = (value + padding).replaceAll("-", "+").replaceAll("_", "/");
+  const raw = atob(base64);
+  const output = new Uint8Array(raw.length);
+  for (let index = 0; index < raw.length; index += 1) {
+    output[index] = raw.charCodeAt(index);
+  }
+  return output;
+}
+
+async function runAction(button, successMessage, fn, refreshAfter = true) {
+  button.disabled = true;
+  try {
+    await fn();
+    toast(successMessage);
+    if (refreshAfter) await refreshAll();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function showLogin() {
+  qs("#loginView").classList.remove("hidden");
+  qs(".shell").classList.add("hidden");
+}
+
+function showApp() {
+  qs("#loginView").classList.add("hidden");
+  qs(".shell").classList.remove("hidden");
+}
+
+function showRoute(route, push) {
+  if (!routes[route]) route = "dashboard";
+  state.route = route;
+  qsa("[data-view]").forEach((view) => view.classList.toggle("hidden", view.dataset.view !== route));
+  qsa("[data-route]").forEach((link) => link.classList.toggle("active", link.dataset.route === route));
+  setText("#pageTitle", routes[route].title);
+  if (push) history.pushState({}, "", routes[route].path);
+  requestAnimationFrame(() => renderCharts());
+}
+
+function routeFromPath(path) {
+  const cleaned = path.replace(/^\/+/, "").split("/")[0];
+  return cleaned && routes[cleaned] ? cleaned : "dashboard";
+}
+
+function renderUserBadge() {
+  const badge = qs("#userBadge");
+  const logoutButton = qs("#logoutButton");
+  if (!state.currentUser) {
+    badge.classList.add("hidden");
+    logoutButton.classList.add("hidden");
+    return;
+  }
+  badge.textContent = state.currentUser.display_name || state.currentUser.email;
+  badge.classList.remove("hidden");
+  logoutButton.classList.remove("hidden");
+}
+
+function renderPager(selector, key, items) {
+  const container = qs(selector);
+  if (!container) return;
+  const size = pageSize[key] || 10;
+  const page = clampNumber(state.pages[key] || 0, 0, Math.max(0, Math.ceil(items.length / size) - 1));
+  state.pages[key] = page;
+  const maxPage = Math.max(0, Math.ceil(items.length / size) - 1);
+  container.innerHTML = `
+    <button class="ghost mini" type="button" data-page-key="${key}" data-page-delta="-1" ${page <= 0 ? "disabled" : ""}>Prev</button>
+    <span>${items.length ? page + 1 : 0}/${items.length ? maxPage + 1 : 0}</span>
+    <button class="ghost mini" type="button" data-page-key="${key}" data-page-delta="1" ${page >= maxPage ? "disabled" : ""}>Next</button>
+  `;
+}
+
+function paginate(key, items) {
+  const size = pageSize[key] || 10;
+  const page = state.pages[key] || 0;
+  return items.slice(page * size, page * size + size);
+}
+
+function paginateWithIndex(key, items) {
+  const size = pageSize[key] || 10;
+  const page = state.pages[key] || 0;
+  const start = page * size;
+  return items.slice(start, start + size).map((item, offset) => ({ item, index: start + offset }));
+}
+
+async function showDetail(kind, index) {
+  const detail = detailFor(kind, index);
+  if (!detail) return;
+  renderDetail(detail);
+  qs("#detailDrawer").classList.remove("hidden");
+  if (kind === "sourceIP") {
+    await enrichSourceIPDetail(index);
+  }
+}
+
+async function showReportSourceIPDetail(ip) {
+  if (!ip) return;
+  const report = currentReport();
+  const item = reportDrilldownItem("source_ips", (candidate) => candidate.ip === ip)
+    || reportDrilldownItem("admin_probes", (candidate) => candidate.ip === ip)
+    || reportDrilldownItem("injection_probes", (candidate) => candidate.ip === ip)
+    || reportDrilldownItem("tor_sources", (candidate) => candidate.ip === ip)
+    || { ip, label: ip };
+  renderDetail({
+    eyebrow: "Report source IP",
+    title: ip,
+    facts: [
+      ["Report", report ? `${reportPeriodLabel(reportTabForReport(report))} / ${report.range || "-"}` : "-"],
+      ["Requests", formatNumber(item.requests || 0)],
+      ["Errors", formatNumber((item.status_4xx || 0) + (item.status_5xx || 0))],
+    ],
+    sections: [{ title: "Lookup", text: "Loading DNS, ASN, Whois, URLs, and recent requests..." }],
+  });
+  qs("#detailDrawer").classList.remove("hidden");
+  try {
+    const detail = await fetchJSON(`/api/v1/investigate/ip/${encodeURIComponent(ip)}?${reportDetailQuery(report)}`);
+    renderDetail(sourceIPDetailFor(item, detail));
+  } catch (error) {
+    renderDetail({
+      eyebrow: "Report source IP",
+      title: ip,
+      facts: [["Lookup failed", error.message]],
+    });
+  }
+}
+
+function showReportDrilldownDetail(key, index) {
+  const report = currentReport();
+  const drilldown = (report?.drilldowns || []).find((item) => item.key === key);
+  const item = drilldown?.items?.[index];
+  if (!item) return;
+  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  renderDetail({
+    eyebrow: drilldown.title || "Report drilldown",
+    title: item.label || item.ip || item.path || "Detail",
+    facts: [
+      ["Kind", formatCategory(item.kind || key)],
+      ["Site", item.site_id ? `${item.site_id}${item.env ? ` / ${item.env}` : ""}` : "-"],
+      ["Source IP", item.ip || "-"],
+      ["Category", formatCategory(item.category || "-")],
+      ["Reason", formatCategory(item.match_reason || "-")],
+      ["Requests", formatNumber(item.requests || 0)],
+      ["IP hits", formatNumber(item.total_ip_hits || 0)],
+      ["Errors", formatNumber(errors)],
+      ["Risk", item.risk_score || item.score || "-"],
+      ["Last seen", formatTime(item.last_seen || item.timestamp)],
+    ],
+    sections: [
+      item.path || item.query ? {
+        title: "Request",
+        facts: [
+          ["Method", item.method || "-"],
+          ["Path", item.path || "-"],
+          ["Query", item.query || "-"],
+          ["Status", item.status || "-"],
+        ],
+      } : null,
+      item.meta ? { title: "Context", text: item.meta } : null,
+    ].filter(Boolean),
+    details: item.details ? JSON.stringify(item.details, null, 2) : "",
+  });
+  qs("#detailDrawer").classList.remove("hidden");
+}
+
+function renderDetail(detail) {
+  setText("#detailEyebrow", detail.eyebrow);
+  setText("#detailTitle", detail.title);
+  qs("#detailBody").innerHTML = `
+    <dl class="facts">${facts(detail.facts)}</dl>
+    ${detailSections(detail.sections || [])}
+    ${detail.details ? `<pre>${escapeHTML(detail.details)}</pre>` : ""}
+  `;
+}
+
+function hideDetail() {
+  qs("#detailDrawer").classList.add("hidden");
+}
+
+function reportDrilldownItem(key, predicate) {
+  const report = currentReport();
+  const drilldown = (report?.drilldowns || []).find((item) => item.key === key);
+  return (drilldown?.items || []).find(predicate);
+}
+
+function reportDetailQuery(report) {
+  const params = new URLSearchParams();
+  params.set("limit", "30");
+  if (report?.range_start && report?.range_end) {
+    params.set("range", "custom");
+    params.set("from", new Date(report.range_start).toISOString());
+    params.set("to", new Date(report.range_end).toISOString());
+  } else {
+    params.set("range", report?.range || "24h");
+  }
+  if (report?.site_id) params.set("site_id", report.site_id);
+  return params.toString();
+}
+
+function detailFor(kind, index) {
+  if (kind === "issue") {
+    const item = state.data.analysis?.issues?.[index];
+    if (!item) return null;
+    return {
+      eyebrow: "Detected issue",
+      title: item.title || item.rule_key || "Issue",
+      facts: [
+        ["Severity", item.severity || "-"],
+        ["Actor", item.actor_value || item.actor_type || "-"],
+        ["Site", item.site_id || "-"],
+        ["Requests", formatNumber(item.requests || 0)],
+        ["Last seen", formatTime(item.last_seen)],
+        ["Summary", item.summary || "-"],
+      ],
+      details: item.evidence ? JSON.stringify(item.evidence, null, 2) : item.details ? JSON.stringify(item.details, null, 2) : "",
+    };
+  }
+  if (kind === "sourceIP") {
+    const item = state.data.analysis?.source_ips?.[index];
+    if (!item) return null;
+    return {
+      eyebrow: "Source IP",
+      title: item.ip || "Source IP",
+      facts: [
+        ["Requests", formatNumber(item.requests || 0)],
+        ["Errors", formatNumber((item.status_4xx || 0) + (item.status_5xx || 0))],
+        ["4xx", formatNumber(item.status_4xx || 0)],
+        ["5xx", formatNumber(item.status_5xx || 0)],
+        ["Reverse DNS", item.reverse_dns || "-"],
+        ["Known actor", item.known_actor || "-"],
+        ["Actor type", item.actor_type || "-"],
+        ["Verified source", item.verified_source ? "Yes" : "No"],
+        ["Risk", item.risk_score === undefined ? "-" : item.risk_score],
+        ["Last seen", formatTime(item.last_seen)],
+      ],
+      sections: [{ title: "Lookup", text: "Loading DNS, ASN, RDAP, and traffic detail..." }],
+    };
+  }
+  if (kind === "userAgent") {
+    const item = state.data.analysis?.user_agents?.[index];
+    if (!item) return null;
+    return {
+      eyebrow: "User agent",
+      title: item.family || "Unknown user agent",
+      facts: [
+        ["Requests", formatNumber(item.requests || 0)],
+        ["Unique IPs", formatNumber(item.unique_ips || 0)],
+        ["Errors", formatNumber((item.status_4xx || 0) + (item.status_5xx || 0))],
+        ["Actor type", item.actor_type || "-"],
+        ["Risk", item.risk_score === undefined ? "-" : item.risk_score],
+        ["Last seen", formatTime(item.last_seen)],
+        ["Sample", item.sample || "(empty)"],
+      ],
+    };
+  }
+  if (kind === "adminProbe" || kind === "injectionProbe") {
+    const collection = kind === "adminProbe" ? state.data.analysis?.admin_probes : state.data.analysis?.injection_probes;
+    const item = collection?.[index];
+    if (!item) return null;
+    return {
+      eyebrow: kind === "adminProbe" ? "Admin probe" : "Injection probe",
+      title: `${item.method || "GET"} ${item.path || "/"}`,
+      facts: [
+        ["Category", formatCategory(item.category || "-")],
+        ["Source IP", item.ip || "-"],
+        ["Site", item.site_id || "-"],
+        ["Environment", item.env || "-"],
+        ["Reason", formatCategory(item.match_reason || "-")],
+        ["Requests", formatNumber(item.requests || 0)],
+        ["IP hits", formatNumber(item.total_ip_hits || item.requests || 0)],
+        ["4xx", formatNumber(item.status_4xx || 0)],
+        ["5xx", formatNumber(item.status_5xx || 0)],
+        ["Risk", item.risk_score || 0],
+        ["First seen", formatTime(item.first_seen)],
+        ["Last seen", formatTime(item.last_seen)],
+        ["Query", item.sample_query || "-"],
+      ],
+      details: item.evidence ? JSON.stringify(item.evidence, null, 2) : "",
+    };
+  }
+  if (kind === "torSource") {
+    const item = state.data.analysis?.tor_sources?.[index];
+    if (!item) return null;
+    return {
+      eyebrow: "Tor source",
+      title: item.ip || "Tor source",
+      facts: [
+        ["Requests", formatNumber(item.requests || 0)],
+        ["Admin requests", formatNumber(item.admin_requests || 0)],
+        ["Errors", formatNumber((item.status_4xx || 0) + (item.status_5xx || 0))],
+        ["Site", item.site_id || "-"],
+        ["Environment", item.env || "-"],
+        ["Reverse DNS", item.reverse_dns || "-"],
+        ["Known actor", item.known_actor || "Tor exit"],
+        ["Actor type", item.actor_type || "tor"],
+        ["Verified source", item.verified_source ? "Yes" : "No"],
+        ["Risk", item.risk_score || 0],
+        ["Last seen", formatTime(item.last_seen)],
+      ],
+    };
+  }
+  if (kind === "alert") {
+    const item = state.data.alerts?.[index];
+    if (!item) return null;
+    return {
+      eyebrow: "Open alert",
+      title: item.title || item.rule_key || "Alert",
+      facts: [
+        ["Severity", item.severity || "-"],
+        ["Actor", item.actor_value || "-"],
+        ["Site", item.site_id || "-"],
+        ["Score", item.score || 0],
+        ["Status", item.status || "open"],
+        ["Last seen", formatTime(item.last_seen_at)],
+        ["Summary", item.summary || "-"],
+      ],
+      details: item.details ? JSON.stringify(item.details, null, 2) : "",
+    };
+  }
+  return null;
+}
+
+async function enrichSourceIPDetail(index) {
+  const item = state.data.analysis?.source_ips?.[index];
+  if (!item?.ip) return;
+  try {
+    const detail = await fetchJSON(`/api/v1/investigate/ip/${encodeURIComponent(item.ip)}?${buildFilterQuery({ limit: 20 })}`);
+    renderDetail(sourceIPDetailFor(item, detail));
+  } catch (error) {
+    const fallback = detailFor("sourceIP", index);
+    fallback.sections = [{ title: "Lookup", text: `IP detail lookup failed: ${error.message}` }];
+    renderDetail(fallback);
+  }
+}
+
+function sourceIPDetailFor(item, detail) {
+  const traffic = detail.traffic || {};
+  const stored = detail.stored_intel || {};
+  const dns = detail.dns || {};
+  const asn = detail.asn || {};
+  const rdap = detail.rdap || {};
+  const errorCount = Number(traffic.status_4xx || 0) + Number(traffic.status_5xx || 0);
+  const asnValue = asn.asn || stored.asn;
+  const asnName = asn.name || stored.asn_org;
+  const network = asn.prefix || stored.network || (rdap.cidrs || []).join(", ");
+  const country = asn.country_code || stored.country_code || rdap.country_code;
+  const lookupErrors = detail.lookup_errors || [];
+  return {
+    eyebrow: "Source IP",
+    title: detail.ip || item.ip || "Source IP",
+    facts: [
+      ["Requests", formatNumber(traffic.requests || item.requests || 0)],
+      ["Errors", formatNumber(errorCount || (item.status_4xx || 0) + (item.status_5xx || 0))],
+      ["Error rate", formatPercent(ratio(errorCount, traffic.requests || item.requests || 0))],
+      ["Bytes sent", formatBytes(traffic.bytes_sent || item.bytes_sent || 0)],
+      ["First seen", formatTime(traffic.first_seen || item.first_seen)],
+      ["Last seen", formatTime(traffic.last_seen || item.last_seen)],
+      ["Risk", stored.risk_score || item.risk_score || "-"],
+    ],
+    sections: [
+      {
+        title: "Identity",
+        facts: [
+          ["Reverse DNS", joinLimited(dns.reverse_names) || stored.reverse_dns || item.reverse_dns || "-"],
+          ["Forward addresses", joinLimited(dns.forward_addresses) || "-"],
+          ["Forward-confirmed", dns.forward_confirmed || stored.forward_confirmed || item.forward_confirmed ? "Yes" : "No"],
+          ["Known actor", stored.known_actor || item.known_actor || "-"],
+          ["Actor type", stored.actor_type || item.actor_type || "-"],
+          ["Datacenter", stored.is_datacenter ? "Yes" : "No"],
+          ["Tor exit", stored.is_tor_exit ? "Yes" : "No"],
+        ],
+      },
+      {
+        title: "ASN and Whois",
+        facts: [
+          ["ASN", asnValue ? `AS${asnValue}` : "-"],
+          ["AS name", asnName || "-"],
+          ["Network", network || "-"],
+          ["Country", country || "-"],
+          ["Registry", asn.registry || "-"],
+          ["Allocated", asn.allocated || "-"],
+          ["RDAP name", rdap.name || "-"],
+          ["RDAP handle", rdap.handle || "-"],
+          ["RDAP type", rdap.type || "-"],
+          ["Address range", [rdap.start_address, rdap.end_address].filter(Boolean).join(" - ") || "-"],
+          ["Registered", formatMaybeDate(rdap.registration)],
+          ["Last changed", formatMaybeDate(rdap.last_changed)],
+        ],
+      },
+      {
+        title: "Sites",
+        items: (detail.sites || []).map((site) => ({
+          title: `${site.site_id || "-"} / ${site.env || "-"}`,
+          meta: `${formatNumber((site.status_4xx || 0) + (site.status_5xx || 0))} errors - ${formatTime(site.last_seen)}`,
+          value: formatNumber(site.requests || 0),
+        })),
+        empty: "No site traffic in this window.",
+      },
+      {
+        title: "URLs hit",
+        items: (detail.url_hits || []).map((hit) => ({
+          title: formatURLTarget(hit),
+          meta: `${hit.site_id || "-"} / ${hit.env || "-"} - ${formatStatusBuckets(hit)} - p95 ${formatMs(hit.p95_request_time_ms || 0)} - ${formatBytes(hit.bytes_sent || 0)} - last ${formatTime(hit.last_seen)}`,
+          value: formatNumber(hit.requests || 0),
+        })),
+        empty: "No URL hits in this window.",
+      },
+      {
+        title: "Recent requests",
+        items: (detail.recent_requests || []).map((request) => ({
+          title: formatURLTarget(request),
+          meta: `${request.site_id || "-"} / ${request.env || "-"} - ${formatTime(request.ts)} - ${request.user_agent || "(empty user agent)"}`,
+          value: `${request.status || "-"}`,
+        })),
+        empty: "No recent requests in this window.",
+      },
+      {
+        title: "Top paths",
+        items: (detail.top_paths || []).map((path) => ({
+          title: path.path || "/",
+          meta: `${formatNumber((path.status_4xx || 0) + (path.status_5xx || 0))} errors - ${formatBytes(path.bytes_sent || 0)}`,
+          value: formatNumber(path.requests || 0),
+        })),
+        empty: "No paths in this window.",
+      },
+      {
+        title: "User agents",
+        items: (detail.top_user_agents || []).map((agent) => ({
+          title: agent.sample || "(empty)",
+          meta: `${formatNumber((agent.status_4xx || 0) + (agent.status_5xx || 0))} errors`,
+          value: formatNumber(agent.requests || 0),
+        })),
+        empty: "No user agents in this window.",
+      },
+      lookupErrors.length ? { title: "Lookup errors", text: lookupErrors.join("\n") } : null,
+      (rdap.entities || []).length ? {
+        title: "RDAP contacts",
+        items: rdap.entities.map((entity) => ({
+          title: entity.name || entity.handle || "-",
+          meta: (entity.roles || []).join(", ") || entity.handle || "",
+          value: "",
+        })),
+      } : null,
+    ].filter(Boolean),
+    details: detail.database_source ? JSON.stringify({ database_source: detail.database_source, rdap_links: rdap.links || [] }, null, 2) : "",
+  };
+}
+
+function detailSections(sections) {
+  return sections.map((section) => `
+    <section class="detail-section">
+      <h3>${escapeHTML(section.title || "Detail")}</h3>
+      ${section.text ? `<p class="detail-note">${escapeHTML(section.text)}</p>` : ""}
+      ${section.facts ? `<dl class="facts compact-facts">${facts(section.facts)}</dl>` : ""}
+      ${section.items ? detailItems(section.items, section.empty) : ""}
+    </section>
+  `).join("");
+}
+
+function detailItems(items, emptyMessage = "No rows.") {
+  if (!items.length) return `<div class="empty">${escapeHTML(emptyMessage)}</div>`;
+  return `
+    <div class="detail-list">
+      ${items.map((item) => `
+        <div class="detail-row">
+          <div>
+            <strong>${escapeHTML(item.title || "-")}</strong>
+            <span>${escapeHTML(item.meta || "")}</span>
+          </div>
+          <b>${escapeHTML(item.value || "")}</b>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function resetPages() {
+  state.pages = {};
+}
+
+function facts(items) {
+  return items.map(([label, value]) => `
+    <div>
+      <dt>${escapeHTML(label)}</dt>
+      <dd>${escapeHTML(value)}</dd>
+    </div>
+  `).join("");
+}
+
+function setBusy(value) {
+  qsa("button").forEach((button) => {
+    if (button.id === "logoutButton") return;
+    button.classList.toggle("busy", value);
+  });
+}
+
+function toast(message, isError = false) {
+  const el = qs("#toast");
+  el.textContent = message;
+  el.classList.toggle("error", isError);
+  el.classList.remove("hidden");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => el.classList.add("hidden"), 3500);
+}
+
+function setText(selector, value) {
+  const el = qs(selector);
+  if (el) el.textContent = value;
+}
+
+function emptyRow(cols, message) {
+  return `<tr><td colspan="${cols}" class="empty">${escapeHTML(message)}</td></tr>`;
+}
+
+function formatTime(value) {
+  if (!value) return "-";
+  return new Date(value).toLocaleString();
+}
+
+function formatMaybeDate(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
+function shortDateTime(value) {
+  if (!value) return "-";
+  return new Date(value).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function localInputToISO(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString();
+}
+
+function dateToLocalInput(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  const pad = (value) => String(value).padStart(2, "0");
+  return [
+    date.getFullYear(),
+    "-",
+    pad(date.getMonth() + 1),
+    "-",
+    pad(date.getDate()),
+    "T",
+    pad(date.getHours()),
+    ":",
+    pad(date.getMinutes()),
+  ].join("");
+}
+
+function formatNumber(value) {
+  return new Intl.NumberFormat().format(Number(value || 0));
+}
+
+function formatPercent(value) {
+  const number = Number(value || 0) * 100;
+  return `${number.toFixed(number > 0 && number < 1 ? 2 : 1)}%`;
+}
+
+function formatBytes(value) {
+  const number = Number(value || 0);
+  if (!number) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(Math.floor(Math.log(number) / Math.log(1024)), units.length - 1);
+  const amount = number / 1024 ** index;
+  return `${amount.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function formatMs(value) {
+  return `${Math.round(Number(value || 0))}ms`;
+}
+
+function formatURLTarget(item) {
+  const method = item.method || "GET";
+  const path = item.path || "/";
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const host = item.host || "";
+  const scheme = item.scheme || (host ? "https" : "");
+  const base = host ? `${scheme}://${host}${normalizedPath}` : normalizedPath;
+  const query = item.query ? `?${item.query}` : "";
+  return `${method} ${base}${query}`;
+}
+
+function formatStatusBuckets(item) {
+  const parts = [
+    [`2xx`, item.status_2xx],
+    [`3xx`, item.status_3xx],
+    [`4xx`, item.status_4xx],
+    [`5xx`, item.status_5xx],
+  ].filter(([, value]) => Number(value || 0) > 0);
+  if (!parts.length) return "no status";
+  return parts.map(([label, value]) => `${formatNumber(value)} ${label}`).join(" / ");
+}
+
+function formatCategory(value) {
+  return String(value || "")
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function ratio(part, total) {
+  const denominator = Number(total || 0);
+  if (!denominator) return 0;
+  return Number(part || 0) / denominator;
+}
+
+function joinLimited(values, limit = 4) {
+  if (!Array.isArray(values) || !values.length) return "";
+  const shown = values.slice(0, limit);
+  const suffix = values.length > limit ? ` +${values.length - limit} more` : "";
+  return `${shown.join(", ")}${suffix}`;
+}
+
+function renderMarkdown(value) {
+  const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+  const html = [];
+  let listType = "";
+  let inCode = false;
+  let codeLines = [];
+
+  const closeList = () => {
+    if (!listType) return;
+    html.push(`</${listType}>`);
+    listType = "";
+  };
+
+  const openList = (type) => {
+    if (listType === type) return;
+    closeList();
+    listType = type;
+    html.push(`<${type}>`);
+  };
+
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (/^```/.test(trimmed)) {
+      if (inCode) {
+        html.push(`<pre><code>${escapeHTML(codeLines.join("\n"))}</code></pre>`);
+        codeLines = [];
+        inCode = false;
+      } else {
+        closeList();
+        inCode = true;
+      }
+      return;
+    }
+
+    if (inCode) {
+      codeLines.push(line);
+      return;
+    }
+
+    if (!trimmed) {
+      closeList();
+      return;
+    }
+
+    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      closeList();
+      const level = Math.min(4, heading[1].length);
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      return;
+    }
+
+    const unordered = line.match(/^\s*[-*]\s+(.+)$/);
+    if (unordered) {
+      openList("ul");
+      html.push(`<li>${renderInlineMarkdown(unordered[1])}</li>`);
+      return;
+    }
+
+    const ordered = line.match(/^\s*\d+\.\s+(.+)$/);
+    if (ordered) {
+      openList("ol");
+      html.push(`<li>${renderInlineMarkdown(ordered[1])}</li>`);
+      return;
+    }
+
+    const quote = line.match(/^\s*>\s?(.+)$/);
+    if (quote) {
+      closeList();
+      html.push(`<blockquote>${renderInlineMarkdown(quote[1])}</blockquote>`);
+      return;
+    }
+
+    closeList();
+    html.push(`<p>${renderInlineMarkdown(trimmed)}</p>`);
+  });
+
+  if (inCode) {
+    html.push(`<pre><code>${escapeHTML(codeLines.join("\n"))}</code></pre>`);
+  }
+  closeList();
+  return html.join("");
+}
+
+function renderInlineMarkdown(value) {
+  let text = escapeHTML(value);
+  const codeSegments = [];
+  text = text.replace(/`([^`]+)`/g, (_, code) => {
+    const token = `@@CODE_${codeSegments.length}@@`;
+    codeSegments.push(`<code>${code}</code>`);
+    return token;
+  });
+  text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  text = text.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+  text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, `<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>`);
+  codeSegments.forEach((segment, index) => {
+    text = text.replace(`@@CODE_${index}@@`, segment);
+  });
+  return text;
+}
+
+function escapeHTML(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function clampNumber(value, low, high) {
+  return Math.max(low, Math.min(high, value));
+}
+
+boot();

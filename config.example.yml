@@ -1,0 +1,92 @@
+server:
+  addr: ":8080"
+
+app:
+  name: "OriginPulse"
+  data_dir: "./data"
+  log_level: "info"
+
+database:
+  url_env: "DATABASE_URL"
+  auto_migrate: true
+  seed_config_sites: true
+  max_conns: 10
+
+auth:
+  session_cookie_name: "originpulse_session"
+  session_ttl: "168h"
+  secure_cookies: false
+
+pantheon:
+  machine_token_env: "PANTHEON_MACHINE_TOKEN"
+  email_env: "PANTHEON_EMAIL"
+  default_envs: ["live"]
+  sftp_port: 2222
+  dns_timeout: "10s"
+  ssh:
+    private_key_path_env: "PANTHEON_SSH_KEY_PATH"
+    private_key_path: ""
+    known_hosts_path: ""
+
+ollama:
+  base_url_env: "OLLAMA_BASE_URL"
+  base_url: ""
+  model_env: "OLLAMA_MODEL"
+  model: "gemma4:12b"
+
+collection:
+  enabled: false
+  interval: "10m"
+  timeout_per_site: "90s"
+  max_parallel_sites: 4
+  log_types:
+    - "nginx-access"
+    - "nginx-error"
+    - "php-error"
+  raw_dir: "./data/raw"
+
+combiner:
+  combined_dir: "./data/combined"
+  quarantine_dir: "./data/quarantine"
+  settling_window: "2h"
+  finalize_after: "3h"
+
+retention:
+  enabled: true
+  interval: "24h"
+  max_age: "17520h"
+  delete_raw_files: true
+  delete_combined_files: true
+
+reports:
+  enabled: true
+  interval: "24h"
+  ranges: ["24h", "7d", "30d", "90d", "365d"]
+
+notifications:
+  enabled: true
+  min_severity: "high"
+  email:
+    enabled: false
+    smtp_host: ""
+    smtp_port: 587
+    username_env: "ORIGINPULSE_SMTP_USERNAME"
+    password_env: "ORIGINPULSE_SMTP_PASSWORD"
+    from: ""
+    to: []
+  push:
+    enabled: false
+    webhook_urls_env: "ORIGINPULSE_PUSH_WEBHOOK_URLS"
+    webhook_urls: []
+    vapid_public_key_env: "ORIGINPULSE_VAPID_PUBLIC_KEY"
+    vapid_private_key_env: "ORIGINPULSE_VAPID_PRIVATE_KEY"
+    vapid_subject_env: "ORIGINPULSE_VAPID_SUBJECT"
+    vapid_subject: "mailto:originpulse@localhost"
+
+sites:
+  - id: "example-site"
+    name: "Example Site"
+    pantheon_site_id: "12345678-1234-1234-abcd-0123456789ab"
+    enabled: false
+    envs: ["live"]
+    tags: ["pantheon"]
