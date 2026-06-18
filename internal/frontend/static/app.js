@@ -2745,7 +2745,7 @@ function reportPivot(report, extra = {}) {
     to: report?.range_end || "",
     site_id: extra.site_id || report?.site_id || "",
     log_type: "nginx-access",
-    origin: "report",
+    origin: extra.origin || "report",
   };
 }
 
@@ -2820,21 +2820,84 @@ function reportChartsMarkup(report) {
       </article>
     `;
   }
-  return charts.map(reportChartPanel).join("");
+  return charts.map((chart) => reportChartPanel(report, chart)).join("");
 }
 
-function reportChartPanel(chart) {
+function reportChartPanel(report, chart) {
+  const actions = reportChartActions(report, chart);
   return `
     <article class="panel report-chart-panel">
       <div class="panel-head">
-        <h2>${escapeHTML(chart.title || chart.key || "Chart")}</h2>
-        <span class="pill">${escapeHTML(chart.unit || chart.kind || "")}</span>
+        <div>
+          <h2>${escapeHTML(chart.title || chart.key || "Chart")}</h2>
+        </div>
+        <div class="panel-tools">
+          <span class="pill">${escapeHTML(chart.unit || chart.kind || "")}</span>
+          ${actions}
+        </div>
       </div>
       <div class="chart-box small-chart">
         <canvas id="${escapeHTML(reportChartID(chart.key))}"></canvas>
       </div>
     </article>
   `;
+}
+
+function reportChartActions(report, chart) {
+  const key = chart.key || "";
+  const summary = report.summary || {};
+  const buttons = [];
+  const add = (label, pivot) => {
+    if (!pivot) return;
+    buttons.push(`<button class="ghost mini" type="button" data-pivot='${encodePivot(pivot)}'>${escapeHTML(label)}</button>`);
+  };
+
+  if (key === "traffic_timeline") {
+    add("Open logs", reportPivot(report, { kind: "log_filter", site_id: report.site_id || "", origin: "report_chart" }));
+  } else if (key === "status_mix") {
+    add("Open errors", reportPivot(report, { kind: "log_filter", site_id: report.site_id || "", status_class: "errors", origin: "report_chart" }));
+  } else if (key === "site_traffic") {
+    if (summary.top_site) add("Open top site", reportPivot(report, { kind: "site", value: summary.top_site, site_id: summary.top_site, origin: "report_chart" }));
+    add("Open logs", reportPivot(report, { kind: "log_filter", site_id: summary.top_site || report.site_id || "", origin: "report_chart" }));
+  } else if (key === "source_ips") {
+    const topIP = reportDrilldownItemFor(report, "source_ips", (item) => item.ip === summary.top_source_ip) || reportFirstDrilldownItem(report, "source_ips");
+    if (topIP?.ip) add("Open top IP", reportPivot(report, { kind: "ip", value: topIP.ip, site_id: topIP.site_id || report.site_id || "", origin: "report_chart" }));
+    if (topIP?.ip) add("Open IP logs", reportPivot(report, { kind: "log_filter", ip: topIP.ip, site_id: topIP.site_id || report.site_id || "", origin: "report_chart" }));
+  } else if (key === "user_agent_classes") {
+    if (summary.top_user_agent) add("Open UA logs", reportPivot(report, { kind: "log_filter", user_agent: summary.top_user_agent, site_id: report.site_id || "", origin: "report_chart" }));
+  } else if (key === "security_signals") {
+    add("Open signal", firstReportSignalPivot(report, ["injection_probes", "admin_probes", "tor_sources", "issues"]));
+    add("Open security logs", reportPivot(report, { kind: "log_filter", site_id: report.site_id || "", status_class: "errors", origin: "report_chart" }));
+  } else if (key === "slow_paths") {
+    add("Open slow signal", firstReportSignalPivot(report, ["slow_paths"]));
+    if (summary.top_path) add("Open path logs", reportPivot(report, { kind: "log_filter", path: summary.top_path, site_id: report.site_id || "", status_class: "errors", origin: "report_chart" }));
+  } else {
+    add("Open logs", reportPivot(report, { kind: "log_filter", site_id: report.site_id || "", origin: "report_chart" }));
+  }
+
+  return buttons.slice(0, 3).join("");
+}
+
+function firstReportSignalPivot(report, keys) {
+  for (const key of keys) {
+    const item = reportFirstDrilldownItem(report, key);
+    if (!item) continue;
+    const signalKey = reportSignalKey(key, item);
+    if (!signalKey) continue;
+    const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+    return reportSignalPivot(report, key, item, signalKey, item.site_id || report.site_id || "", errors);
+  }
+  return null;
+}
+
+function reportFirstDrilldownItem(report, key) {
+  const drilldown = (report?.drilldowns || []).find((item) => item.key === key);
+  return drilldown?.items?.[0] || null;
+}
+
+function reportDrilldownItemFor(report, key, predicate) {
+  const drilldown = (report?.drilldowns || []).find((item) => item.key === key);
+  return (drilldown?.items || []).find(predicate) || null;
 }
 
 function reportDrilldownsMarkup(report) {
@@ -3524,7 +3587,7 @@ async function handlePivot(pivot) {
     return;
   }
   state.viewContext = pivotContext(pivot);
-  if (pivot.origin === "report" && pivot.site_id) {
+  if (isReportPivotOrigin(pivot) && pivot.site_id) {
     state.siteID = pivot.site_id;
   }
   resetContextPages();
@@ -3593,10 +3656,14 @@ function applyPivotWindow(pivot) {
     if (state.logType !== pivot.log_type) changed = true;
     state.logType = pivot.log_type;
   }
-  if (pivot.origin === "report" && pivot.site_id && state.siteID !== pivot.site_id) {
+  if (isReportPivotOrigin(pivot) && pivot.site_id && state.siteID !== pivot.site_id) {
     changed = true;
   }
   return changed;
+}
+
+function isReportPivotOrigin(pivot) {
+  return pivot?.origin === "report" || pivot?.origin === "report_chart";
 }
 
 function pivotContext(pivot) {
