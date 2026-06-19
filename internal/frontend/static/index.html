@@ -406,6 +406,15 @@
             <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-signal-filter="traffic">Traffic</button>
             <button class="analysis-tab" type="button" role="tab" aria-selected="false" data-signal-filter="pipeline">Pipeline</button>
           </div>
+          <div class="signal-filter-bar" aria-label="Signal severity">
+            <span>Minimum severity</span>
+            <div class="segmented-actions" role="group" aria-label="Minimum signal severity">
+              <button class="segment-button active" type="button" data-signal-severity="all">All</button>
+              <button class="segment-button" type="button" data-signal-severity="medium">Medium+</button>
+              <button class="segment-button" type="button" data-signal-severity="high">High+</button>
+              <button class="segment-button" type="button" data-signal-severity="critical">Critical</button>
+            </div>
+          </div>
           <article id="signalDetailPanel" class="panel signal-detail hidden">
             <div class="panel-head">
               <div>

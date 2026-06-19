@@ -242,6 +242,18 @@ function wireEvents() {
       renderWorkspaceContext();
     });
   });
+  qsa("[data-signal-severity]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const severity = normalizeSignalSeverity(button.dataset.signalSeverity || "all");
+      if (severity === "all") delete state.viewContext.severity;
+      else state.viewContext.severity = severity;
+      state.signalKey = "";
+      state.pages.signals = 0;
+      updateURL(false);
+      renderSignals();
+      renderWorkspaceContext();
+    });
+  });
   qs("#collectButton").addEventListener("click", () => runAction(qs("#collectButton"), "Collect queued", async () => {
     await fetchJSON("/api/v1/system/collect", { method: "POST" });
   }));
@@ -565,6 +577,7 @@ function workspaceContextSubtitle(route = state.route) {
   if (state.signalKey) parts.push("signal detail");
   if (state.entity?.kind && state.entity.value) parts.push(`${state.entity.kind === "asn" ? "ASN" : formatCategory(state.entity.kind)} detail`);
   const context = state.viewContext || {};
+  if (context.severity) parts.push(`${signalSeverityLabel(context.severity)} severity`);
   if (context.status_class === "errors") parts.push("errors only");
   return parts.filter(Boolean).join(" / ");
 }
@@ -593,6 +606,7 @@ function workspaceContextPairs(route = state.route) {
   if (context.known_actor && !(state.entity?.kind === "actor" && state.entity.value === context.known_actor)) pairs.push(["Actor", context.known_actor]);
   if (context.actor_type) pairs.push(["Actor type", formatCategory(context.actor_type)]);
   if (context.env) pairs.push(["Env", context.env]);
+  if (context.severity) pairs.push(["Min severity", signalSeverityLabel(context.severity)]);
   if (context.status_class === "errors") pairs.push(["Status", "Errors only"]);
   if (context.user_agent) pairs.push(["User agent", context.user_agent]);
   return pairs;
@@ -865,9 +879,15 @@ function syncContextFromURL() {
   const selectedReportID = params.get("report_id");
   if (selectedReportID) state.selectedReportIDs[state.reportTab] = selectedReportID;
   state.viewContext = {};
-  ["ip", "asn", "path", "known_actor", "actor_type", "status_class", "site_id", "env", "user_agent", "evidence_kind"].forEach((key) => {
+  ["ip", "asn", "path", "known_actor", "actor_type", "status_class", "site_id", "env", "user_agent", "evidence_kind", "severity"].forEach((key) => {
     const value = params.get(key);
-    if (value) state.viewContext[key] = value;
+    if (!value) return;
+    if (key === "severity") {
+      const severity = normalizeSignalSeverity(value);
+      if (severity !== "all") state.viewContext.severity = severity;
+      return;
+    }
+    state.viewContext[key] = value;
   });
   if (state.entity?.kind === "ip") state.viewContext.ip = state.entity.value;
   if (state.entity?.kind === "asn") state.viewContext.asn = formatASN(state.entity.value) || state.entity.value;
@@ -2597,6 +2617,7 @@ function logContextItems() {
   if (context.actor_type) items.push({ label: "Actor type", value: formatCategory(context.actor_type), key: "actor_type", removable: true });
   if (context.env) items.push({ label: "Env", value: context.env, key: "env", removable: true });
   if (context.status_class === "errors") items.push({ label: "Status", value: "Errors only", key: "status_class", removable: true });
+  if (context.severity) items.push({ label: "Min severity", value: signalSeverityLabel(context.severity), key: "severity", removable: true });
   if (context.user_agent) items.push({ label: "User agent", value: context.user_agent, key: "user_agent", removable: true, pivot: entityPivot("user-agent", context.user_agent) });
   if (context.evidence_kind) items.push({ label: "Evidence", value: context.evidence_kind, key: "evidence_kind", removable: true });
   return items;
@@ -2820,7 +2841,7 @@ function correlatedLogTypeDefs(includeAccess = true) {
 
 function logFilterPivotForContext(logType, context = state.viewContext || {}, origin = "correlation") {
   const pivot = { kind: "log_filter", log_type: logType, origin };
-  ["path", "ip", "asn", "known_actor", "actor_type", "status_class", "env", "user_agent", "evidence_kind"].forEach((key) => {
+  ["path", "ip", "asn", "known_actor", "actor_type", "status_class", "env", "user_agent", "evidence_kind", "severity"].forEach((key) => {
     if (context[key]) pivot[key] = context[key];
   });
   const siteID = context.site_id || state.siteID || "";
@@ -3232,6 +3253,10 @@ function logMatchesContext(item) {
     const errors = Number(item.errors || 0) + Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
     if (status < 400 && errors <= 0) return false;
   }
+  if (context.severity) {
+    const severity = normalizeSignalSeverity(context.severity);
+    if (severity !== "all" && logEvidenceSeverityRank(item) < severityRank(severity)) return false;
+  }
   if (context.known_actor || context.actor_type) {
     const ips = contextActorIPs(context);
     if (item.ip && ips.size && !ips.has(item.ip)) return false;
@@ -3239,6 +3264,20 @@ function logMatchesContext(item) {
   }
   if (context.user_agent && !userAgentMatches(item.user_agent || "", context.user_agent)) return false;
   return true;
+}
+
+function logEvidenceSeverityRank(item = {}) {
+  if (item.risk_score) return severityRank(severityForScore(item.risk_score));
+  const status = Number(item.status || 0);
+  if (status >= 500) return severityRank("high");
+  if (status >= 400) return severityRank("medium");
+  const statusErrors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  const errors = Number(item.errors || 0) + statusErrors;
+  if (Number(item.status_5xx || 0) > 0 || errors >= 100) return severityRank("high");
+  if (errors > 0 || statusErrors > 0) return severityRank("medium");
+  if (Number(item.p95_request_time_ms || 0) >= 5000) return severityRank("high");
+  if (Number(item.p95_request_time_ms || 0) > 0) return severityRank("medium");
+  return severityRank("low");
 }
 
 function evidenceKindMatches(value, expected) {
@@ -3450,14 +3489,39 @@ function renderSignals() {
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", active ? "true" : "false");
   });
+  const severityFilter = currentSignalSeverityFilter();
+  qsa("[data-signal-severity]").forEach((button) => {
+    const active = normalizeSignalSeverity(button.dataset.signalSeverity || "all") === severityFilter;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
   const allSignals = buildSignalItems();
   renderSignalDetail(allSignals);
-  const signals = state.signalFilter === "all" ? allSignals : allSignals.filter((item) => item.group === state.signalFilter);
+  const severitySignals = filterSignalsBySeverity(allSignals, severityFilter);
+  const signals = state.signalFilter === "all" ? severitySignals : severitySignals.filter((item) => item.group === state.signalFilter);
   renderPager("#signalsPager", "signals", signals);
   const pageItems = paginate("signals", signals);
-  qs("#signalsList").innerHTML = pageItems.map(signalRow).join("") || `<div class="empty">No ${escapeHTML(state.signalFilter)} signals in this scope.</div>`;
-  setText("#signalsSummary", `${formatNumber(pageItems.length)} of ${formatNumber(signals.length)} shown`);
-  qs("#signalsGroupStats").innerHTML = signalQueueSections(allSignals).map(signalQueueRow).join("");
+  qs("#signalsList").innerHTML = pageItems.map(signalRow).join("") || `<div class="empty">No ${escapeHTML(signalFilterEmptyLabel(severityFilter))} signals in this scope.</div>`;
+  setText("#signalsSummary", `${formatNumber(pageItems.length)} of ${formatNumber(signals.length)} shown${severityFilter !== "all" ? ` / ${signalSeverityLabel(severityFilter)}` : ""}`);
+  qs("#signalsGroupStats").innerHTML = signalQueueSections(severitySignals).map(signalQueueRow).join("");
+}
+
+function currentSignalSeverityFilter() {
+  return normalizeSignalSeverity(state.viewContext?.severity || "all");
+}
+
+function filterSignalsBySeverity(signals, severity = currentSignalSeverityFilter()) {
+  const normalized = normalizeSignalSeverity(severity);
+  if (normalized === "all") return signals || [];
+  const minRank = severityRank(normalized);
+  return (signals || []).filter((item) => severityRank(item.severity) >= minRank);
+}
+
+function signalFilterEmptyLabel(severity = currentSignalSeverityFilter()) {
+  return [
+    state.signalFilter === "all" ? "" : state.signalFilter,
+    severity !== "all" ? signalSeverityLabel(severity) : "",
+  ].filter(Boolean).join(" ") || "matching";
 }
 
 function renderSignalDetail(signals = buildSignalItems()) {
@@ -8967,6 +9031,17 @@ function normalizeReportTab(tab) {
   return ["daily", "weekly", "monthly", "quarterly", "annual"].includes(tab) ? tab : "daily";
 }
 
+function normalizeSignalSeverity(value) {
+  const normalized = String(value || "").toLowerCase();
+  return ["medium", "high", "critical"].includes(normalized) ? normalized : "all";
+}
+
+function signalSeverityLabel(value) {
+  const severity = normalizeSignalSeverity(value);
+  if (severity === "all") return "All";
+  return severity === "critical" ? "Critical" : `${formatCategory(severity)}+`;
+}
+
 function encodePivot(pivot) {
   return escapeHTML(JSON.stringify(pivot || {}));
 }
@@ -9105,8 +9180,14 @@ function isReportPivotOrigin(pivot) {
 
 function pivotContext(pivot) {
   const context = {};
-  ["ip", "asn", "path", "known_actor", "actor_type", "status_class", "site_id", "env", "user_agent", "evidence_kind"].forEach((key) => {
-    if (pivot[key]) context[key] = pivot[key];
+  ["ip", "asn", "path", "known_actor", "actor_type", "status_class", "site_id", "env", "user_agent", "evidence_kind", "severity"].forEach((key) => {
+    if (!pivot[key]) return;
+    if (key === "severity") {
+      const severity = normalizeSignalSeverity(pivot[key]);
+      if (severity !== "all") context.severity = severity;
+      return;
+    }
+    context[key] = pivot[key];
   });
   if (pivot.kind === "ip" && pivot.value) context.ip = pivot.value;
   if (pivot.kind === "asn" && (pivot.value || pivot.asn)) context.asn = formatASN(pivot.value || pivot.asn) || pivot.value || pivot.asn;
