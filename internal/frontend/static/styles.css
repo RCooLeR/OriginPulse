@@ -3367,6 +3367,73 @@ td code,
   height: 198px;
 }
 
+.report-chart-insight {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 9px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+  background: #fbfcfd;
+}
+
+.report-chart-lead {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.report-chart-lead span,
+.report-chart-lead small,
+.report-chart-context span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.report-chart-lead strong,
+.report-chart-lead small,
+.report-chart-context strong {
+  min-width: 0;
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.report-chart-lead strong {
+  font-size: 0.88rem;
+}
+
+.report-chart-lead small {
+  line-height: 1.35;
+  text-transform: none;
+}
+
+.report-chart-pivots .signal-actions {
+  margin-top: 0;
+}
+
+.report-chart-context {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--line);
+}
+
+.report-chart-context div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  padding: 7px;
+  background: #ffffff;
+}
+
+.report-chart-context strong {
+  font-size: 0.78rem;
+}
+
 .report-empty-panel {
   grid-column: 1 / -1;
   min-height: 118px;
@@ -3937,6 +4004,10 @@ td code,
   }
 
   .entity-identity-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .report-chart-context {
     grid-template-columns: 1fr;
   }
 

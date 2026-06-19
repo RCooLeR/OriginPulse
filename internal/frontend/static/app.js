@@ -9291,6 +9291,7 @@ function reportChartsMarkup(report) {
 
 function reportChartPanel(report, chart) {
   const actions = reportChartActions(report, chart);
+  const insight = reportChartInsight(report, chart);
   return `
     <article class="panel report-chart-panel">
       <div class="panel-head">
@@ -9305,7 +9306,166 @@ function reportChartPanel(report, chart) {
       <div class="chart-box small-chart">
         <canvas id="${escapeHTML(reportChartID(chart.key))}"></canvas>
       </div>
+      ${insight}
     </article>
+  `;
+}
+
+function reportChartInsight(report, chart) {
+  const lead = reportChartLeadDatum(chart);
+  if (!lead) return "";
+  const actions = reportChartDatumActions(report, chart, lead).join("");
+  const contextRows = reportChartContextRows(report, chart, lead);
+  return `
+    <div class="report-chart-insight">
+      <div class="report-chart-lead">
+        <span>${escapeHTML(reportChartLeadLabel(chart))}</span>
+        <strong>${escapeHTML(reportChartDatumTitle(chart, lead))}</strong>
+        <small>${escapeHTML(reportChartDatumMeta(chart, lead))}</small>
+      </div>
+      <div class="report-chart-pivots">
+        <div class="signal-actions">${actions || reportActionButton("Open report logs", reportPivot(report, { kind: "log_filter", site_id: report.site_id || "", origin: "report_chart_datum" }))}</div>
+      </div>
+      ${contextRows.length ? `<div class="report-chart-context">${contextRows.map(reportChartContextRow).join("")}</div>` : ""}
+    </div>
+  `;
+}
+
+function reportChartLeadDatum(chart) {
+  const rows = (chart.data || []).filter((item) => item && (Number(item.value || 0) || Number(item.secondary || 0)));
+  if (!rows.length) return null;
+  if (chart.key === "status_mix") {
+    return rows.find((item) => item.label === "5xx" && Number(item.value || 0) > 0)
+      || rows.find((item) => item.label === "4xx" && Number(item.value || 0) > 0)
+      || rows.slice().sort(reportDatumValueSort)[0];
+  }
+  if (chart.key === "traffic_timeline") {
+    return rows.slice().sort((a, b) => {
+      return Number(b.secondary || 0) - Number(a.secondary || 0)
+        || Number(b.value || 0) - Number(a.value || 0)
+        || new Date(b.timestamp || 0) - new Date(a.timestamp || 0);
+    })[0];
+  }
+  return rows.slice().sort(reportDatumValueSort)[0];
+}
+
+function reportDatumValueSort(a, b) {
+  return Number(b.value || 0) - Number(a.value || 0)
+    || Number(b.secondary || 0) - Number(a.secondary || 0)
+    || String(a.label || "").localeCompare(String(b.label || ""));
+}
+
+function reportChartLeadLabel(chart) {
+  if (chart.key === "status_mix") return "Error bucket";
+  if (chart.key === "traffic_timeline") return "Peak bucket";
+  if (chart.key === "site_traffic") return "Top site";
+  if (chart.key === "source_ips") return "Top source";
+  if (chart.key === "slow_paths") return "Slowest path";
+  if (chart.key === "security_signals") return "Primary signal family";
+  if (chart.key === "user_agent_classes") return "Top user-agent class";
+  return "Top datum";
+}
+
+function reportChartDatumTitle(chart, datum) {
+  if (chart.key === "traffic_timeline" && datum.timestamp) return shortDateTime(datum.timestamp);
+  return datum.label || chart.title || chart.key || "Chart datum";
+}
+
+function reportChartDatumMeta(chart, datum) {
+  const unit = chart.unit || "value";
+  const parts = [
+    `${formatNumber(datum.value || 0)} ${unit}`,
+    Number(datum.secondary || 0) ? `${formatNumber(datum.secondary)} ${reportChartSecondaryLabel(chart)}` : "",
+    datum.meta || "",
+  ];
+  return parts.filter(Boolean).join(" / ");
+}
+
+function reportChartSecondaryLabel(chart) {
+  if (chart.key === "traffic_timeline" || chart.key === "source_ips") return "errors";
+  if (chart.key === "site_traffic") return "5xx";
+  if (chart.key === "security_signals") return "rows";
+  if (chart.key === "slow_paths") return "requests";
+  return "secondary";
+}
+
+function reportChartDatumActions(report, chart, datum) {
+  const key = chart.key || "";
+  const siteID = report.site_id || "";
+  const actions = [];
+  const add = (label, pivot) => {
+    const button = reportActionButton(label, pivot);
+    if (button) actions.push(button);
+  };
+  if (key === "traffic_timeline") {
+    add("Open period logs", reportPivot(report, { kind: "log_filter", site_id: siteID, origin: "report_chart_datum" }));
+    if (Number(datum.secondary || 0)) add("Error rows", reportPivot(report, { kind: "log_filter", site_id: siteID, status_class: "errors", origin: "report_chart_datum" }));
+  } else if (key === "status_mix") {
+    const errorsOnly = ["4xx", "5xx"].includes(String(datum.label || ""));
+    add(errorsOnly ? "Open error rows" : "Open matching logs", reportPivot(report, { kind: "log_filter", site_id: siteID, status_class: errorsOnly ? "errors" : "", origin: "report_chart_datum" }));
+  } else if (key === "site_traffic") {
+    const chartSiteID = reportChartSiteID(datum);
+    if (chartSiteID) add("Open site", reportPivot(report, { kind: "site", value: chartSiteID, site_id: chartSiteID, origin: "report_chart_datum" }));
+    add("Site logs", reportPivot(report, { kind: "log_filter", site_id: chartSiteID || siteID, status_class: Number(datum.secondary || 0) ? "errors" : "", origin: "report_chart_datum" }));
+  } else if (key === "source_ips") {
+    const item = reportDrilldownItemFor(report, "source_ips", (candidate) => candidate.ip === datum.label) || {};
+    add("Open IP", reportPivot(report, { kind: "ip", value: datum.label, site_id: item.site_id || siteID, origin: "report_chart_datum" }));
+    add("IP logs", reportPivot(report, { kind: "log_filter", ip: datum.label, site_id: item.site_id || siteID, status_class: Number(datum.secondary || 0) ? "errors" : "", origin: "report_chart_datum" }));
+    if (item.asn) add("ASN", reportPivot(report, { kind: "asn", value: formatASN(item.asn), site_id: item.site_id || siteID, origin: "report_chart_datum" }));
+  } else if (key === "user_agent_classes") {
+    add("Class logs", reportPivot(report, { kind: "log_filter", actor_type: datum.label || "", site_id: siteID, origin: "report_chart_datum" }));
+  } else if (key === "security_signals") {
+    const signalPivot = reportChartSecurityPivot(report, datum);
+    add("Open signal", signalPivot);
+    add("Security logs", reportPivot(report, { kind: "log_filter", site_id: siteID, status_class: "errors", origin: "report_chart_datum" }));
+  } else if (key === "slow_paths") {
+    const item = reportDrilldownItemFor(report, "slow_paths", (candidate) => candidate.path === datum.label)
+      || reportDrilldownItemFor(report, "top_paths", (candidate) => candidate.path === datum.label)
+      || {};
+    add("Open path", reportPivot(report, { kind: "path", value: datum.label, site_id: item.site_id || siteID, origin: "report_chart_datum" }));
+    add("Path logs", reportPivot(report, { kind: "log_filter", path: datum.label, site_id: item.site_id || siteID, status_class: "errors", origin: "report_chart_datum" }));
+  } else {
+    add("Open logs", reportPivot(report, { kind: "log_filter", site_id: siteID, origin: "report_chart_datum" }));
+  }
+  return actions.slice(0, 4);
+}
+
+function reportChartSiteID(datum) {
+  return String(datum.label || "").split("/")[0] || "";
+}
+
+function reportChartSecurityPivot(report, datum) {
+  const label = String(datum.label || "").toLowerCase();
+  const key = label.includes("injection") ? "injection_probes"
+    : label.includes("admin") ? "admin_probes"
+      : label.includes("tor") ? "tor_sources"
+        : "issues";
+  const item = reportFirstDrilldownItem(report, key);
+  if (!item) return null;
+  const signalKey = reportSignalKey(key, item);
+  if (!signalKey) return null;
+  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  return reportSignalPivot(report, key, item, signalKey, item.site_id || report.site_id || "", errors);
+}
+
+function reportChartContextRows(report, chart, lead) {
+  const rows = [];
+  const summary = report.summary || {};
+  const total = (chart.data || []).reduce((sum, item) => sum + Number(item.value || 0), 0);
+  rows.push(["Chart total", `${formatNumber(total)} ${chart.unit || "value"}`]);
+  if (lead?.value && total) rows.push(["Lead share", formatPercent(ratio(lead.value, total))]);
+  if (summary.top_site) rows.push(["Report top site", summary.top_site]);
+  if (summary.top_source_ip && chart.key !== "source_ips") rows.push(["Top source IP", summary.top_source_ip]);
+  if (summary.top_path && chart.key !== "slow_paths") rows.push(["Top path", summary.top_path]);
+  return rows.slice(0, 4);
+}
+
+function reportChartContextRow([label, value]) {
+  return `
+    <div>
+      <span>${escapeHTML(label)}</span>
+      <strong>${escapeHTML(value || "-")}</strong>
+    </div>
   `;
 }
 
