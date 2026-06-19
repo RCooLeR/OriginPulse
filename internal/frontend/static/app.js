@@ -7150,6 +7150,7 @@ function renderSiteDetail(site) {
     qs("#siteRiskStrip").innerHTML = "";
     qs("#siteScopeMatrix").innerHTML = "";
     qs("#siteCommandStrip").innerHTML = "";
+    qs("#siteEvidenceBridge").innerHTML = "";
     qs("#siteTabBody").innerHTML = `<div class="empty">No enabled sites configured.</div>`;
     return;
   }
@@ -7175,6 +7176,7 @@ function renderSiteDetail(site) {
   ].map(statTile).join("");
   qs("#siteScopeMatrix").innerHTML = siteScopeMatrix(site, { topIP, topPath, topActor });
   qs("#siteCommandStrip").innerHTML = siteCommandStrip(site, { signals, topIP, topPath, topActor });
+  qs("#siteEvidenceBridge").innerHTML = siteEvidenceBridge(site, { signals, topIP, topPath, topActor });
   qs("#siteFocusButton").textContent = focused ? "Focused" : "Focus site";
   qs("#siteFocusButton").disabled = focused;
   qsa("[data-site-tab]").forEach((button) => {
@@ -7365,6 +7367,122 @@ function siteScopeContextMeta(topIP, topPath, topActor) {
     topIP?.ip ? `IP ${topIP.ip}` : "",
     topActor?.label || "",
   ].filter(Boolean).join(" / ") || "no dominant entity";
+}
+
+function siteEvidenceBridge(site, { signals = siteSignalItems(site.id || ""), topIP = null, topPath = null, topActor = null } = {}) {
+  const siteID = site.id || "";
+  const reports = siteSortedReports(siteReports(siteID));
+  const report = reports[0] || null;
+  const evidence = siteLogEvidence(siteID);
+  const recentErrors = siteRecentErrors(siteID);
+  const securitySignals = signals.filter((item) => item.group === "security");
+  const reliabilitySignals = signals.filter((item) => item.group === "reliability");
+  const securityLead = securitySignals[0] || null;
+  const reliabilityLead = reliabilitySignals[0] || null;
+  const paths = siteTopPaths(siteID);
+  const sourceIPs = siteTopSourceIPs(siteID);
+  const segmentCount = correlatedLogTypeDefs(false)
+    .reduce((sum, [logType]) => sum + siteLogSegments(logType, siteID).length, 0);
+  const errors = Number(site.status4xx || 0) + Number(site.status5xx || 0);
+  const actorLabel = topActor?.label || topActor?.known_actor || actorLabelFromType(topActor?.actor_type) || topIP?.known_actor || "";
+  const actorType = topActor?.type || topActor?.actor_type || topIP?.actor_type || "";
+  const rows = [
+    {
+      label: "Security",
+      title: securityLead?.title || `${formatNumber(securitySignals.length)} security signals`,
+      meta: securityLead ? siteInvestigationSignalMeta(securityLead) : `${formatNumber(securitySignals.length)} active signals / ${formatNumber(sourceIPs.filter((item) => item.is_tor_exit).length)} Tor sources`,
+      valueLabel: securityLead ? "risk" : "signals",
+      value: securityLead ? securityLead.risk || severityRank(securityLead.severity) * 20 || 0 : formatNumber(securitySignals.length),
+      actions: [
+        siteTabButton("Security", "security"),
+        securityLead ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: securityLead.key, site_id: siteID, origin: "site_bridge" })}'>Open signal</button>` : "",
+        securityLead?.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: securityLead.ip, site_id: siteID, origin: "site_bridge" })}'>Source IP</button>` : "",
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, evidence_kind: securityLead?.kind || "", status_class: securityLead?.errors ? "errors" : "", origin: "site_bridge" })}'>Security logs</button>`,
+      ].filter(Boolean).join(""),
+    },
+    {
+      label: "Reliability",
+      title: reliabilityLead?.title || (recentErrors[0] ? `${recentErrors[0].status || "-"} ${recentErrors[0].path || "/"}` : `${formatNumber(recentErrors.length)} recent errors`),
+      meta: reliabilityLead ? siteInvestigationSignalMeta(reliabilityLead) : `${formatNumber(errors)} 4xx/5xx / ${formatNumber(paths.filter((item) => Number(item.status_5xx || 0) > 0).length)} 5xx paths`,
+      valueLabel: reliabilityLead ? "risk" : "errors",
+      value: reliabilityLead ? reliabilityLead.risk || severityRank(reliabilityLead.severity) * 20 || 0 : formatNumber(errors),
+      actions: [
+        siteTabButton("Reliability", "reliability"),
+        reliabilityLead ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: reliabilityLead.key, site_id: siteID, origin: "site_bridge" })}'>Open signal</button>` : "",
+        topPath?.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: topPath.path, site_id: siteID, origin: "site_bridge" })}'>Top path</button>` : "",
+        correlatedLogActions({ path: reliabilityLead?.path || topPath?.path || "", siteID, ip: reliabilityLead?.ip || recentErrors[0]?.client_ip || "", statusClass: errors ? "errors" : "", origin: "site_bridge" }),
+      ].filter(Boolean).join(""),
+    },
+    {
+      label: "Actors",
+      title: actorLabel || topIP?.ip || `${formatNumber(sourceIPs.length)} sources`,
+      meta: [
+        topActor ? actorSourceStatus(topActor) : topIP ? actorSourceStatus(topIP) : "",
+        topIP?.ip ? `IP ${topIP.ip}` : "",
+        topIP?.asn ? formatASN(topIP.asn) : "",
+        sourceIPs.filter(actorSourceNeedsReview).length ? `${formatNumber(sourceIPs.filter(actorSourceNeedsReview).length)} need review` : "",
+      ].filter(Boolean).join(" / ") || "No classified actor pressure for this site.",
+      valueLabel: topActor || topIP ? "requests" : "sources",
+      value: topActor || topIP ? formatNumber((topActor || topIP).requests || 0) : formatNumber(sourceIPs.length),
+      actions: [
+        siteTabButton("Actors", "actors"),
+        topIP?.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: topIP.ip, site_id: siteID, origin: "site_bridge" })}'>Top IP</button>` : "",
+        actorLabel ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: actorLabel, actor_type: actorType, site_id: siteID, origin: "site_bridge" })}'>Actor</button>` : "",
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, ip: topIP?.ip || "", known_actor: actorLabel, actor_type: actorType, status_class: topIP && Number(topIP.status_4xx || 0) + Number(topIP.status_5xx || 0) ? "errors" : "", origin: "site_bridge" })}'>Actor logs</button>`,
+      ].filter(Boolean).join(""),
+    },
+    {
+      label: "Logs",
+      title: `${formatNumber(evidence.length)} rows / ${formatNumber(segmentCount)} segments`,
+      meta: [
+        topPath?.path || "",
+        topIP?.ip ? `IP ${topIP.ip}` : "",
+        errors ? `${formatNumber(errors)} errors` : "",
+      ].filter(Boolean).join(" / ") || "Access rows and segment lanes for this site.",
+      valueLabel: "paths",
+      value: formatNumber(paths.length),
+      actions: [
+        siteTabButton("Logs", "logs"),
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, log_type: "nginx-access", origin: "site_bridge" })}'>Access</button>`,
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, status_class: errors ? "errors" : "", origin: "site_bridge" })}'>All lanes</button>`,
+        topPath?.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: topPath.path, site_id: siteID, origin: "site_bridge" })}'>Path detail</button>` : "",
+      ].filter(Boolean).join(""),
+    },
+    {
+      label: "Reports",
+      title: report ? reportListLabel(report) : `${formatNumber(reports.length)} reports`,
+      meta: report ? reportWindowLabel(report) : "No generated reports scoped to this site yet.",
+      valueLabel: report?.model || "reports",
+      value: report ? formatNumber(report.summary?.requests || 0) : formatNumber(reports.length),
+      actions: [
+        siteTabButton("Reports", "reports"),
+        report ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: siteID, origin: "site_bridge" }))}'>Open report</button>` : "",
+        report ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "log_filter", site_id: siteID, status_class: errors ? "errors" : "", origin: "site_bridge" }))}'>Period logs</button>` : `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "report", report_tab: state.reportTab || "daily", site_id: siteID, origin: "site_bridge" })}'>Report list</button>`,
+      ].filter(Boolean).join(""),
+    },
+  ];
+  return `
+    <section class="site-evidence-board" aria-label="Site evidence bridge">
+      ${rows.map(siteEvidenceBridgeRow).join("")}
+    </section>
+  `;
+}
+
+function siteEvidenceBridgeRow(item) {
+  return `
+    <div class="site-evidence-step">
+      <div>
+        <span>${escapeHTML(item.label || "")}</span>
+        <strong>${escapeHTML(item.title || "-")}</strong>
+        <small>${escapeHTML(item.meta || "")}</small>
+      </div>
+      <div class="signal-actions">${item.actions || ""}</div>
+      <div class="site-evidence-value">
+        <span>${escapeHTML(item.valueLabel || "")}</span>
+        <b>${escapeHTML(item.value ?? "")}</b>
+      </div>
+    </div>
+  `;
 }
 
 function siteCommandRow(item) {

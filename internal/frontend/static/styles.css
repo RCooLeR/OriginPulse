@@ -2606,6 +2606,78 @@ h2 {
   border-right: 0;
 }
 
+.site-evidence-board {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  background: #ffffff;
+}
+
+.site-evidence-step {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: minmax(74px, auto) auto auto;
+  gap: 8px;
+  align-content: start;
+  padding: 10px;
+  border-right: 1px solid var(--line);
+}
+
+.site-evidence-step:last-child {
+  border-right: 0;
+}
+
+.site-evidence-step span,
+.site-evidence-step strong,
+.site-evidence-step small {
+  min-width: 0;
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.site-evidence-step > div > span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.site-evidence-step strong {
+  margin-top: 3px;
+  font-size: 0.82rem;
+}
+
+.site-evidence-step small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.site-evidence-step .signal-actions {
+  margin-top: 0;
+}
+
+.site-evidence-value {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.site-evidence-value span {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.site-evidence-value b {
+  min-width: 0;
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+
 .site-tab-body {
   min-height: 280px;
 }
@@ -3777,6 +3849,10 @@ td code,
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .site-evidence-board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .site-scope-board {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -3798,6 +3874,10 @@ td code,
   }
 
   .site-command-row:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .site-evidence-step:nth-child(2n) {
     border-right: 0;
   }
 
@@ -4182,6 +4262,10 @@ td code,
     grid-template-columns: 1fr;
   }
 
+  .site-evidence-board {
+    grid-template-columns: 1fr;
+  }
+
   .site-scope-board {
     grid-template-columns: 1fr;
   }
@@ -4200,6 +4284,11 @@ td code,
   }
 
   .site-command-row {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .site-evidence-step {
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
@@ -4224,6 +4313,10 @@ td code,
   }
 
   .site-command-row:last-child {
+    border-bottom: 0;
+  }
+
+  .site-evidence-step:last-child {
     border-bottom: 0;
   }
 
