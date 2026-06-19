@@ -772,7 +772,8 @@ h2 {
     "summary evidence"
     "timeline evidence"
     "facets evidence"
-    "paths evidence";
+    "paths evidence"
+    "related evidence";
   gap: 12px;
   align-items: start;
 }
@@ -795,6 +796,10 @@ h2 {
 
 .logs-paths-panel {
   grid-area: paths;
+}
+
+.logs-related-panel {
+  grid-area: related;
 }
 
 .logs-chart {
@@ -1832,7 +1837,8 @@ td code,
   .logs-timeline-panel,
   .logs-facets-panel,
   .explorer-main,
-  .logs-paths-panel {
+  .logs-paths-panel,
+  .logs-related-panel {
     grid-area: auto;
   }
 
