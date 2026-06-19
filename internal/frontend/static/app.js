@@ -1143,11 +1143,173 @@ function renderDashboard() {
   const siteRows = aggregateSiteRows();
   renderPrioritySignals(signals);
   renderSiteRiskOverview(siteRows, signals);
+  renderOverviewChartInsights(analysis, traffic);
   renderOverviewHealthMatrix(siteRows);
   renderOverviewSiteHeatmap(siteRows);
   renderOverviewHotspots(overviewHotspotRows());
   renderOverviewActorReview(overviewActorReviewRows());
   renderRecentErrors(traffic.recent_errors || []);
+}
+
+function renderOverviewChartInsights(analysis = state.data.analysis || {}, traffic = state.data.traffic || {}) {
+  setHTML("#timelineChartInsight", overviewTimelineInsight(traffic.timeline || []));
+  setHTML("#statusChartInsight", overviewStatusInsight(analysis.status_breakdown || [], analysis.totals || {}));
+  setHTML("#siteChartInsight", overviewSiteChartInsight(analysis.sites || []));
+  setHTML("#sourceChartInsight", overviewSourceChartInsight(analysis.source_ips || []));
+  setHTML("#agentChartInsight", overviewAgentChartInsight(analysis.user_agents || []));
+}
+
+function overviewTimelineInsight(timeline = []) {
+  const rows = [...timeline].filter((item) => item && (Number(item.requests || 0) || Number(item.value || 0)));
+  if (!rows.length) return overviewChartEmptyInsight("No traffic buckets in this scope.");
+  const lead = rows.sort((a, b) => {
+    const bErrors = Number(b.status_4xx || 0) + Number(b.status_5xx || 0) + Number(b.errors || 0);
+    const aErrors = Number(a.status_4xx || 0) + Number(a.status_5xx || 0) + Number(a.errors || 0);
+    return bErrors - aErrors
+      || Number(b.requests || b.value || 0) - Number(a.requests || a.value || 0)
+      || new Date(b.bucket_ts || b.timestamp || 0) - new Date(a.bucket_ts || a.timestamp || 0);
+  })[0];
+  const requests = Number(lead.requests || lead.value || 0);
+  const errors = Number(lead.status_4xx || 0) + Number(lead.status_5xx || 0) + Number(lead.errors || 0);
+  const totalRequests = rows.reduce((sum, item) => sum + Number(item.requests || item.value || 0), 0);
+  return overviewChartInsight({
+    label: errors ? "Noisiest traffic bucket" : "Peak traffic bucket",
+    title: shortDateTime(lead.bucket_ts || lead.timestamp),
+    meta: [`${formatNumber(requests)} requests`, errors ? `${formatNumber(errors)} errors` : "", lead.bucket_ts ? "current chart window" : ""].filter(Boolean).join(" / "),
+    actions: [
+      overviewActionButton("Open logs", { kind: "log_filter", site_id: state.siteID || state.viewContext.site_id || "", origin: "overview_chart_timeline" }),
+      errors ? overviewActionButton("Error rows", { kind: "log_filter", site_id: state.siteID || state.viewContext.site_id || "", status_class: "errors", origin: "overview_chart_timeline" }) : "",
+    ],
+    facts: [
+      ["Chart total", `${formatNumber(totalRequests)} requests`],
+      ["Bucket share", formatPercent(ratio(requests, totalRequests))],
+      ["Scope", activeFilterLabel()],
+    ],
+  });
+}
+
+function overviewStatusInsight(statuses = [], totals = {}) {
+  const groups = [
+    { label: "2xx", value: sumStatus(statuses, 200, 299), statusClass: "" },
+    { label: "3xx", value: sumStatus(statuses, 300, 399), statusClass: "" },
+    { label: "4xx", value: sumStatus(statuses, 400, 499), statusClass: "errors" },
+    { label: "5xx", value: sumStatus(statuses, 500, 599), statusClass: "errors" },
+  ];
+  const lead = groups.find((item) => item.label === "5xx" && item.value)
+    || groups.find((item) => item.label === "4xx" && item.value)
+    || groups.slice().sort((a, b) => b.value - a.value)[0];
+  if (!lead?.value) return overviewChartEmptyInsight("No status-code mix in this scope.");
+  const total = groups.reduce((sum, item) => sum + Number(item.value || 0), 0);
+  return overviewChartInsight({
+    label: lead.statusClass ? "Primary error bucket" : "Primary status bucket",
+    title: lead.label,
+    meta: [`${formatNumber(lead.value)} responses`, formatPercent(ratio(lead.value, total))].join(" / "),
+    actions: [
+      overviewActionButton(lead.statusClass ? "Open error rows" : "Open logs", { kind: "log_filter", site_id: state.siteID || state.viewContext.site_id || "", status_class: lead.statusClass, origin: "overview_chart_status" }),
+      overviewActionButton("Reliability signals", { kind: "signal_filter", signal_filter: "reliability", severity: "medium", status_class: lead.statusClass, site_id: state.siteID || state.viewContext.site_id || "", origin: "overview_chart_status" }),
+    ],
+    facts: [
+      ["4xx rate", formatPercent(totals.status_4xx_rate || ratio(groups[2].value, total))],
+      ["5xx rate", formatPercent(totals.status_5xx_rate || ratio(groups[3].value, total))],
+      ["Total", formatNumber(total)],
+    ],
+  });
+}
+
+function overviewSiteChartInsight(sites = []) {
+  const lead = [...(sites || [])]
+    .filter((item) => item.site_id)
+    .sort((a, b) => Number(b.requests || 0) - Number(a.requests || 0))[0];
+  if (!lead) return overviewChartEmptyInsight("No site traffic chart data.");
+  const siteID = lead.site_id || "";
+  const total = sites.reduce((sum, item) => sum + Number(item.requests || 0), 0);
+  const errors = Number(lead.status_4xx || 0) + Number(lead.status_5xx || 0);
+  return overviewChartInsight({
+    label: "Highest traffic site",
+    title: siteLabel(siteID) || siteID,
+    meta: [`${formatNumber(lead.requests || 0)} requests`, errors ? `${formatNumber(errors)} errors` : "", lead.env || ""].filter(Boolean).join(" / "),
+    actions: [
+      overviewActionButton("Open site", { kind: "site", value: siteID, origin: "overview_chart_site" }),
+      overviewActionButton("Site logs", { kind: "log_filter", site_id: siteID, status_class: errors ? "errors" : "", origin: "overview_chart_site" }),
+      overviewActionButton("Reports", { kind: "report", report_tab: state.reportTab || "daily", site_id: siteID, origin: "overview_chart_site" }),
+    ],
+    facts: [
+      ["Traffic share", formatPercent(ratio(lead.requests, total))],
+      ["5xx rate", formatPercent(lead.status_5xx_rate || ratio(lead.status_5xx, lead.requests))],
+      ["Sites", formatNumber(sites.length)],
+    ],
+  });
+}
+
+function overviewSourceChartInsight(sources = []) {
+  const lead = [...(sources || [])]
+    .filter((item) => item.ip)
+    .sort((a, b) => Number(b.requests || 0) - Number(a.requests || 0))[0];
+  if (!lead) return overviewChartEmptyInsight("No source IP chart data.");
+  const siteID = lead.site_id || state.siteID || state.viewContext.site_id || "";
+  const total = sources.reduce((sum, item) => sum + Number(item.requests || 0), 0);
+  const errors = Number(lead.status_4xx || 0) + Number(lead.status_5xx || 0);
+  const actor = lead.known_actor || actorLabelFromType(lead.actor_type) || lead.reverse_dns || "";
+  return overviewChartInsight({
+    label: "Highest traffic source",
+    title: lead.ip,
+    meta: [actor, lead.asn ? formatASN(lead.asn) : "", `${formatNumber(lead.requests || 0)} requests`, errors ? `${formatNumber(errors)} errors` : ""].filter(Boolean).join(" / "),
+    actions: [
+      overviewActionButton("Open IP", { kind: "ip", value: lead.ip, site_id: siteID, origin: "overview_chart_source" }),
+      overviewActionButton("IP logs", { kind: "log_filter", ip: lead.ip, site_id: siteID, status_class: errors ? "errors" : "", origin: "overview_chart_source" }),
+      lead.asn ? overviewActionButton("ASN", { kind: "asn", value: formatASN(lead.asn), site_id: siteID, origin: "overview_chart_source" }) : "",
+      actor ? overviewActionButton("Actor", { kind: "actor", value: actor, actor_type: lead.actor_type || "", site_id: siteID, origin: "overview_chart_source" }) : "",
+    ],
+    facts: [
+      ["Traffic share", formatPercent(ratio(lead.requests, total))],
+      ["Verification", actorSourceStatus(lead)],
+      ["Risk", lead.risk_score ?? "-"],
+    ],
+  });
+}
+
+function overviewAgentChartInsight(agents = []) {
+  const classes = aggregateAgentClasses(agents || []);
+  const lead = classes[0];
+  if (!lead) return overviewChartEmptyInsight("No user-agent class chart data.");
+  const total = classes.reduce((sum, item) => sum + Number(item.value || 0), 0);
+  return overviewChartInsight({
+    label: "Dominant user-agent class",
+    title: formatCategory(lead.label || lead.key || "unknown"),
+    meta: [`${formatNumber(lead.value || 0)} requests`, formatPercent(ratio(lead.value, total))].join(" / "),
+    actions: [
+      overviewActionButton("Class logs", { kind: "log_filter", actor_type: lead.key || lead.label || "", site_id: state.siteID || state.viewContext.site_id || "", origin: "overview_chart_agents" }),
+      overviewActionButton("Signals", { kind: "signal_filter", signal_filter: "traffic", actor_type: lead.key || lead.label || "", site_id: state.siteID || state.viewContext.site_id || "", origin: "overview_chart_agents" }),
+    ],
+    facts: [
+      ["Classes", formatNumber(classes.length)],
+      ["Share", formatPercent(ratio(lead.value, total))],
+      ["Scope", activeFilterLabel()],
+    ],
+  });
+}
+
+function overviewChartInsight({ label, title, meta, actions = [], facts = [] } = {}) {
+  return `
+    <div class="report-chart-insight overview-chart-insight-card">
+      <div class="report-chart-lead">
+        <span>${escapeHTML(label || "Chart lead")}</span>
+        <strong>${escapeHTML(title || "-")}</strong>
+        <small>${escapeHTML(meta || "")}</small>
+      </div>
+      <div class="report-chart-pivots"><div class="signal-actions">${actions.filter(Boolean).join("")}</div></div>
+      ${facts.length ? `<div class="report-chart-context">${facts.map(reportChartContextRow).join("")}</div>` : ""}
+    </div>
+  `;
+}
+
+function overviewChartEmptyInsight(message) {
+  return `<div class="report-chart-insight overview-chart-insight-card"><div class="empty compact-empty">${escapeHTML(message)}</div></div>`;
+}
+
+function overviewActionButton(label, pivot) {
+  if (!pivot) return "";
+  return `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(pivot)}'>${escapeHTML(label)}</button>`;
 }
 
 function renderPrioritySignals(items) {
@@ -10313,6 +10475,15 @@ async function handlePivot(pivot) {
     state.siteID = pivot.site_id;
   }
   resetContextPages();
+  if (pivot.kind === "signal_filter") {
+    state.entity = null;
+    state.signalKey = "";
+    state.signalFilter = pivot.signal_filter || pivot.group || state.signalFilter || "all";
+    showRoute("signals", true);
+    if (needsRefresh) await refreshWithValidation();
+    else renderSignals();
+    return;
+  }
   if (pivot.kind === "signal") {
     state.signalKey = pivot.key || pivot.value || "";
     state.entity = null;
@@ -10971,6 +11142,11 @@ function toast(message, isError = false) {
 function setText(selector, value) {
   const el = qs(selector);
   if (el) el.textContent = value;
+}
+
+function setHTML(selector, value) {
+  const el = qs(selector);
+  if (el) el.innerHTML = value;
 }
 
 function emptyRow(cols, message) {
