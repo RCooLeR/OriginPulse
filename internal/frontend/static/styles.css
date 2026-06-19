@@ -2152,6 +2152,31 @@ td code,
   margin-top: 8px;
 }
 
+.report-evidence-panel {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.report-evidence-wrap {
+  max-height: 440px;
+}
+
+.report-evidence-table {
+  min-width: 1040px;
+}
+
+.report-evidence-table td {
+  vertical-align: top;
+}
+
+.report-evidence-table td span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
 .report-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.75fr);

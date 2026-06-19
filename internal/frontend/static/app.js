@@ -6267,6 +6267,7 @@ function reportDetailMarkup(report) {
     </section>
 
     ${reportInvestigationBoard(report)}
+    ${reportEvidenceMatrix(report)}
 
     <section class="report-layout">
       <article class="panel report-summary-panel">
@@ -6405,7 +6406,7 @@ function reportPivot(report, extra = {}) {
     from: report?.range_start || "",
     to: report?.range_end || "",
     site_id: extra.site_id || report?.site_id || "",
-    log_type: "nginx-access",
+    log_type: extra.log_type || "nginx-access",
     origin: extra.origin || "report",
   };
 }
@@ -6485,6 +6486,200 @@ function reportInvestigationBoard(report) {
       </div>
     </section>
   `;
+}
+
+function reportEvidenceMatrix(report) {
+  const rows = reportEvidenceRows(report).slice(0, 14);
+  return `
+    <section class="report-evidence-panel" aria-label="Report evidence matrix">
+      <div class="entity-next-title">
+        <span>Evidence matrix</span>
+        <strong>${escapeHTML(rows.length ? `${formatNumber(rows.length)} rows` : "no rows")}</strong>
+      </div>
+      <div class="table-wrap report-evidence-wrap">
+        <table class="report-evidence-table">
+          <thead>
+            <tr>
+              <th>Evidence</th>
+              <th>Scope</th>
+              <th>Requests</th>
+              <th>Risk / errors</th>
+              <th>Latest</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => reportEvidenceRow(report, row)).join("") || emptyRow(6, "No report evidence rows are stored for this period.")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function reportEvidenceRows(report) {
+  const summary = report.summary || {};
+  const defs = [
+    ["issues", "Issue", "signal"],
+    ["admin_probes", "Admin probe", "security"],
+    ["injection_probes", "Injection probe", "security"],
+    ["tor_sources", "Tor source", "security"],
+    ["source_ips", "Source IP", "source"],
+    ["top_paths", "Top path", "path"],
+    ["slow_paths", "Slow path", "reliability"],
+    ["recent_errors", "Recent error", "reliability"],
+  ];
+  const seen = new Set();
+  const rows = [];
+  defs.forEach(([key, label, lane]) => {
+    const drilldown = (report.drilldowns || []).find((item) => item.key === key);
+    (drilldown?.items || []).forEach((item, index) => {
+      const siteID = item.site_id || report.site_id || "";
+      const title = item.label || item.ip || item.path || item.actor_value || item.known_actor || item.rule_key || label;
+      const identity = [key, siteID, item.ip || "", item.path || "", title].join("|");
+      if (seen.has(identity)) return;
+      seen.add(identity);
+      const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0) + (Number(item.status || 0) >= 400 ? 1 : 0);
+      rows.push({
+        key,
+        label: drilldown?.title || label,
+        lane,
+        index,
+        title,
+        item,
+        siteID,
+        env: item.env || "",
+        ip: item.ip || "",
+        asn: item.asn ? formatASN(item.asn) : "",
+        path: item.path || "",
+        actor: item.known_actor || item.actor_value || actorLabelFromType(item.actor_type) || "",
+        actorType: item.actor_type || "",
+        userAgent: item.user_agent || item.sample || "",
+        requests: Number(item.requests || item.events || 0) || (item.status ? 1 : 0),
+        errors,
+        risk: Number(item.risk_score || item.score || 0),
+        status: item.status || "",
+        p95: Number(item.p95_request_time_ms || 0),
+        latest: item.last_seen || item.last_seen_at || item.ts || item.timestamp || item.max_ts || "",
+        signalKey: reportSignalKey(key, item),
+      });
+    });
+  });
+  if (!rows.length) {
+    if (summary.top_source_ip) {
+      rows.push(reportEvidenceSummaryRow("source_ips", "Top source IP", "source", report, { ip: summary.top_source_ip, requests: summary.requests || 0 }));
+    }
+    if (summary.top_path) {
+      rows.push(reportEvidenceSummaryRow("top_paths", "Top path", "path", report, { path: summary.top_path, requests: summary.requests || 0 }));
+    }
+    if (summary.top_site) {
+      rows.push(reportEvidenceSummaryRow("site", "Top site", "site", report, { siteID: summary.top_site, requests: summary.requests || 0 }));
+    }
+  }
+  return rows.sort((a, b) => {
+    return Number(b.errors || 0) - Number(a.errors || 0)
+      || Number(b.risk || 0) - Number(a.risk || 0)
+      || Number(b.requests || 0) - Number(a.requests || 0)
+      || new Date(b.latest || 0) - new Date(a.latest || 0);
+  });
+}
+
+function reportEvidenceSummaryRow(key, label, lane, report, fields = {}) {
+  return {
+    key,
+    label,
+    lane,
+    title: fields.ip || fields.path || fields.siteID || label,
+    item: {},
+    siteID: fields.siteID || report.site_id || "",
+    env: "",
+    ip: fields.ip || "",
+    asn: "",
+    path: fields.path || "",
+    actor: "",
+    actorType: "",
+    userAgent: "",
+    requests: Number(fields.requests || 0),
+    errors: 0,
+    risk: 0,
+    status: "",
+    p95: 0,
+    latest: report.range_end || report.created_at || "",
+    signalKey: "",
+  };
+}
+
+function reportEvidenceRow(report, row) {
+  const actions = reportEvidenceActions(report, row);
+  const scope = [
+    row.siteID ? siteLabel(row.siteID) || row.siteID : report.site_id || "All sites",
+    row.env,
+  ].filter(Boolean).join(" / ");
+  const meta = [
+    row.lane ? formatCategory(row.lane) : "",
+    row.path || "",
+    row.ip ? `IP ${row.ip}` : "",
+    row.asn || "",
+    row.actor || "",
+    row.userAgent ? shortLabel(row.userAgent, 68) : "",
+  ].filter(Boolean).join(" / ");
+  return `
+    <tr>
+      <td class="clip"><strong>${escapeHTML(row.title || row.label || "-")}</strong><br><span>${escapeHTML([row.label, meta].filter(Boolean).join(" - "))}</span></td>
+      <td><strong>${escapeHTML(scope || "All sites")}</strong><br><span>${escapeHTML(row.siteID || report.site_id || "report scope")}</span></td>
+      <td>${formatNumber(row.requests || 0)}<br><span>${row.p95 ? `p95 ${formatMs(row.p95)}` : ""}</span></td>
+      <td>${escapeHTML(reportEvidenceRiskLabel(row))}<br><span>${escapeHTML(reportEvidenceStatusLabel(row))}</span></td>
+      <td>${formatTime(row.latest)}</td>
+      <td class="row-actions">${actions}</td>
+    </tr>
+  `;
+}
+
+function reportEvidenceActions(report, row) {
+  const primary = [];
+  const details = [];
+  const logs = [reportActionButton("Access", reportEvidenceLogPivot(report, row, "nginx-access", false))];
+  if (row.signalKey) primary.push(reportActionButton("Signal", reportSignalPivot(report, row.key, row.item, row.signalKey, row.siteID, row.errors)));
+  if (row.siteID) primary.push(reportActionButton("Site", reportPivot(report, { kind: "site", value: row.siteID, site_id: row.siteID, origin: "report_matrix" })));
+  if (row.ip) primary.push(reportActionButton("IP", reportPivot(report, { kind: "ip", value: row.ip, site_id: row.siteID, origin: "report_matrix" })));
+  if (row.path) primary.push(reportActionButton("Path", reportPivot(report, { kind: "path", value: row.path, site_id: row.siteID, origin: "report_matrix" })));
+  if (row.errors || Number(row.status || 0) >= 400) logs.push(reportActionButton("Errors", reportEvidenceLogPivot(report, row, "nginx-access", true)));
+  if (row.errors || row.path) logs.push(reportActionButton("Nginx", reportEvidenceLogPivot(report, row, "nginx-error", true)));
+  if (row.errors || row.path) logs.push(reportActionButton("PHP", reportEvidenceLogPivot(report, row, "php-error", true)));
+  if (row.asn) details.push(reportActionButton("ASN", reportPivot(report, { kind: "asn", value: row.asn, site_id: row.siteID, origin: "report_matrix" })));
+  if (row.actor) details.push(reportActionButton("Actor", reportPivot(report, { kind: "actor", value: row.actor, actor_type: row.actorType, site_id: row.siteID, origin: "report_matrix" })));
+  return [...primary, ...logs, ...details].filter(Boolean).slice(0, 9).join("");
+}
+
+function reportEvidenceLogPivot(report, row, logType, errorsOnly) {
+  return reportPivot(report, {
+    kind: "log_filter",
+    site_id: row.siteID || report.site_id || "",
+    path: row.path || "",
+    ip: row.ip || "",
+    asn: row.asn || "",
+    known_actor: row.actor || "",
+    actor_type: row.actorType || "",
+    user_agent: row.userAgent || "",
+    status_class: errorsOnly ? "errors" : "",
+    log_type: logType,
+    origin: "report_matrix",
+  });
+}
+
+function reportEvidenceRiskLabel(row) {
+  if (row.risk) return `risk ${formatNumber(row.risk)}`;
+  if (row.status) return String(row.status);
+  if (row.p95) return formatMs(row.p95);
+  return row.errors ? `${formatNumber(row.errors)} errors` : "-";
+}
+
+function reportEvidenceStatusLabel(row) {
+  const parts = [];
+  if (row.errors) parts.push(`${formatNumber(row.errors)} errors`);
+  if (row.status) parts.push(`status ${row.status}`);
+  if (row.actorType) parts.push(formatCategory(row.actorType));
+  return parts.join(" / ") || formatCategory(row.lane || "evidence");
 }
 
 function reportInvestigationRows(report) {
