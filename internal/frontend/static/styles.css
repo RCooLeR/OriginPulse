@@ -1310,9 +1310,47 @@ h2 {
 
 .verification-summary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 8px;
   padding: 10px 10px 0;
+}
+
+.actor-verification-board {
+  display: grid;
+  gap: 10px;
+}
+
+.actor-verification-wrap {
+  max-height: 430px;
+}
+
+.actor-verification-table {
+  min-width: 1060px;
+}
+
+.actor-verification-table td {
+  vertical-align: top;
+}
+
+.actor-verification-table td span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.actor-verification-table .severity {
+  color: #ffffff;
+  font-size: 0.76rem;
+}
+
+.actor-proof {
+  display: inline-flex;
+  max-width: 100%;
+  margin: 0 5px 5px 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: #fbfcfd;
+  overflow-wrap: anywhere;
 }
 
 .signal-raw {

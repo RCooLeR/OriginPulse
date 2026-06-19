@@ -4652,18 +4652,145 @@ function actorSourceRows(label, type = "") {
 function actorVerificationPanel(entity) {
   const actor = aggregateActors().find((item) => item.label === entity.value) || {};
   const rows = actorSourceRows(entity.value, state.viewContext.actor_type || actor.type);
-  if (!rows.length) return "";
-  const verified = rows.filter((item) => item.verified_source).length;
-  const review = rows.filter(actorSourceNeedsReview).length;
+  return actorVerificationBoard(rows, {
+    actorLabel: entity.value,
+    actorType: state.viewContext.actor_type || actor.type || "",
+    siteID: state.viewContext.site_id || state.siteID || "",
+    origin: "actor_verification",
+  });
+}
+
+function actorVerificationBoard(rows = [], options = {}) {
+  const sorted = actorVerificationRows(rows).slice(0, 16);
+  if (!sorted.length) return "";
+  const verified = sorted.filter(actorSourceIsVerified).length;
+  const review = sorted.filter(actorSourceNeedsReview).length;
+  const suspicious = sorted.filter((item) => ["suspicious", "watch"].includes(actorSourceStatus(item))).length;
+  const actorCount = new Set(sorted.map((item) => item.known_actor || actorLabelFromType(item.actor_type)).filter(Boolean)).size;
   const summary = `
     <div class="verification-summary">
-      ${statTile(["Verification", actorVerificationState({ ...actor, verifiedIPs: verified, unverifiedIPs: rows.length - verified, reviewIPs: review })])}
+      ${statTile(["Verification", actorVerificationState({ verifiedIPs: verified, unverifiedIPs: sorted.length - verified, reviewIPs: review })])}
       ${statTile(["Verified IPs", formatNumber(verified)])}
       ${statTile(["Needs review", formatNumber(review)])}
-      ${statTile(["Total actor IPs", formatNumber(rows.length)])}
+      ${statTile(["Suspicious", formatNumber(suspicious)])}
+      ${statTile(["Actor labels", formatNumber(actorCount)])}
     </div>
   `;
-  return `${summary}${rows.slice(0, 16).map(actorSourceRow).join("")}`;
+  return `
+    <div class="actor-verification-board">
+      ${summary}
+      <div class="table-wrap actor-verification-wrap">
+        <table class="actor-verification-table">
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Verification</th>
+              <th>Proof</th>
+              <th>Impact</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${sorted.map((item) => actorVerificationTableRow(item, options)).join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function actorVerificationRows(rows = []) {
+  return (rows || [])
+    .filter((item) => item.ip && (actorSourceNeedsReview(item) || actorSourceIsVerified(item) || item.manual_action || item.known_actor || item.actor_type || Number(item.risk_score || 0) >= 40))
+    .sort((a, b) => actorSourceStatusRank(b) - actorSourceStatusRank(a)
+      || Number(b.risk_score || 0) - Number(a.risk_score || 0)
+      || actorSourceErrors(b) - actorSourceErrors(a)
+      || Number(b.requests || 0) - Number(a.requests || 0));
+}
+
+function actorVerificationTableRow(item, options = {}) {
+  const status = actorSourceStatus(item);
+  const siteID = item.site_id || options.siteID || state.siteID || state.viewContext.site_id || "";
+  const actor = item.known_actor || actorLabelFromType(item.actor_type) || options.actorLabel || "";
+  const errors = actorSourceErrors(item);
+  const proof = actorSourceProofs(item);
+  const actions = [
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: siteID, origin: options.origin || "actor_verification" })}'>Open IP</button>`,
+    actor ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: actor, actor_type: item.actor_type || options.actorType || "", site_id: siteID, origin: options.origin || "actor_verification" })}'>Open actor</button>` : "",
+    item.asn ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "asn", value: formatASN(item.asn), site_id: siteID, origin: options.origin || "actor_verification" })}'>Open ASN</button>` : "",
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ip: item.ip, known_actor: item.known_actor || actor, actor_type: item.actor_type || options.actorType || "", site_id: siteID, status_class: errors ? "errors" : "", origin: options.origin || "actor_verification" })}'>Open logs</button>`,
+    ipManualButtons(item.ip, item, siteID, "mini"),
+  ].filter(Boolean).join("");
+  const sourceMeta = [
+    actor,
+    item.actor_type ? formatCategory(item.actor_type) : "",
+    item.asn ? formatASN(item.asn) : "",
+    item.asn_org || item.network || "",
+    siteID ? siteLabel(siteID) || siteID : "",
+  ].filter(Boolean).join(" - ");
+  return `
+    <tr>
+      <td class="clip"><strong>${escapeHTML(item.ip || "-")}</strong><br><span>${escapeHTML(sourceMeta || "source IP")}</span></td>
+      <td><span class="severity severity-${escapeHTML(actorSourceStatusSeverity(status))}">${escapeHTML(formatManualAction(status))}</span><br><span>${escapeHTML(item.manual_label || actorVerificationDecision(status))}</span></td>
+      <td class="clip">${proof.map((label) => `<span class="actor-proof">${escapeHTML(label)}</span>`).join("") || `<span class="actor-proof">No proof stored</span>`}</td>
+      <td>${formatNumber(item.requests || 0)}<br><span>${escapeHTML([errors ? `${formatNumber(errors)} errors` : "", item.risk_score ? `risk ${formatNumber(item.risk_score)}` : "", item.last_seen ? `last ${formatTime(item.last_seen)}` : ""].filter(Boolean).join(" / ") || "no impact")}</span></td>
+      <td class="row-actions">${actions}</td>
+    </tr>
+  `;
+}
+
+function actorSourceIsVerified(item = {}) {
+  const manualAction = String(item.manual_action || "").toLowerCase();
+  return manualAction === "verified" || Boolean(item.verified_source || item.verified_actor || item.forward_confirmed);
+}
+
+function actorSourceErrors(item = {}) {
+  return Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+}
+
+function actorSourceStatusRank(item = {}) {
+  return {
+    suspicious: 6,
+    watch: 5,
+    review: 4,
+    unverified: 3,
+    verified: 2,
+    ignored: 1,
+  }[actorSourceStatus(item)] || 0;
+}
+
+function actorSourceStatusSeverity(status) {
+  if (status === "suspicious") return "critical";
+  if (status === "watch" || status === "review") return "high";
+  if (status === "unverified") return "medium";
+  return "low";
+}
+
+function actorVerificationDecision(status) {
+  return {
+    suspicious: "Operator marked suspicious",
+    watch: "Operator watch",
+    review: "Verify source claim",
+    unverified: "No verification proof",
+    verified: "Verified source",
+    ignored: "Operator ignored",
+  }[status] || "Review source";
+}
+
+function actorSourceProofs(item = {}) {
+  const proofs = [];
+  const manualAction = String(item.manual_action || "").toLowerCase();
+  if (manualAction) proofs.push(`manual ${formatManualAction(manualAction).toLowerCase()}`);
+  if (actorSourceIsVerified(item)) proofs.push("verified source");
+  if (item.known_actor) proofs.push(`claims ${item.known_actor}`);
+  if (item.actor_type) proofs.push(formatCategory(item.actor_type));
+  if (item.reverse_dns) proofs.push(`rdns ${shortLabel(item.reverse_dns, 56)}`);
+  if (item.asn_org || item.network) proofs.push(shortLabel(item.asn_org || item.network, 56));
+  if (item.is_tor_exit) proofs.push("Tor exit");
+  if (actorSourceErrors(item)) proofs.push(`${formatNumber(actorSourceErrors(item))} errors`);
+  if (Number(item.risk_score || 0) >= 50) proofs.push(`risk ${formatNumber(item.risk_score)}`);
+  if (!actorSourceIsVerified(item) && (item.known_actor || item.actor_type)) proofs.push("verification needed");
+  return Array.from(new Set(proofs.filter(Boolean))).slice(0, 6);
 }
 
 function actorSourceRow(item) {
@@ -5599,11 +5726,13 @@ function renderSiteTab(site) {
     const sourceIPs = siteTopSourceIPs(id).map((item) => ({ ...item, kind: "Source IP" }));
     const asns = aggregateASNs(siteScopedRows(state.data.analysis?.source_ips || [], id));
     const userAgents = siteTopUserAgents(id).map((item) => ({ ...item, kind: "User agent" }));
+    const verificationRows = siteActorVerificationRows(id);
     const rows = [...sourceIPs, ...asns, ...userAgents];
     setText("#siteTabSummary", `${formatNumber(Math.min(30, rows.length))} of ${formatNumber(rows.length)} shown`);
     body.innerHTML = `
       <section class="site-tab-grid">
         ${siteSubsection("Actor pressure", siteActorMixPanel(site), "No actor telemetry for this site.", "span-2")}
+        ${siteSubsection("Service verification queue", actorVerificationBoard(verificationRows, { siteID: id, origin: "site_actor_verification" }), "No service or crawler sources need verification for this site.", "span-2")}
         ${siteSubsection("Source IPs", siteRowsMarkup(sourceIPs.slice(0, 15), siteActorRow, "No source IP rows for this site."))}
         ${siteSubsection("ASNs and networks", siteRowsMarkup(asns.slice(0, 12), (item) => asnRow(item, "site"), "No ASN rows for this site."))}
         ${siteSubsection("User agents", siteRowsMarkup(userAgents.slice(0, 15), siteActorRow, "No user-agent rows for this site."))}
@@ -6056,6 +6185,10 @@ function siteActorsToVerify(siteID) {
     .filter((item) => item.verified_source === false || item.manual_action || item.is_tor_exit || item.known_actor || item.actor_type || Number(item.risk_score || 0) >= 40)
     .map((item) => ({ ...item, kind: "Source IP" }))
     .sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0) || Number(b.requests || 0) - Number(a.requests || 0));
+}
+
+function siteActorVerificationRows(siteID) {
+  return actorVerificationRows(siteScopedRows(state.data.analysis?.source_ips || [], siteID));
 }
 
 function siteActivityEvents(siteID) {
