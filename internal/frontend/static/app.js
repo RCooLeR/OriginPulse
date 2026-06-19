@@ -5192,6 +5192,8 @@ function reportDetailMarkup(report) {
       ${reportMetric("Slow rate", formatPercent(summary.slow_requests_rate || 0))}
     </section>
 
+    ${reportInvestigationBoard(report)}
+
     <section class="report-layout">
       <article class="panel report-summary-panel">
         <div class="panel-head">
@@ -5393,6 +5395,161 @@ function reportMetric(label, value) {
       <span>${escapeHTML(label)}</span>
       <strong>${escapeHTML(value)}</strong>
     </article>
+  `;
+}
+
+function reportInvestigationBoard(report) {
+  const rows = reportInvestigationRows(report);
+  return `
+    <section class="report-investigation-board" aria-label="Report investigation next steps">
+      <div class="entity-next-title">
+        <span>Investigation path</span>
+        <strong>${escapeHTML(reportWindowLabel(report) || report.range || "current report")}</strong>
+      </div>
+      <div class="entity-next-list report-investigation-list">
+        ${rows.map(reportInvestigationRow).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function reportInvestigationRows(report) {
+  const summary = report.summary || {};
+  const scopedSite = report.site_id || summary.top_site || "";
+  const securityLead = reportLeadFor(report, ["admin_probes", "injection_probes", "tor_sources", "issues"]);
+  const reliabilityLead = reportLeadFor(report, ["slow_paths", "recent_errors", "top_paths"], (item, key) => {
+    if (key === "top_paths") return Number(item.status_5xx || 0) > 0 || Number(item.status_4xx || 0) > 0;
+    return true;
+  });
+  const sourceLead = reportLeadFor(report, ["source_ips", "tor_sources", "admin_probes", "injection_probes"]);
+  return [
+    {
+      title: "Scope and period",
+      meta: [report.site_id || "All sites", reportWindowLabel(report), report.model || ""].filter(Boolean).join(" - "),
+      valueLabel: "requests",
+      value: formatNumber(summary.requests || 0),
+      actions: [
+        scopedSite ? reportActionButton("Open site", reportPivot(report, { kind: "site", value: scopedSite, site_id: scopedSite, origin: "report_next" })) : "",
+        reportActionButton("Report logs", reportPivot(report, { kind: "log_filter", site_id: report.site_id || "", origin: "report_next" })),
+        reportActionButton("Error logs", reportPivot(report, { kind: "log_filter", site_id: report.site_id || "", status_class: "errors", origin: "report_next" })),
+      ].filter(Boolean).join(""),
+    },
+    reportLeadRow(report, securityLead, {
+      fallbackTitle: "Security lead",
+      fallbackMeta: "No stored security drilldown rows for this report.",
+      fallbackActions: reportActionButton("Security logs", reportPivot(report, { kind: "log_filter", site_id: report.site_id || "", status_class: "errors", origin: "report_next" })),
+    }),
+    reportLeadRow(report, reliabilityLead, {
+      fallbackTitle: "Reliability lead",
+      fallbackMeta: "No stored reliability drilldown rows for this report.",
+      fallbackActions: reportActionButton("Error logs", reportPivot(report, { kind: "log_filter", site_id: report.site_id || "", status_class: "errors", origin: "report_next" })),
+    }),
+    reportLeadRow(report, sourceLead, {
+      fallbackTitle: "Source pressure",
+      fallbackMeta: "No source IP drilldown rows for this report.",
+      fallbackActions: summary.top_source_ip
+        ? reportActionButton("Open top IP", reportPivot(report, { kind: "ip", value: summary.top_source_ip, site_id: report.site_id || "", origin: "report_next" }))
+        : reportActionButton("Source logs", reportPivot(report, { kind: "log_filter", site_id: report.site_id || "", origin: "report_next" })),
+    }),
+  ];
+}
+
+function reportLeadFor(report, keys, predicate = () => true) {
+  for (const key of keys) {
+    const drilldown = (report?.drilldowns || []).find((item) => item.key === key);
+    const item = (drilldown?.items || []).find((candidate) => predicate(candidate, key));
+    if (item) return { key, item, title: drilldown.title || formatCategory(key) };
+  }
+  return null;
+}
+
+function reportLeadRow(report, lead, fallback) {
+  if (!lead?.item) {
+    return {
+      title: fallback.fallbackTitle,
+      meta: fallback.fallbackMeta,
+      valueLabel: "status",
+      value: "quiet",
+      actions: fallback.fallbackActions || "",
+    };
+  }
+  const item = lead.item;
+  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  return {
+    title: lead.title || formatCategory(lead.key),
+    meta: reportLeadMeta(item, errors),
+    valueLabel: reportLeadValueLabel(item),
+    value: reportDrilldownValue(item),
+    actions: reportLeadActions(report, lead.key, item, errors),
+  };
+}
+
+function reportLeadMeta(item, errors) {
+  const primary = item.label || item.ip || item.path || item.actor_value || item.known_actor || "";
+  return [
+    primary,
+    reportDrilldownMeta(item, errors),
+  ].filter(Boolean).join(" - ") || "Report drilldown row";
+}
+
+function reportLeadValueLabel(item) {
+  if (item.risk_score || item.score) return "risk";
+  if (item.status) return "status";
+  if (item.p95_request_time_ms) return "p95";
+  return "requests";
+}
+
+function reportLeadActions(report, key, item, errors) {
+  const siteID = item.site_id || report.site_id || "";
+  const signalKey = reportSignalKey(key, item);
+  const actions = [];
+  if (signalKey) actions.push(reportActionButton("Open signal", reportSignalPivot(report, key, item, signalKey, siteID, errors)));
+  if (siteID) actions.push(reportActionButton("Open site", reportPivot(report, { kind: "site", value: siteID, site_id: siteID, origin: "report_next" })));
+  if (item.ip) actions.push(reportActionButton("Open IP", reportPivot(report, { kind: "ip", value: item.ip, site_id: siteID, origin: "report_next" })));
+  if (item.asn) actions.push(reportActionButton("Open ASN", reportPivot(report, { kind: "asn", value: formatASN(item.asn), site_id: siteID, origin: "report_next" })));
+  const actorValue = item.known_actor || item.actor_value || actorLabelFromType(item.actor_type);
+  if (actorValue) {
+    actions.push(reportActionButton("Open actor", reportPivot(report, {
+      kind: "actor",
+      value: actorValue,
+      actor_type: item.actor_type || "",
+      site_id: siteID,
+      origin: "report_next",
+    })));
+  }
+  if (item.path) actions.push(reportActionButton("Open path", reportPivot(report, { kind: "path", value: item.path, site_id: siteID, origin: "report_next" })));
+  actions.push(reportActionButton("Open logs", reportPivot(report, {
+    kind: "log_filter",
+    path: item.path || "",
+    ip: item.ip || "",
+    asn: item.asn ? formatASN(item.asn) : "",
+    known_actor: item.known_actor || item.actor_value || "",
+    actor_type: item.actor_type || "",
+    site_id: siteID,
+    status_class: errors || Number(item.status || 0) >= 400 ? "errors" : "",
+    origin: "report_next",
+  })));
+  return actions.filter(Boolean).slice(0, 5).join("");
+}
+
+function reportActionButton(label, pivot) {
+  if (!pivot) return "";
+  return `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(pivot)}'>${escapeHTML(label)}</button>`;
+}
+
+function reportInvestigationRow(item) {
+  return `
+    <div class="signal-row entity-next-row report-investigation-row">
+      <div>
+        <strong>${escapeHTML(item.title || "-")}</strong>
+        <span>${escapeHTML(item.meta || "")}</span>
+        <div class="signal-actions">${item.actions || ""}</div>
+      </div>
+      <div class="signal-numbers">
+        <span>${escapeHTML(item.valueLabel || "")}</span>
+        <b>${escapeHTML(item.value ?? "")}</b>
+      </div>
+    </div>
   `;
 }
 

@@ -1836,6 +1836,26 @@ td code,
   grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
 }
 
+.report-investigation-board {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.report-investigation-list {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.report-investigation-row {
+  min-height: 126px;
+}
+
+.report-investigation-row .signal-actions {
+  margin-top: 8px;
+}
+
 .report-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.75fr);
