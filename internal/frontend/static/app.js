@@ -4206,11 +4206,13 @@ function signalDetailBody(signal, signals = buildSignalItems()) {
   const related = relatedSignals(signal, signals).slice(0, 6);
   const paths = signalPaths(signal, evidence).slice(0, 8);
   const sites = signalSites(signal, evidence).slice(0, 8);
+  const reports = signalRelatedReports(signal, { evidence, paths, sites }).slice(0, 6);
   const details = signal.details ? JSON.stringify(signal.details, null, 2) : "";
   return `
     <div class="field-grid signal-facts">${signalFacts(signal).map(statTile).join("")}</div>
     ${signalInvestigationPath(signal, { evidence, paths, sites })}
     ${signalTriagePath(signal, { evidence, paths, sites })}
+    ${signalRelatedReportsPanel(signal, reports)}
     ${signalEvidenceMatrix(signal, { evidence, paths })}
     <section class="signal-detail-grid">
       ${entitySection("What happened", signalNarrative(signal), "")}
@@ -4680,6 +4682,168 @@ function signalEvidenceKind(signal) {
     slowPath: "Slow path",
     recentError: "Recent error",
   }[signal.sourceKind] || "";
+}
+
+function signalRelatedReports(signal, context = {}) {
+  return (state.data.reports || [])
+    .map((report) => signalReportMatch(signal, report, context))
+    .filter((match) => match.score > 0)
+    .sort((a, b) => Number(b.score || 0) - Number(a.score || 0)
+      || new Date(b.report.created_at || b.report.generated_at || b.report.range_end || 0) - new Date(a.report.created_at || a.report.generated_at || a.report.range_end || 0));
+}
+
+function signalReportMatch(signal, report, context = {}) {
+  const summary = report.summary || {};
+  const siteID = report.site_id || summary.top_site || "";
+  const expectedKeys = signalReportDrilldownKeys(signal);
+  const paths = new Set((context.paths || []).map((item) => item.path).filter(Boolean));
+  if (signal.path) paths.add(signal.path);
+  let score = 0;
+  let matchedSignal = false;
+  let requests = 0;
+  let errors = 0;
+  let latest = report.created_at || report.generated_at || report.range_end || "";
+  const matched = [];
+  const kinds = new Set();
+  if (signal.siteID && siteID && siteID === signal.siteID) {
+    score += 8;
+    kinds.add("site scope");
+  }
+  if (signal.ip && summary.top_source_ip === signal.ip) {
+    score += 45;
+    matchedSignal = true;
+    kinds.add("top source");
+  }
+  if (signal.path && summary.top_path && pathMatches(summary.top_path, signal.path)) {
+    score += 45;
+    matchedSignal = true;
+    kinds.add("top path");
+  }
+  if (!signal.path && summary.top_path && paths.size && Array.from(paths).some((path) => pathMatches(summary.top_path, path))) {
+    score += 18;
+    matchedSignal = true;
+    kinds.add("path context");
+  }
+  (report.drilldowns || []).forEach((drilldown) => {
+    const key = drilldown.key || "";
+    (drilldown.items || []).forEach((item) => {
+      if (!signalReportItemMatches(signal, item, key, expectedKeys)) return;
+      const itemErrors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0) + (Number(item.status || 0) >= 400 ? 1 : 0);
+      const itemRequests = Number(item.requests || item.events || 0) || (item.status ? 1 : 0);
+      score += 95 + (expectedKeys.has(key) ? 35 : 0) + Math.min(50, itemErrors * 5) + Math.min(35, Number(item.risk_score || item.score || 0) / 2);
+      matchedSignal = true;
+      requests += itemRequests;
+      errors += itemErrors;
+      latest = latestISO(latest, item.last_seen || item.last_seen_at || item.ts || item.timestamp || "");
+      kinds.add(drilldown.title || formatCategory(key || "drilldown"));
+      matched.push({ key, title: drilldown.title || "", item });
+    });
+  });
+  if (!requests) requests = Number(summary.requests || signal.requests || 0);
+  if (!errors) {
+    errors = Number(signal.errors || 0) || Math.round(Number(summary.requests || 0) * (Number(summary.status_4xx_rate || 0) + Number(summary.status_5xx_rate || 0)));
+  }
+  if (!matchedSignal) score = 0;
+  return {
+    report,
+    score,
+    requests,
+    errors,
+    latest,
+    matched,
+    kinds: Array.from(kinds),
+  };
+}
+
+function signalReportDrilldownKeys(signal) {
+  const keys = {
+    injectionProbe: ["injection_probes"],
+    adminProbe: ["admin_probes"],
+    torSource: ["tor_sources", "source_ips"],
+    slowPath: ["slow_paths", "top_paths"],
+    recentError: ["recent_errors", "top_paths"],
+    issue: ["issues"],
+  }[signal.sourceKind] || ["issues", "source_ips", "top_paths", "recent_errors"];
+  return new Set(keys);
+}
+
+function signalReportItemMatches(signal, item = {}, key = "", expectedKeys = signalReportDrilldownKeys(signal)) {
+  if (signal.siteID && item.site_id && item.site_id !== signal.siteID) return false;
+  if (expectedKeys.has(key)) {
+    if (signal.ip && item.ip === signal.ip) return true;
+    if (signal.path && item.path && pathMatches(item.path, signal.path)) return true;
+    if (!signal.ip && !signal.path) return true;
+  }
+  if (signal.ip && (item.ip === signal.ip || item.client_ip === signal.ip)) return true;
+  if (signal.path && item.path && pathMatches(item.path, signal.path)) return true;
+  if (signal.actor && (item.actor_value === signal.actor || item.known_actor === signal.actor)) return true;
+  return false;
+}
+
+function signalRelatedReportsPanel(signal, reports = []) {
+  const siteID = signal.siteID || state.viewContext.site_id || state.siteID || "";
+  if (!reports.length) {
+    return `
+      <section class="entity-report-panel signal-report-panel" aria-label="Signal related reports">
+        <div class="entity-next-title">
+          <span>Related reports</span>
+          <strong>No matched report periods</strong>
+        </div>
+        <div class="entity-report-empty">
+          <span>No generated report currently names this signal in its summary or drilldowns.</span>
+          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(signalReportContextPivot(signal, "signal_reports"))}'>Open reports</button>
+        </div>
+      </section>
+    `;
+  }
+  return `
+    <section class="entity-report-panel signal-report-panel" aria-label="Signal related reports">
+      <div class="entity-next-title">
+        <span>Related reports</span>
+        <strong>${formatNumber(reports.length)} matched periods</strong>
+      </div>
+      <div class="entity-report-list">
+        ${reports.map((match) => signalRelatedReportRow(signal, match, siteID)).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function signalRelatedReportRow(signal, match, defaultSiteID = "") {
+  const report = match.report || {};
+  const siteID = report.site_id || signal.siteID || defaultSiteID || "";
+  const errors = Number(match.errors || 0);
+  const actions = [
+    reportActionButton("Open report", reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: siteID, origin: "signal_reports" })),
+    reportActionButton("Signal logs", signalReportLogPivot(report, signal, siteID, false, "nginx-access")),
+    errors ? reportActionButton("Errors", signalReportLogPivot(report, signal, siteID, true, "nginx-access")) : "",
+    signal.path || errors ? reportActionButton("Error lanes", signalReportLogPivot(report, signal, siteID, true, "nginx-error")) : "",
+    signal.ip ? reportActionButton("IP", reportPivot(report, { kind: "ip", value: signal.ip, site_id: siteID, origin: "signal_reports" })) : "",
+    signal.path ? reportActionButton("Path", reportPivot(report, { kind: "path", value: signal.path, site_id: siteID, origin: "signal_reports" })) : "",
+  ].filter(Boolean).join("");
+  return `
+    <div class="signal-row entity-report-row signal-report-row">
+      <div>
+        <strong>${escapeHTML(reportListLabel(report))}</strong>
+        <span>${escapeHTML([reportWindowLabel(report), match.kinds.slice(0, 3).join(" / "), report.model || ""].filter(Boolean).join(" - "))}</span>
+        <div class="signal-actions">${actions}</div>
+      </div>
+      <div class="signal-numbers">
+        <span>${errors ? `${formatNumber(errors)} errors` : "requests"}</span>
+        <b>${formatNumber(match.requests || report.summary?.requests || signal.requests || 0)}</b>
+      </div>
+    </div>
+  `;
+}
+
+function signalReportLogPivot(report, signal, siteID = "", errorsOnly = false, logType = "nginx-access") {
+  return reportPivot(report, {
+    ...signalLogPivot(signal, "signal_reports"),
+    site_id: siteID || signal.siteID || "",
+    status_class: errorsOnly ? "errors" : "",
+    log_type: logType,
+    origin: "signal_reports",
+  });
 }
 
 function relatedSignals(signal, signals = buildSignalItems()) {
