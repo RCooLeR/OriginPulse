@@ -2660,6 +2660,7 @@ function signalDetailBody(signal, signals = buildSignalItems()) {
   const details = signal.details ? JSON.stringify(signal.details, null, 2) : "";
   return `
     <div class="field-grid signal-facts">${signalFacts(signal).map(statTile).join("")}</div>
+    ${signalTriagePath(signal, { evidence, paths, sites })}
     <section class="signal-detail-grid">
       ${entitySection("What happened", signalNarrative(signal), "")}
       ${entitySection("Matching evidence", evidence.map(logEvidenceRow).join(""), "No matching evidence rows in this scope.")}
@@ -2692,6 +2693,113 @@ function signalFacts(signal) {
     ["Last seen", formatTime(signal.lastSeen)],
     ["Source", formatCategory(signal.sourceKind || "signal")],
   ];
+}
+
+function signalTriagePath(signal, context = {}) {
+  const evidence = context.evidence || [];
+  const paths = context.paths || [];
+  const sites = context.sites || [];
+  const siteID = signal.siteID || state.viewContext.site_id || state.siteID || "";
+  const errors = evidence.reduce((sum, item) => sum + Number(item.errors || 0), 0) || Number(signal.errors || 0);
+  const source = signal.ip ? sourceIPContextForIP(signal.ip) : {};
+  const report = reportContextsForLogContext(evidence, paths)[0];
+  const rows = [
+    {
+      title: "Open supporting evidence",
+      meta: [
+        `${formatNumber(evidence.length)} evidence rows`,
+        `${formatNumber(signal.requests || 0)} signal requests`,
+        errors ? `${formatNumber(errors)} errors` : "",
+      ].filter(Boolean).join(" - "),
+      valueLabel: "rows",
+      value: formatNumber(evidence.length),
+      actions: signal.sourceKind === "job"
+        ? `<button class="ghost mini inline-action" type="button" data-route-target="system">Open system</button>`
+        : [
+          `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(signalLogPivot(signal, "signal_triage"))}'>Open logs</button>`,
+          signal.path ? correlatedLogActions({ path: signal.path, siteID, ip: signal.ip || "", statusClass: errors ? "errors" : "", origin: "signal_triage" }) : "",
+        ].filter(Boolean).join(""),
+    },
+    {
+      title: "Inspect primary entity",
+      meta: signalPrimaryEntityMeta(signal, source),
+      valueLabel: signal.ip ? "risk" : signal.path ? "path" : "entity",
+      value: signal.ip ? source.risk_score || signal.risk || 0 : signal.path ? formatNumber(paths.length || 1) : formatCategory(signal.sourceKind || "signal"),
+      actions: signalPrimaryEntityActions(signal, source, siteID),
+    },
+    {
+      title: "Check blast radius",
+      meta: [
+        sites.length ? `${formatNumber(sites.length)} affected sites` : signal.siteID ? `site ${signal.siteID}` : "all selected sites",
+        paths.length ? `${formatNumber(paths.length)} affected paths` : signal.path || "",
+        signal.lastSeen ? `last ${formatTime(signal.lastSeen)}` : "",
+      ].filter(Boolean).join(" - "),
+      valueLabel: "severity",
+      value: formatCategory(signal.severity || "low"),
+      actions: [
+        siteID ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: siteID, origin: "signal_triage" })}'>Open site</button>` : "",
+        paths[0]?.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: paths[0].path || "/", site_id: paths[0].site_id || siteID, origin: "signal_triage" })}'>Top path</button>` : "",
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(signalReportContextPivot(signal, "signal_triage"))}'>Reports</button>`,
+      ].filter(Boolean).join(""),
+    },
+    report ? {
+      title: "Review report context",
+      meta: [reportListLabel(report), reportWindowLabel(report)].filter(Boolean).join(" - "),
+      valueLabel: report.model || "report",
+      value: formatNumber(report.summary?.requests || 0),
+      actions: `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: report.site_id || siteID, origin: "signal_triage" }))}'>Open report</button>`,
+    } : {
+      title: "Open report workspace",
+      meta: activeFilterLabel(),
+      valueLabel: "period",
+      value: formatCategory(state.reportTab || "daily"),
+      actions: `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(signalReportContextPivot(signal, "signal_triage"))}'>Report context</button>`,
+    },
+  ];
+  return `
+    <section class="entity-next-steps signal-triage-path" aria-label="Signal triage path">
+      <div class="entity-next-title">
+        <span>Triage path</span>
+        <strong>${escapeHTML(signalTriageSummary(signal, evidence, errors))}</strong>
+      </div>
+      <div class="entity-next-list">${rows.map(entityNextStepRow).join("")}</div>
+    </section>
+  `;
+}
+
+function signalPrimaryEntityMeta(signal, source = {}) {
+  if (signal.ip) {
+    return [
+      `IP ${signal.ip}`,
+      source.known_actor || actorLabelFromType(source.actor_type) || "",
+      source.asn ? formatASN(source.asn) : "",
+      source.asn_org || source.network || "",
+    ].filter(Boolean).join(" - ");
+  }
+  if (signal.path) return `Path ${signal.path}`;
+  if (signal.actor) return `Actor ${signal.actor}`;
+  if (signal.siteID) return `Site ${signal.siteID}`;
+  return formatCategory(signal.sourceKind || "signal");
+}
+
+function signalPrimaryEntityActions(signal, source = {}, siteID = "") {
+  const actor = source.known_actor || actorLabelFromType(source.actor_type) || signal.actor || "";
+  return [
+    signal.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: signal.ip, site_id: siteID, origin: "signal_triage" })}'>Open IP</button>` : "",
+    source.asn ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "asn", value: formatASN(source.asn), site_id: siteID, origin: "signal_triage" })}'>Open ASN</button>` : "",
+    actor ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: actor, actor_type: source.actor_type || "", site_id: siteID, origin: "signal_triage" })}'>Open actor</button>` : "",
+    signal.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: signal.path, site_id: siteID, origin: "signal_triage" })}'>Open path</button>` : "",
+  ].filter(Boolean).join("") || `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(signalLogPivot(signal, "signal_triage"))}'>Open logs</button>`;
+}
+
+function signalTriageSummary(signal, evidence, errors) {
+  return [
+    formatCategory(signal.group || "signal"),
+    signal.ip ? `IP ${signal.ip}` : "",
+    signal.path || "",
+    `${formatNumber(evidence.length)} evidence rows`,
+    errors ? `${formatNumber(errors)} errors` : "",
+  ].filter(Boolean).join(" / ");
 }
 
 function signalNarrative(signal) {
