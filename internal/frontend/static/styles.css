@@ -1061,8 +1061,67 @@ h2 {
   grid-area: summary;
 }
 
+.logs-scope-path {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  margin: 10px 10px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.logs-scope-step {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 10px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: #fbfcfd;
+}
+
+.logs-scope-step:nth-child(2n) {
+  border-right: 0;
+}
+
+.logs-scope-step:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.logs-scope-step span,
+.logs-scope-step strong,
+.logs-scope-step small {
+  min-width: 0;
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.logs-scope-step span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.logs-scope-step strong {
+  font-size: 0.86rem;
+}
+
+.logs-scope-step small {
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.logs-scope-step .signal-actions {
+  margin-top: 0;
+}
+
 .log-type-profile {
-  padding: 0 10px 10px;
+  padding: 10px 10px 10px;
 }
 
 .log-profile-card {
@@ -3263,6 +3322,23 @@ td code,
 
   .entity-next-list {
     grid-template-columns: 1fr;
+  }
+
+  .logs-scope-path {
+    grid-template-columns: 1fr;
+  }
+
+  .logs-scope-step {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .logs-scope-step:nth-last-child(-n + 2) {
+    border-bottom: 1px solid var(--line);
+  }
+
+  .logs-scope-step:last-child {
+    border-bottom: 0;
   }
 
   .entity-path-board {

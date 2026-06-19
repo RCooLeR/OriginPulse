@@ -1776,6 +1776,7 @@ function renderLogs() {
   const pageItems = paginate("logEvidence", evidence);
 
   qs("#logsFieldStats").innerHTML = accessLogStats(totals, evidence, topPaths).map(statTile).join("");
+  renderLogsScopePath(evidence, topPaths);
   renderLogTypeProfile({ evidence, topPaths });
   setText("#logsTimelineSummary", `${formatNumber(timeline.length)} buckets`);
   renderPager("#logsPager", "logEvidence", evidence);
@@ -1812,6 +1813,7 @@ function renderUnsupportedLogExplorer() {
     ["Latest segment", formatTime(latest?.bucket_start || latest?.min_ts)],
     ["Correlated access rows", formatNumber(correlatedEvidence.length)],
   ].map(statTile).join("");
+  renderLogsScopePath(correlatedEvidence, correlatedPaths, { segments });
   renderLogTypeProfile({ evidence: correlatedEvidence, topPaths: correlatedPaths, segments });
   setText("#logsTimelineSummary", segmentTimeline.length ? `${formatNumber(segmentTimeline.length)} segment buckets` : "no segments");
   setText("#logsEvidenceEyebrow", "Segment evidence");
@@ -1890,6 +1892,142 @@ function renderLogTypeProfile({ evidence = [], topPaths = [], segments = [] } = 
       </div>
       <div class="signal-actions">${profile.actions}</div>
     </section>
+  `;
+}
+
+function renderLogsScopePath(evidence = [], topPaths = [], options = {}) {
+  const container = qs("#logsScopePath");
+  if (!container) return;
+  container.innerHTML = logsScopePath(evidence, topPaths, options);
+}
+
+function logsScopePath(evidence = [], topPaths = [], options = {}) {
+  const context = state.viewContext || {};
+  const siteID = context.site_id || state.siteID || "";
+  const segments = options.segments || (state.logType === "nginx-access" ? [] : unsupportedLogSegments(state.logType));
+  const isAccess = state.logType === "nginx-access";
+  const segmentSummary = isAccess ? null : segmentSummaryForLogType(state.logType);
+  const requests = evidence.reduce((sum, item) => sum + Number(item.requests || 0), 0);
+  const errors = evidence.reduce((sum, item) => {
+    const status = Number(item.status || 0);
+    return sum
+      + Number(item.errors || 0)
+      + Number(item.status_4xx || 0)
+      + Number(item.status_5xx || 0)
+      + (status >= 400 ? 1 : 0);
+  }, 0);
+  const segmentLines = segments.reduce((sum, item) => sum + Number(item.line_count || 0), 0);
+  const pendingSegments = segments.filter((item) => !(item.indexed || item.status === "indexed")).length;
+  const primaryEntity = logPrimaryEntity(evidence, topPaths);
+  const topPath = context.path ? { path: context.path, site_id: siteID } : topPaths[0] || {};
+  const topIP = context.ip || evidence[0]?.ip || "";
+  const relatedSegments = correlatedLogTypeDefs(false)
+    .map(([logType]) => segmentSummaryForLogType(logType))
+    .reduce((sum, item) => sum + Number(item.count || 0), 0);
+  const relatedPending = correlatedLogTypeDefs(false)
+    .map(([logType]) => segmentSummaryForLogType(logType))
+    .reduce((sum, item) => sum + Number(item.pending || 0), 0);
+  const report = reportContextsForLogContext(evidence, topPaths)[0];
+  const lanePivot = logFilterPivotForContext(state.logType, context, "logs_path");
+  const accessPivot = logFilterPivotForContext("nginx-access", context, "logs_path");
+  const evidencePivot = isAccess ? {
+    ...accessPivot,
+    status_class: context.status_class || (errors ? "errors" : ""),
+  } : lanePivot;
+  const steps = [
+    {
+      label: "Scope",
+      value: activeFilterLabel(),
+      meta: logContextLabel(),
+      actions: [
+        siteID ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: siteID, origin: "logs_path" })}'>Open site</button>` : "",
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", origin: "logs_path" })}'>Clear</button>`,
+      ].filter(Boolean).join(""),
+    },
+    {
+      label: "Log lane",
+      value: formatLogType(state.logType),
+      meta: isAccess
+        ? [`${formatNumber(evidence.length)} rows`, `${formatNumber(requests)} requests`, errors ? `${formatNumber(errors)} errors` : ""].filter(Boolean).join(" / ")
+        : [`${formatNumber(segments.length || segmentSummary?.count || 0)} segments`, `${formatNumber(segmentLines || segmentSummary?.lines || 0)} lines`, pendingSegments || segmentSummary?.pending ? `${formatNumber(pendingSegments || segmentSummary?.pending)} pending` : "indexed"].filter(Boolean).join(" / "),
+      actions: [
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(lanePivot)}'>Open lane</button>`,
+        !isAccess ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(accessPivot)}'>Access rows</button>` : errors && context.status_class !== "errors" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ ...accessPivot, status_class: "errors" })}'>Errors</button>` : "",
+      ].filter(Boolean).join(""),
+    },
+    {
+      label: "Primary entity",
+      value: primaryEntity ? shortLabel(logEntityLabel(primaryEntity.kind, primaryEntity.value), 54) : "No entity",
+      meta: primaryEntity ? primaryEntity.meta : "No matching IP, path, actor, or site in this scope",
+      actions: primaryEntity ? logScopePrimaryEntityActions(primaryEntity) : "",
+    },
+    {
+      label: isAccess ? "Raw evidence" : "Segment evidence",
+      value: isAccess ? `${formatNumber(evidence.length)} rows` : `${formatNumber(segments.length || segmentSummary?.count || 0)} segments`,
+      meta: isAccess
+        ? [`${formatNumber(requests)} requests`, errors ? `${formatNumber(errors)} errors` : "", topPath.path || ""].filter(Boolean).join(" / ")
+        : [`${formatNumber(segmentLines || segmentSummary?.lines || 0)} lines`, segmentSummary?.latest ? `latest ${formatTime(segmentSummary.latest)}` : ""].filter(Boolean).join(" / "),
+      actions: [
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(evidencePivot)}'>Open evidence</button>`,
+        isAccess && topPath.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: topPath.path, site_id: topPath.site_id || siteID, origin: "logs_path" })}'>Open path</button>` : "",
+      ].filter(Boolean).join(""),
+    },
+    {
+      label: "Correlate",
+      value: `${formatNumber(correlatedLogTypeDefs(true).length)} lanes`,
+      meta: [
+        relatedSegments ? `${formatNumber(relatedSegments)} related segments` : "segment lanes ready",
+        relatedPending ? `${formatNumber(relatedPending)} pending` : "",
+        topPath.path || topIP ? "context carried" : "",
+      ].filter(Boolean).join(" / "),
+      actions: correlatedLogActions({
+        path: topPath.path || "",
+        siteID: topPath.site_id || siteID,
+        ip: topIP,
+        statusClass: context.status_class || (errors ? "errors" : ""),
+        origin: "logs_path",
+      }),
+    },
+    {
+      label: "Report period",
+      value: report ? reportListLabel(report) : formatCategory(state.reportTab || "daily"),
+      meta: report ? reportWindowLabel(report) : activeFilterLabel(),
+      actions: report
+        ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: report.site_id || siteID, origin: "logs_path" }))}'>Open report</button>`
+        : `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "report", report_tab: state.reportTab || "daily", site_id: siteID, origin: "logs_path" })}'>Reports</button>`,
+    },
+  ];
+  return steps.map(logsScopePathStep).join("");
+}
+
+function logScopePrimaryEntityActions(entity) {
+  const entityPivot = {
+    kind: entity.kind,
+    value: entity.value,
+    site_id: entity.siteID || state.viewContext.site_id || state.siteID || "",
+    origin: "logs_path",
+  };
+  if (entity.kind === "actor" && entity.actor_type) entityPivot.actor_type = entity.actor_type;
+  const logPivot = {
+    ...logPrimaryEntityLogPivot(entity),
+    origin: "logs_path",
+  };
+  return [
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(entityPivot)}'>Open ${escapeHTML(logEntityActionLabel(entity.kind))}</button>`,
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(logPivot)}'>Entity logs</button>`,
+  ].join("");
+}
+
+function logsScopePathStep(step) {
+  return `
+    <div class="logs-scope-step">
+      <div>
+        <span>${escapeHTML(step.label || "-")}</span>
+        <strong>${escapeHTML(step.value || "-")}</strong>
+        <small>${escapeHTML(step.meta || "")}</small>
+      </div>
+      <div class="signal-actions">${step.actions || ""}</div>
+    </div>
   `;
 }
 
