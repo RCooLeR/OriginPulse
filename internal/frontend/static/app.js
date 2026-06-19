@@ -864,6 +864,8 @@ function renderLogs() {
   const supported = state.logType === "nginx-access";
   setText("#logsTitle", supported ? "Access logs" : `${formatLogType(state.logType)} logs`);
   qs("#logsContext").innerHTML = logContextChips().join("");
+  setText("#logsEvidenceEyebrow", "Evidence");
+  setText("#logsEvidenceTitle", "Recent matching rows");
 
   if (!supported) {
     renderUnsupportedLogExplorer();
@@ -892,6 +894,9 @@ function renderUnsupportedLogExplorer() {
   const segments = (state.data.segments || []).filter((item) => item.log_type === state.logType);
   const indexed = segments.filter((item) => item.indexed || item.status === "indexed").length;
   const lines = segments.reduce((sum, item) => sum + Number(item.line_count || 0), 0);
+  const correlatedEvidence = filteredLogEvidence();
+  const correlatedPaths = filteredTopPaths();
+  const pageItems = paginate("logEvidence", correlatedEvidence);
   qs("#logsFieldStats").innerHTML = [
     ["Log type", formatLogType(state.logType)],
     ["Collection", segments.length ? "Raw segments found" : "Configured"],
@@ -899,10 +904,14 @@ function renderUnsupportedLogExplorer() {
     ["Indexed segments", formatNumber(indexed)],
     ["Lines combined", formatNumber(lines)],
     ["Parser", "Pending"],
+    ["Correlated access rows", formatNumber(correlatedEvidence.length)],
   ].map(statTile).join("");
-  setText("#logsTimelineSummary", "parser pending");
-  setText("#logsEvidenceCount", "not parsed yet");
-  qs("#logsEvidenceTable").innerHTML = emptyRow(7, `${formatLogType(state.logType)} rows are not parsed into searchable fields yet.`);
+  setText("#logsTimelineSummary", correlatedEvidence.length ? "access context" : "parser pending");
+  setText("#logsEvidenceEyebrow", "Correlation");
+  setText("#logsEvidenceTitle", "Access rows for this error-log context");
+  renderPager("#logsPager", "logEvidence", correlatedEvidence);
+  setText("#logsEvidenceCount", correlatedEvidence.length ? `${formatNumber(pageItems.length)} of ${formatNumber(correlatedEvidence.length)} access rows` : "parser pending");
+  qs("#logsEvidenceTable").innerHTML = pageItems.map(logEvidenceTableRow).join("") || emptyRow(7, `${formatLogType(state.logType)} rows are not parsed yet, and no matching access rows exist in this context.`);
   qs("#logsFacetsList").innerHTML = `
     <section class="facet-section">
       <h3>Ingestion state</h3>
@@ -915,11 +924,42 @@ function renderUnsupportedLogExplorer() {
         <strong>Pending</strong>
       </div>
     </section>
+    <section class="facet-section">
+      <h3>Expected fields</h3>
+      ${unsupportedLogFieldFacets(state.logType)}
+    </section>
+    <section class="facet-section">
+      <h3>Current context</h3>
+      ${logContextFacetRows()}
+    </section>
   `;
-  setText("#logsFacetSummary", "reserved");
-  setText("#logsTopPathCount", "not available");
-  qs("#logsTopPathsList").innerHTML = `<div class="empty">Path statistics will appear when the ${escapeHTML(formatLogType(state.logType))} parser is enabled.</div>`;
-  renderPager("#logsPager", "logEvidence", []);
+  setText("#logsFacetSummary", "parser plan");
+  setText("#logsTopPathCount", correlatedPaths.length ? `${formatNumber(correlatedPaths.length)} correlated paths` : "parser pending");
+  qs("#logsTopPathsList").innerHTML = correlatedPaths.slice(0, 12).map(correlatedPathRow).join("") || `<div class="empty">Path statistics will appear when the ${escapeHTML(formatLogType(state.logType))} parser is enabled.</div>`;
+}
+
+function unsupportedLogFieldFacets(logType) {
+  const fields = {
+    "nginx-error": ["severity", "message fingerprint", "site/env/container", "correlated path", "request id"],
+    "php-error": ["severity", "message fingerprint", "file/function", "site/env/container", "correlated path"],
+    "php-slow": ["script", "duration", "stack fingerprint", "site/env/container", "correlated path"],
+    "mysql-slow": ["query fingerprint", "duration", "rows examined", "site/env/container"],
+  }[logType] || ["severity", "message", "site/env", "timestamp"];
+  return fields.map((field) => `
+    <div class="facet-row">
+      <span>${escapeHTML(field)}</span>
+      <strong>planned</strong>
+    </div>
+  `).join("");
+}
+
+function logContextFacetRows() {
+  return logContextPairs().map(([label, value]) => `
+    <div class="facet-row">
+      <span>${escapeHTML(label)}</span>
+      <strong>${escapeHTML(value)}</strong>
+    </div>
+  `).join("") || `<div class="empty">No context filters are active.</div>`;
 }
 
 function accessLogStats(totals, evidence, topPaths) {
@@ -942,24 +982,28 @@ function accessLogStats(totals, evidence, topPaths) {
 }
 
 function logContextChips() {
-  const context = state.viewContext || {};
-  const chips = [
-    ["Scope", activeFilterLabel()],
-    ["Log type", formatLogType(state.logType)],
-  ];
-  if (context.ip) chips.push(["IP", context.ip]);
-  if (context.path) chips.push(["Path", context.path]);
-  if (context.known_actor) chips.push(["Actor", context.known_actor]);
-  if (context.actor_type) chips.push(["Actor type", formatCategory(context.actor_type)]);
-  if (context.status_class === "errors") chips.push(["Status", "Errors only"]);
-  if (context.user_agent) chips.push(["User agent", context.user_agent]);
-  return chips.map(([label, value]) => `
+  return logContextPairs().map(([label, value]) => `
     <span class="context-chip"><b>${escapeHTML(label)}</b>${escapeHTML(value)}</span>
   `);
 }
 
-function logTimelineRows(evidence = filteredLogEvidence()) {
-  if (state.logType !== "nginx-access") return [];
+function logContextPairs() {
+  const context = state.viewContext || {};
+  const pairs = [
+    ["Scope", activeFilterLabel()],
+    ["Log type", formatLogType(state.logType)],
+  ];
+  if (context.ip) pairs.push(["IP", context.ip]);
+  if (context.path) pairs.push(["Path", context.path]);
+  if (context.known_actor) pairs.push(["Actor", context.known_actor]);
+  if (context.actor_type) pairs.push(["Actor type", formatCategory(context.actor_type)]);
+  if (context.status_class === "errors") pairs.push(["Status", "Errors only"]);
+  if (context.user_agent) pairs.push(["User agent", context.user_agent]);
+  return pairs;
+}
+
+function logTimelineRows(evidence = filteredLogEvidence(), allowCorrelated = false) {
+  if (state.logType !== "nginx-access" && !allowCorrelated) return [];
   const context = state.viewContext || {};
   const contextKeys = Object.keys(context).filter((key) => context[key] && !(key === "site_id" && state.siteID === context[key]));
   if (!contextKeys.length) return state.data.traffic?.timeline || [];
@@ -1062,7 +1106,9 @@ function facetRowMarkup(item, type) {
         <span>${escapeHTML(label)}</span>
         ${item.errors ? `<small>${formatNumber(item.errors)} errors</small>` : ""}
         <div class="signal-actions">
-          ${refine ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(refine)}'>Refine</button>` : ""}
+          ${type === "path"
+            ? correlatedLogActions({ path: label, siteID, statusClass: item.errors ? "errors" : "", origin: "logs" })
+            : refine ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(refine)}'>Refine</button>` : ""}
           ${secondary}
         </div>
       </div>
@@ -1081,12 +1127,62 @@ function topPathLogRow(item) {
         <span>${escapeHTML(item.site_id || "all sites")} - ${formatStatusBuckets(item)}</span>
         <div class="signal-actions">
           <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path || "/", site_id: siteID, origin: "logs" })}'>Open path</button>
-          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "/", site_id: siteID, status_class: errors ? "errors" : "", origin: "logs" })}'>Refine</button>
+          ${correlatedLogActions({ path: item.path || "/", siteID, statusClass: errors ? "errors" : "", origin: "logs" })}
         </div>
       </div>
       <div class="signal-numbers">
         <span>${formatBytes(item.bytes_sent || 0)}</span>
         <b>${formatNumber(item.requests || 0)}</b>
+      </div>
+    </div>
+  `;
+}
+
+function correlatedPathRow(item) {
+  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  const siteID = item.site_id || state.viewContext.site_id || state.siteID || "";
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(item.path || "/")}</strong>
+        <span>${escapeHTML([siteID || "all sites", `${formatNumber(item.requests || 0)} access requests`, errors ? `${formatNumber(errors)} errors` : ""].filter(Boolean).join(" - "))}</span>
+        <div class="signal-actions">
+          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path || "/", site_id: siteID, origin: "logs" })}'>Open path</button>
+          ${correlatedLogActions({ path: item.path || "/", siteID, statusClass: errors ? "errors" : "", origin: "logs" })}
+        </div>
+      </div>
+      <div class="signal-numbers"><span>correlated</span><b>${formatNumber(item.requests || 0)}</b></div>
+    </div>
+  `;
+}
+
+function correlatedLogActions({ path = "", siteID = "", ip = "", statusClass = "", origin = "correlation", includeAccess = true } = {}) {
+  const types = [
+    includeAccess ? ["nginx-access", "Access rows"] : null,
+    ["nginx-error", "Nginx errors"],
+    ["php-error", "PHP errors"],
+    ["php-slow", "PHP slow"],
+  ].filter(Boolean);
+  return types.map(([logType, label]) => {
+    const pivot = {
+      kind: "log_filter",
+      path,
+      ip,
+      site_id: siteID,
+      status_class: statusClass,
+      log_type: logType,
+      origin,
+    };
+    return `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(pivot)}'>${escapeHTML(label)}</button>`;
+  }).join("");
+}
+
+function correlatedLogPanel(options = {}) {
+  return `
+    <div class="correlated-log-panel">
+      <p>${escapeHTML("Open the same site, path, IP, and time window across access and error-oriented log types.")}</p>
+      <div class="signal-actions">
+        ${correlatedLogActions(options)}
       </div>
     </div>
   `;
@@ -1419,6 +1515,13 @@ function signalDetailBody(signal, signals = buildSignalItems()) {
     <section class="signal-detail-grid">
       ${entitySection("What happened", signalNarrative(signal), "")}
       ${entitySection("Matching evidence", evidence.map(logEvidenceRow).join(""), "No matching evidence rows in this scope.")}
+      ${signal.path ? entitySection("Correlated logs", correlatedLogPanel({
+        path: signal.path,
+        siteID: signal.siteID || "",
+        ip: signal.ip || "",
+        statusClass: signal.errors ? "errors" : "",
+        origin: "signal_detail",
+      }), "") : ""}
       ${entitySection("Related entities", signalEntities(signal), "No entity pivots available.")}
       ${entitySection("Related signals", related.map(signalRow).join(""), "No related signals in this scope.")}
       ${entitySection("Affected sites", sites.map(signalSiteRow).join(""), "No site distribution available.")}
@@ -1607,7 +1710,7 @@ function signalPathRow(item) {
         <span>${escapeHTML(item.site_id || "all sites")} - ${formatStatusBuckets(item)}</span>
         <div class="signal-actions">
           <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path || "/", site_id: item.site_id || "", origin: "signal_detail" })}'>Open path</button>
-          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "/", site_id: item.site_id || "", status_class: errors ? "errors" : "", origin: "signal_detail" })}'>Open logs</button>
+          ${correlatedLogActions({ path: item.path || "/", siteID: item.site_id || "", statusClass: errors ? "errors" : "", origin: "signal_detail" })}
         </div>
       </div>
       <div class="signal-numbers"><span>${formatBytes(item.bytes_sent || 0)}</span><b>${formatNumber(item.requests || 0)}</b></div>
@@ -1715,6 +1818,12 @@ function entityBody(entity) {
     <section class="entity-detail-grid">
       ${entitySection("Related signals", signals.map(signalRow).join(""), "No related signals in this scope.")}
       ${entitySection("Recent evidence", evidence.map(logEvidenceRow).join(""), "No recent evidence in this scope.")}
+      ${entity.kind === "path" ? entitySection("Correlated logs", correlatedLogPanel({
+        path: entity.value,
+        siteID: state.siteID || state.viewContext.site_id || "",
+        statusClass: state.viewContext.status_class || "",
+        origin: "entity",
+      }), "") : ""}
       ${entitySection("Sites touched", sites.map(entitySiteRow).join(""), "No site distribution available.")}
       ${entitySection("Paths", paths.map(entityPathRow).join(""), "No path distribution available.")}
       ${entitySection("User agents", agents.map(entityUserAgentRow).join(""), "No user-agent distribution available.")}
@@ -1871,7 +1980,7 @@ function entityPathRow(item) {
         <strong>${escapeHTML(item.path || "/")}</strong>
         <span>${escapeHTML(`${formatNumber(errors)} errors - ${formatBytes(item.bytes_sent || 0)}`)}</span>
         <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path || "/", site_id: state.siteID || state.viewContext.site_id || "", origin: "entity" })}'>Open path</button>
-        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "/", site_id: state.siteID || state.viewContext.site_id || "", status_class: errors ? "errors" : "", origin: "entity" })}'>Open logs</button>
+        ${correlatedLogActions({ path: item.path || "/", siteID: state.siteID || state.viewContext.site_id || "", statusClass: errors ? "errors" : "", origin: "entity" })}
       </div>
       <div class="signal-numbers"><span>requests</span><b>${formatNumber(item.requests || 0)}</b></div>
     </div>
@@ -2448,7 +2557,7 @@ function siteReliabilityRow(item) {
         <strong>${escapeHTML(item.path || "/")}</strong>
         <span>${escapeHTML(`p95 ${formatMs(item.p95_request_time_ms || 0)} - avg ${formatMs(item.avg_request_time_ms || 0)} - ${formatNumber(item.status_5xx || 0)} 5xx`)}</span>
         <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path || "/", site_id: item.site_id || "", origin: "site" })}'>Open path</button>
-        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "/", site_id: item.site_id || "", status_class: Number(item.status_5xx || 0) ? "errors" : "", origin: "site" })}'>Open logs</button>
+        ${correlatedLogActions({ path: item.path || "/", siteID: item.site_id || "", statusClass: Number(item.status_5xx || 0) ? "errors" : "", origin: "site" })}
       </div>
       <div class="signal-numbers"><span>requests</span><b>${formatNumber(item.requests || 0)}</b></div>
     </div>
@@ -2499,7 +2608,7 @@ function sitePathRow(item) {
         <strong>${escapeHTML(item.path || "/")}</strong>
         <span>${escapeHTML(`${formatNumber(errors)} errors - ${formatBytes(item.bytes_sent || 0)} - p95 ${formatMs(item.p95_request_time_ms || 0)}`)}</span>
         <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path || "/", site_id: state.siteID || item.site_id || "", origin: "site" })}'>Open path</button>
-        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "/", site_id: state.siteID || item.site_id || "", status_class: errors ? "errors" : "", origin: "site" })}'>Open logs</button>
+        ${correlatedLogActions({ path: item.path || "/", siteID: state.siteID || item.site_id || "", statusClass: errors ? "errors" : "", origin: "site" })}
       </div>
       <div class="signal-numbers"><span>requests</span><b>${formatNumber(item.requests || 0)}</b></div>
     </div>
@@ -3151,7 +3260,7 @@ function renderUsers() {
 
 function renderCharts() {
   drawTimeline(qs("#timelineChart"), state.data.traffic?.timeline || []);
-  drawTimeline(qs("#logsTimelineChart"), logTimelineRows());
+  drawTimeline(qs("#logsTimelineChart"), logTimelineRows(filteredLogEvidence(), state.logType !== "nginx-access"));
   drawStatus(qs("#statusChart"), state.data.analysis?.status_breakdown || []);
   drawSites(qs("#siteChart"), state.data.analysis?.sites || []);
   drawSourceIPs(qs("#sourceChart"), state.data.analysis?.source_ips || []);
@@ -3656,8 +3765,9 @@ function applyPivotWindow(pivot) {
     if (state.logType !== pivot.log_type) changed = true;
     state.logType = pivot.log_type;
   }
-  if (isReportPivotOrigin(pivot) && pivot.site_id && state.siteID !== pivot.site_id) {
+  if (pivot.site_id && pivot.kind !== "site" && state.siteID !== pivot.site_id) {
     changed = true;
+    state.siteID = pivot.site_id;
   }
   return changed;
 }

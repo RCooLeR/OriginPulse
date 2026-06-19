@@ -768,6 +768,18 @@ h2 {
   line-height: 1.45;
 }
 
+.correlated-log-panel {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.correlated-log-panel p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
 .signal-raw {
   max-height: 300px;
   margin: 10px;
