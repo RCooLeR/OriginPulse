@@ -876,6 +876,7 @@ h2 {
     "summary evidence"
     "timeline evidence"
     "facets evidence"
+    "correlation evidence"
     "paths evidence"
     "related evidence";
   gap: 12px;
@@ -892,6 +893,10 @@ h2 {
 
 .logs-facets-panel {
   grid-area: facets;
+}
+
+.logs-correlation-panel {
+  grid-area: correlation;
 }
 
 .explorer-main {
@@ -1072,6 +1077,18 @@ h2 {
   display: grid;
   gap: 10px;
   padding: 10px;
+}
+
+.correlation-pack {
+  display: grid;
+}
+
+.correlation-pack .signal-row {
+  min-height: 64px;
+}
+
+.correlation-pack .signal-row strong {
+  font-size: 0.86rem;
 }
 
 .correlated-log-panel p {
@@ -1949,6 +1966,7 @@ td code,
   .logs-summary-panel,
   .logs-timeline-panel,
   .logs-facets-panel,
+  .logs-correlation-panel,
   .explorer-main,
   .logs-paths-panel,
   .logs-related-panel {
