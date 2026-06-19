@@ -1738,6 +1738,60 @@ h2 {
   grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
+.entity-path-board {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0;
+  margin: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.entity-path-step {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 10px;
+  border-right: 1px solid var(--line);
+  background: #fbfcfd;
+}
+
+.entity-path-step:last-child {
+  border-right: 0;
+}
+
+.entity-path-step span,
+.entity-path-step strong,
+.entity-path-step small {
+  min-width: 0;
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.entity-path-step span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.entity-path-step strong {
+  font-size: 0.86rem;
+}
+
+.entity-path-step small {
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.entity-path-step .signal-actions {
+  margin-top: 0;
+}
+
 .entity-next-steps {
   min-width: 0;
   margin: 0 10px;
@@ -2877,7 +2931,15 @@ td code,
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .entity-path-board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .signal-path-step:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .entity-path-step:nth-child(2n) {
     border-right: 0;
   }
 
@@ -3201,6 +3263,19 @@ td code,
 
   .entity-next-list {
     grid-template-columns: 1fr;
+  }
+
+  .entity-path-board {
+    grid-template-columns: 1fr;
+  }
+
+  .entity-path-step {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .entity-path-step:last-child {
+    border-bottom: 0;
   }
 
   .site-command-board {
