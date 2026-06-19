@@ -1148,6 +1148,10 @@ h2 {
   padding: 10px;
 }
 
+.site-overview-grid {
+  align-items: start;
+}
+
 .site-subsection {
   min-width: 0;
   border: 1px solid var(--line);
@@ -1164,6 +1168,15 @@ h2 {
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0;
+}
+
+.site-subsection > .entity-timeline {
+  max-height: 430px;
+  overflow: auto;
+}
+
+.site-subsection .signal-list {
+  min-height: 0;
 }
 
 .dashboard-grid {
