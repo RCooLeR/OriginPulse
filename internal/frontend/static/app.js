@@ -6931,9 +6931,11 @@ function renderSiteTab(site) {
     return;
   }
   if (state.siteTab === "paths") {
-    const rows = siteTopPaths(id);
-    setText("#siteTabSummary", `${formatNumber(Math.min(30, rows.length))} of ${formatNumber(rows.length)} shown`);
-    body.innerHTML = siteRowsMarkup(rows.slice(0, 30), sitePathRow, "No path data for this site in scope.");
+    const rows = sitePathInvestigationRows(id);
+    const failing = rows.filter((item) => item.errors > 0 || item.status5xx > 0);
+    const slow = rows.filter((item) => item.p95 > 0);
+    setText("#siteTabSummary", `${formatNumber(rows.length)} paths / ${formatNumber(failing.length)} failing / ${formatNumber(slow.length)} slow`);
+    body.innerHTML = sitePathsWorkspace(site, rows);
     return;
   }
   if (state.siteTab === "logs") {
@@ -7278,6 +7280,184 @@ function siteReliabilityLaneStats(siteID) {
     stats[logType] = existing;
   });
   return stats;
+}
+
+function sitePathsWorkspace(site, rows = sitePathInvestigationRows(site.id || "")) {
+  const siteID = site.id || "";
+  const failing = rows.filter((item) => item.errors > 0 || item.status5xx > 0)
+    .sort((a, b) => Number(b.status5xx || 0) - Number(a.status5xx || 0) || Number(b.errors || 0) - Number(a.errors || 0) || Number(b.requests || 0) - Number(a.requests || 0));
+  const slow = rows.filter((item) => item.p95 > 0)
+    .sort((a, b) => Number(b.p95 || 0) - Number(a.p95 || 0) || Number(b.requests || 0) - Number(a.requests || 0));
+  const traffic = rows.slice().sort((a, b) => Number(b.requests || 0) - Number(a.requests || 0));
+  return `
+    <section class="site-tab-grid site-paths-grid">
+      ${siteSubsection("Path command board", sitePathCommandBoard(site, rows), "No path telemetry in this scope.", "span-2")}
+      ${siteSubsection("Path investigation matrix", sitePathMatrix(siteID, rows.slice(0, 16)), "No path rows are available.", "span-2")}
+      ${siteSubsection("Failing paths", siteRowsMarkup(failing.slice(0, 8), sitePathFindingRow, "No failing paths for this site."))}
+      ${siteSubsection("Slow paths", siteRowsMarkup(slow.slice(0, 8), sitePathFindingRow, "No slow paths for this site."))}
+      ${siteSubsection("Highest traffic paths", siteRowsMarkup(traffic.slice(0, 10), sitePathFindingRow, "No high-traffic path rows for this site."), "", "span-2")}
+    </section>
+  `;
+}
+
+function sitePathInvestigationRows(siteID) {
+  const evidence = siteLogEvidence(siteID);
+  const signals = siteSignalItems(siteID);
+  const reports = siteReports(siteID);
+  return siteTopPaths(siteID).map((path) => {
+    const value = path.path || "/";
+    const pathEvidence = evidence.filter((item) => item.path && pathMatches(item.path, value));
+    const source = countFacet(pathEvidence, (item) => item.ip, (item) => item.requests)[0] || {};
+    const signal = signals.find((item) => item.path && pathMatches(item.path, value)) || null;
+    const report = reports.find((item) => item.summary?.top_path && pathMatches(item.summary.top_path, value)) || null;
+    const evidenceRequests = pathEvidence.reduce((sum, item) => sum + Number(item.requests || 0), 0);
+    const evidenceErrors = pathEvidence.reduce((sum, item) => sum + Number(item.errors || 0), 0);
+    const status4xx = Number(path.status_4xx || 0);
+    const status5xx = Number(path.status_5xx || 0);
+    const errors = Math.max(status4xx + status5xx, evidenceErrors);
+    const latest = latestSiteEvidenceTime(pathEvidence) || path.last_seen || path.ts || "";
+    const p95 = Number(path.p95_request_time_ms || 0);
+    const requests = Math.max(Number(path.requests || 0), evidenceRequests);
+    const score = Number(status5xx || 0) * 100000
+      + Number(errors || 0) * 1000
+      + Math.round(p95 || 0)
+      + Math.min(999, requests)
+      + (signal ? severityRank(signal.severity) * 5000 : 0);
+    return {
+      ...path,
+      siteID,
+      path: value,
+      requests,
+      status4xx,
+      status5xx,
+      errors,
+      p95,
+      latest,
+      evidenceCount: pathEvidence.length,
+      topIP: source.label || "",
+      topIPRequests: source.value || 0,
+      topIPErrors: source.errors || 0,
+      signal,
+      report,
+      score,
+    };
+  }).sort((a, b) => Number(b.score || 0) - Number(a.score || 0) || Number(b.requests || 0) - Number(a.requests || 0));
+}
+
+function sitePathCommandBoard(site, rows = []) {
+  if (!rows.length) return "";
+  const siteID = site.id || "";
+  const totalRequests = rows.reduce((sum, item) => sum + Number(item.requests || 0), 0);
+  const totalErrors = rows.reduce((sum, item) => sum + Number(item.errors || 0), 0);
+  const failing = rows.filter((item) => item.errors > 0 || item.status5xx > 0);
+  const slow = rows.filter((item) => item.p95 > 0);
+  const top = rows[0] || {};
+  const topIP = rows.find((item) => item.topIP)?.topIP || "";
+  const actions = [
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, log_type: "nginx-access", origin: "site_paths_board" })}'>All access rows</button>`,
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, status_class: "errors", log_type: "nginx-access", origin: "site_paths_board" })}'>Errors only</button>`,
+    top.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: top.path, site_id: siteID, origin: "site_paths_board" })}'>Top path</button>` : "",
+    topIP ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: topIP, site_id: siteID, origin: "site_paths_board" })}'>Top IP</button>` : "",
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "report", report_tab: state.reportTab || "daily", site_id: siteID, origin: "site_paths_board" })}'>Reports</button>`,
+  ].filter(Boolean).join("");
+  const facts = [
+    ["Paths", formatNumber(rows.length)],
+    ["Requests", formatNumber(totalRequests)],
+    ["Errors", formatNumber(totalErrors)],
+    ["Failing paths", formatNumber(failing.length)],
+    ["Slow paths", formatNumber(slow.length)],
+    ["Top path", top.path || "-"],
+  ];
+  return `
+    <div class="site-path-command">
+      <div class="field-grid site-path-facts">${facts.map(statTile).join("")}</div>
+      <div class="site-trend-actions">${actions}</div>
+    </div>
+  `;
+}
+
+function sitePathMatrix(siteID, rows = []) {
+  if (!rows.length) return "";
+  return `
+    <div class="table-wrap site-path-matrix-wrap">
+      <table class="site-path-matrix">
+        <thead>
+          <tr>
+            <th>Path</th>
+            <th>Impact</th>
+            <th>Source</th>
+            <th>Signal / report</th>
+            <th>Latest</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>${rows.map((row) => sitePathMatrixRow(siteID, row)).join("")}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function sitePathMatrixRow(siteID, row) {
+  const signal = row.signal;
+  const report = row.report;
+  const statusClass = row.errors ? "errors" : "";
+  const impact = [
+    `${formatNumber(row.requests || 0)} requests`,
+    row.errors ? `${formatNumber(row.errors)} errors` : "",
+    row.status5xx ? `${formatNumber(row.status5xx)} 5xx` : "",
+    row.p95 ? `p95 ${formatMs(row.p95)}` : "",
+  ].filter(Boolean).join(" / ");
+  const signalMeta = signal
+    ? [signal.title, signal.ip ? `IP ${signal.ip}` : "", signal.lastSeen ? formatTime(signal.lastSeen) : ""].filter(Boolean).join(" / ")
+    : report ? [reportListLabel(report), reportWindowLabel(report)].filter(Boolean).join(" / ") : "No attached signal or report lead";
+  const actions = [
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: row.path || "/", site_id: siteID, origin: "site_path_matrix" })}'>Path</button>`,
+    row.topIP ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: row.topIP, site_id: siteID, origin: "site_path_matrix" })}'>IP</button>` : "",
+    signal ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: signal.key, site_id: siteID, origin: "site_path_matrix" })}'>Signal</button>` : "",
+    report ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: siteID, origin: "site_path_matrix" }))}'>Report</button>` : "",
+    correlatedLogActions({ path: row.path || "/", siteID, ip: row.topIP || "", statusClass, origin: "site_path_matrix" }),
+  ].filter(Boolean).join("");
+  return `
+    <tr>
+      <td class="clip"><strong>${escapeHTML(row.path || "/")}</strong><br><span>${escapeHTML(`${formatBytes(row.bytes_sent || 0)} transferred / ${formatNumber(row.evidenceCount || 0)} evidence rows`)}</span></td>
+      <td>${escapeHTML(impact || "no impact count")}</td>
+      <td class="clip"><strong>${escapeHTML(row.topIP || "-")}</strong><br><span>${escapeHTML(row.topIP ? `${formatNumber(row.topIPRequests || 0)} requests / ${formatNumber(row.topIPErrors || 0)} errors` : "no source concentration")}</span></td>
+      <td class="clip"><strong>${escapeHTML(signal ? formatCategory(signal.group || "signal") : report ? "Report" : "-")}</strong><br><span>${escapeHTML(signalMeta)}</span></td>
+      <td>${formatTime(row.latest)}</td>
+      <td class="row-actions">${actions}</td>
+    </tr>
+  `;
+}
+
+function sitePathFindingRow(row) {
+  const siteID = row.siteID || state.siteID || state.viewContext.site_id || "";
+  const errors = Number(row.errors || 0);
+  const meta = [
+    `${formatNumber(row.requests || 0)} requests`,
+    errors ? `${formatNumber(errors)} errors` : "",
+    row.status5xx ? `${formatNumber(row.status5xx)} 5xx` : "",
+    row.p95 ? `p95 ${formatMs(row.p95)}` : "",
+    row.topIP ? `top IP ${row.topIP}` : "",
+  ].filter(Boolean).join(" - ");
+  const actions = [
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: row.path || "/", site_id: siteID, origin: "site_path_finding" })}'>Open path</button>`,
+    row.topIP ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: row.topIP, site_id: siteID, origin: "site_path_finding" })}'>Open IP</button>` : "",
+    row.signal ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: row.signal.key, site_id: siteID, origin: "site_path_finding" })}'>Open signal</button>` : "",
+    correlatedLogActions({ path: row.path || "/", siteID, ip: row.topIP || "", statusClass: errors ? "errors" : "", origin: "site_path_finding" }),
+  ].filter(Boolean).join("");
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(row.path || "/")}</strong>
+        <span>${escapeHTML(meta)}</span>
+        <div class="signal-actions">${actions}</div>
+      </div>
+      <div class="signal-numbers">
+        <span>${errors ? "errors" : row.p95 ? "p95" : "requests"}</span>
+        <b>${errors ? formatNumber(errors) : row.p95 ? formatMs(row.p95) : formatNumber(row.requests || 0)}</b>
+      </div>
+    </div>
+  `;
 }
 
 function siteActorMixRows(siteID) {

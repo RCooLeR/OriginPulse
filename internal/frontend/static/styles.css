@@ -2455,6 +2455,33 @@ h2 {
   vertical-align: top;
 }
 
+.site-path-command {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.site-path-facts {
+  padding: 0;
+}
+
+.site-path-matrix-wrap {
+  max-height: 440px;
+}
+
+.site-path-matrix {
+  min-width: 1120px;
+}
+
+.site-path-matrix td {
+  vertical-align: top;
+}
+
+.site-path-matrix td span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
 .site-reliability-matrix td span {
   color: var(--muted);
   font-size: 0.76rem;
