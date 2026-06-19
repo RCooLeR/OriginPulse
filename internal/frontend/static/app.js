@@ -1130,7 +1130,8 @@ function renderDashboard() {
   const high = signals.filter((item) => item.severity === "high").length;
   const medium = signals.filter((item) => item.severity === "medium").length;
   const overall = critical ? "Critical" : high ? "Elevated" : medium ? "Watch" : "Normal";
-  const topSignal = signals[0];
+  const securitySignals = signals.filter((item) => item.group === "security");
+  const topSecuritySignal = securitySignals[0];
   const latestEvent = latestObservedTime();
   const securityPressure = (analysis.admin_probes || []).reduce((sum, item) => sum + Number(item.requests || 0), 0)
     + (analysis.injection_probes || []).reduce((sum, item) => sum + Number(item.requests || 0), 0)
@@ -1147,7 +1148,7 @@ function renderDashboard() {
   setText("#situationReliability", `${formatPercent(totals.status_5xx_rate || 0)} 5xx`);
   setText("#situationReliabilityMeta", `${formatPercent(totals.slow_requests_rate || 0)} slow / ${formatPercent(totals.status_4xx_rate || 0)} 4xx`);
   setText("#situationSecurity", formatNumber(securityPressure));
-  setText("#situationSecurityMeta", topSignal ? topSignal.title : "no active security signal");
+  setText("#situationSecurityMeta", topSecuritySignal ? topSecuritySignal.title : "no active security finding");
   setText("#timelineRange", analysis.range || state.range);
   setText("#statusTotal", formatNumber(totals.requests || 0));
   setText("#agentClassCount", `${aggregateAgentClasses(analysis.user_agents || []).length} classes`);
@@ -1334,7 +1335,7 @@ function renderPrioritySignals(items) {
 function prioritySignalGroups(signals = []) {
   const groupDefs = [
     { key: "critical", label: "Critical now", match: (item) => item.severity === "critical" },
-    { key: "security", label: "Security probes", match: (item) => item.group === "security" && item.severity !== "critical" },
+    { key: "security", label: "Security findings", match: (item) => item.group === "security" && item.severity !== "critical" },
     { key: "reliability", label: "Reliability", match: (item) => item.group === "reliability" && item.severity !== "critical" },
     { key: "traffic", label: "Traffic shape", match: (item) => item.group === "traffic" && item.severity !== "critical" },
     { key: "pipeline", label: "Data pipeline", match: (item) => item.group === "pipeline" && item.severity !== "critical" },
@@ -1999,8 +2000,8 @@ function buildSignalItems() {
       key: `injection:${index}:${item.ip || ""}:${item.path || ""}`,
       group: "security",
       severity: severityForScore(item.risk_score || 70),
-      title: `${formatCategory(item.category || "Injection probe")} against ${item.path || "/"}`,
-      summary: `${formatCategory(item.match_reason || "probe")} from ${item.ip || "unknown IP"}`,
+      title: `${requestPatternLabel(item.category || "request")} on ${item.path || "/"}`,
+      summary: `${formatCategory(item.match_reason || "pattern")} from ${item.ip || "unknown IP"}`,
       siteID: item.site_id || "",
       env: item.env || "",
       ip: item.ip || "",
@@ -2021,7 +2022,7 @@ function buildSignalItems() {
       key: `admin:${index}:${item.ip || ""}:${item.path || ""}`,
       group: "security",
       severity: severityForScore(item.risk_score || 65),
-      title: `${formatCategory(item.category || "Admin probe")} on ${item.path || "/"}`,
+      title: `${adminActivityLabel(item.category || "admin")} on ${item.path || "/"}`,
       summary: `${formatNumber(item.total_ip_hits || item.requests || 0)} total IP hits from ${item.ip || "unknown IP"}`,
       siteID: item.site_id || "",
       env: item.env || "",
@@ -2175,7 +2176,7 @@ function signalActionButtons(item, origin = state.route, size = "mini") {
 function signalQueueSections(signals) {
   const sectionDefs = [
     { key: "critical", title: "Critical now", filter: "all", summary: "Highest-risk work across every signal group.", items: signals.filter((item) => severityRank(item.severity) >= severityRank("high")) },
-    { key: "security", title: "Security probes", filter: "security", summary: "Injection, admin, Tor, and hostile source activity.", items: signals.filter((item) => item.group === "security") },
+    { key: "security", title: "Security findings", filter: "security", summary: "Suspicious request patterns, admin hits, Tor, and source review activity.", items: signals.filter((item) => item.group === "security") },
     { key: "reliability", title: "Reliability", filter: "reliability", summary: "5xx, slow paths, and recent failing requests.", items: signals.filter((item) => item.group === "reliability") },
     { key: "traffic", title: "Traffic shape", filter: "traffic", summary: "Volume, concentration, and unusual traffic patterns.", items: signals.filter((item) => item.group === "traffic") },
     { key: "pipeline", title: "Data pipeline", filter: "pipeline", summary: "Collection, indexing, reporting, and freshness problems.", items: signals.filter((item) => item.group === "pipeline") },
@@ -2255,6 +2256,24 @@ function issueGroup(item) {
   if (key.includes("probe") || key.includes("crawler") || key.includes("tor") || key.includes("user_agent")) return "security";
   if (key.includes("slow") || key.includes("5xx") || key.includes("error")) return "reliability";
   return "traffic";
+}
+
+function requestPatternLabel(category) {
+  const key = normalizeEvidenceKind(category || "");
+  if (key === "sqlinjection") return "SQL injection pattern";
+  if (key === "xss") return "XSS payload pattern";
+  if (key === "pathtraversal") return "Directory traversal attempt";
+  if (key === "secretfile") return "Sensitive file request";
+  return "Suspicious request pattern";
+}
+
+function adminActivityLabel(category) {
+  const key = normalizeEvidenceKind(category || "");
+  if (key === "admintool") return "Admin tool request";
+  if (key === "adminlogin") return "Admin login activity";
+  if (key === "passwordreset") return "Password reset activity";
+  if (key === "adminpath") return "Admin path activity";
+  return "Admin activity";
 }
 
 function severityForScore(score) {
@@ -3803,8 +3822,8 @@ function filteredLogEvidence() {
       ...sourceIPLogFields(item.client_ip, sourceContext),
     });
   });
-  (analysis.admin_probes || []).forEach((item) => rows.push(analysisEvidenceRow("Admin probe", item, sourceContext)));
-  (analysis.injection_probes || []).forEach((item) => rows.push(analysisEvidenceRow("Injection probe", item, sourceContext)));
+  (analysis.admin_probes || []).forEach((item) => rows.push(analysisEvidenceRow("Admin activity", item, sourceContext)));
+  (analysis.injection_probes || []).forEach((item) => rows.push(analysisEvidenceRow(requestPatternLabel(item.category), item, sourceContext)));
   (analysis.tor_sources || []).forEach((item) => rows.push({
     kind: "Tor source",
     ts: item.last_seen,
@@ -4751,8 +4770,8 @@ function signalEvidence(signal) {
 
 function signalEvidenceKind(signal) {
   return {
-    injectionProbe: "Injection probe",
-    adminProbe: "Admin probe",
+    injectionProbe: "Request pattern",
+    adminProbe: "Admin activity",
     torSource: "Tor source",
     slowPath: "Slow path",
     recentError: "Recent error",
@@ -5403,7 +5422,7 @@ function entityBody(entity) {
     <section class="entity-detail-grid">
       ${entitySection("Investigation timeline", entityTimeline(timeline), "No timeline events in this scope.", "entity-section-wide")}
       ${entitySection("Related signals", signals.map(signalRow).join(""), "No related signals in this scope.")}
-      ${entitySection("Security probes", securityProbes.map(siteSecurityRow).join(""), "No injection, admin, or Tor probes match this entity in the current scope.")}
+      ${entitySection("Security findings", securityProbes.map(siteSecurityRow).join(""), "No request-pattern, admin, or Tor findings match this entity in the current scope.")}
       ${entitySection("Recent evidence", evidence.map(logEvidenceRow).join(""), "No recent evidence in this scope.")}
       ${entitySection("Multi-log correlation", entityCorrelationPack(entity, evidence, paths), "No correlated log lanes are available in this scope.")}
       ${entity.kind === "actor" ? entitySection("Source IP verification", actorVerificationPanel(entity), "No source IPs are tied to this actor in the current scope.") : ""}
@@ -6309,8 +6328,8 @@ function entitySourceIPs(entity) {
 function entitySecurityProbeRows(entity) {
   const analysis = state.data.analysis || {};
   const rows = [
-    ...(analysis.injection_probes || []).map((item) => ({ ...item, kind: "Injection probe" })),
-    ...(analysis.admin_probes || []).map((item) => ({ ...item, kind: "Admin probe" })),
+    ...(analysis.injection_probes || []).map((item) => ({ ...item, kind: requestPatternLabel(item.category) })),
+    ...(analysis.admin_probes || []).map((item) => ({ ...item, kind: adminActivityLabel(item.category) })),
     ...(analysis.tor_sources || []).map((item) => ({ ...item, kind: "Tor source" })),
   ].filter((item) => entitySecurityProbeMatches(entity, item));
   return rows.sort((a, b) => {
@@ -7356,13 +7375,13 @@ function renderUserAgents() {
 function renderAdminProbes() {
   const items = state.data.analysis?.admin_probes || [];
   renderPager("#adminProbePager", "adminProbes", items);
-  setText("#adminProbeSummary", `${items.length} probes`);
+  setText("#adminProbeSummary", `${items.length} rows`);
   const rows = paginateWithIndex("adminProbes", items).map(({ item, index }) => {
     const target = `${item.method || "GET"} ${item.path || "/"}`;
     const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
     return `
       <tr>
-        <td><strong>${escapeHTML(formatCategory(item.category || "admin"))}</strong><br><span>${escapeHTML(item.site_id || "-")} / ${escapeHTML(item.env || "-")}</span></td>
+        <td><strong>${escapeHTML(adminActivityLabel(item.category || "admin"))}</strong><br><span>${escapeHTML(item.site_id || "-")} / ${escapeHTML(item.env || "-")}</span></td>
         <td><strong>${escapeHTML(item.ip || "-")}</strong><br><button class="ghost mini inline-action" type="button" data-detail-kind="adminProbe" data-detail-index="${index}">Details</button></td>
         <td class="clip">${escapeHTML(target)}${item.sample_query ? `<br><span>${escapeHTML(item.sample_query)}</span>` : ""}</td>
         <td>${formatNumber(item.requests || 0)}</td>
@@ -7372,19 +7391,19 @@ function renderAdminProbes() {
       </tr>
     `;
   });
-  qs("#adminProbesTable").innerHTML = rows.join("") || emptyRow(7, "No admin probes found.");
+  qs("#adminProbesTable").innerHTML = rows.join("") || emptyRow(7, "No admin activity found.");
 }
 
 function renderInjectionProbes() {
   const items = state.data.analysis?.injection_probes || [];
   renderPager("#injectionProbePager", "injectionProbes", items);
-  setText("#injectionProbeSummary", `${items.length} probes`);
+  setText("#injectionProbeSummary", `${items.length} rows`);
   const rows = paginateWithIndex("injectionProbes", items).map(({ item, index }) => {
     const target = `${item.method || "GET"} ${item.path || "/"}`;
     const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
     return `
       <tr>
-        <td><strong>${escapeHTML(formatCategory(item.category || "probe"))}</strong><br><span>${escapeHTML(item.match_reason ? `${formatCategory(item.match_reason)} - risk ${item.risk_score || 0}` : `risk ${item.risk_score || 0}`)}</span></td>
+        <td><strong>${escapeHTML(requestPatternLabel(item.category || "request"))}</strong><br><span>${escapeHTML(item.match_reason ? `${formatCategory(item.match_reason)} - risk ${item.risk_score || 0}` : `risk ${item.risk_score || 0}`)}</span></td>
         <td><strong>${escapeHTML(item.ip || "-")}</strong><br><button class="ghost mini inline-action" type="button" data-detail-kind="injectionProbe" data-detail-index="${index}">Details</button></td>
         <td class="clip">${escapeHTML(target)}${item.sample_query ? `<br><span>${escapeHTML(item.sample_query)}</span>` : ""}</td>
         <td>${formatNumber(item.requests || 0)}</td>
@@ -7394,7 +7413,7 @@ function renderInjectionProbes() {
       </tr>
     `;
   });
-  qs("#injectionProbesTable").innerHTML = rows.join("") || emptyRow(7, "No injection probes found.");
+  qs("#injectionProbesTable").innerHTML = rows.join("") || emptyRow(7, "No suspicious request patterns found.");
 }
 
 function renderTorSources() {
@@ -8062,7 +8081,7 @@ function siteInvestigationSecurity(site, signal) {
     signal ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: signal.key, site_id: siteID, origin: "site_map" })}'>Open signal</button>` : "",
     signal?.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: signal.ip, site_id: siteID, origin: "site_map" })}'>Open IP</button>` : "",
     signal?.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: signal.path, site_id: siteID, origin: "site_map" })}'>Open path</button>` : "",
-    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(signal ? signalLogPivot(signal, "site_map") : { kind: "log_filter", site_id: siteID, evidence_kind: "Admin probe", origin: "site_map" })}'>Security logs</button>`,
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(signal ? signalLogPivot(signal, "site_map") : { kind: "log_filter", site_id: siteID, evidence_kind: "Admin activity", origin: "site_map" })}'>Security logs</button>`,
   ].filter(Boolean).join("");
   return {
     title: signal?.title || "No active security lead",
@@ -8198,14 +8217,14 @@ function renderSiteTab(site) {
   const body = qs("#siteTabBody");
   if (state.siteTab === "security") {
     const injectionAll = siteScopedRows(state.data.analysis?.injection_probes || [], id)
-      .map((item) => ({ ...item, kind: "Injection probe" }))
+      .map((item) => ({ ...item, kind: requestPatternLabel(item.category) }))
       .sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0));
     const sensitiveFiles = siteSensitiveFileRows(id, injectionAll);
     const injection = injectionAll
       .filter((item) => !securityProbeIsSensitiveFile(item))
       .sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0));
     const admin = siteScopedRows(state.data.analysis?.admin_probes || [], id)
-      .map((item) => ({ ...item, kind: "Admin probe" }))
+      .map((item) => ({ ...item, kind: adminActivityLabel(item.category) }))
       .sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0));
     const tor = siteScopedRows(state.data.analysis?.tor_sources || [], id)
       .map((item) => ({ ...item, kind: "Tor source" }))
@@ -8223,11 +8242,11 @@ function renderSiteTab(site) {
     setText("#siteTabSummary", `${formatNumber(visibleFindings)} of ${formatNumber(probes.length)} shown`);
     body.innerHTML = `
       <section class="site-tab-grid">
-        ${siteSubsection("Probe pressure", siteTrendPanel(site, "security"), "No timestamped probe evidence in this scope.", "span-2")}
+        ${siteSubsection("Security activity", siteTrendPanel(site, "security"), "No timestamped security activity in this scope.", "span-2")}
         ${siteSubsection("Security timeline", entityTimeline(securityTimeline), "No timestamped security events in this scope.", "span-2")}
-        ${siteSubsection("Injection probes", siteRowsMarkup(injection.slice(0, 12), siteSecurityRow, "No injection probes for this site."))}
-        ${siteSubsection("Sensitive file probes", siteRowsMarkup(sensitiveFiles.slice(0, 12), siteSecurityRow, "No sensitive file probes for this site."))}
-        ${siteSubsection("Admin/login probes", siteRowsMarkup(admin.slice(0, 12), siteSecurityRow, "No admin probes for this site."))}
+        ${siteSubsection("Suspicious request patterns", siteRowsMarkup(injection.slice(0, 12), siteSecurityRow, "No suspicious request patterns for this site."))}
+        ${siteSubsection("Sensitive file requests", siteRowsMarkup(sensitiveFiles.slice(0, 12), siteSecurityRow, "No sensitive file requests for this site."))}
+        ${siteSubsection("Admin/login activity", siteRowsMarkup(admin.slice(0, 12), siteSecurityRow, "No admin/login activity for this site."))}
         ${siteSubsection("Unknown high-volume IPs", siteRowsMarkup(unknownSources.slice(0, 12), siteActorRow, "No unknown high-volume source IPs for this site."))}
         ${siteSubsection("Tor/datacenter sources", siteRowsMarkup(tor.slice(0, 12), siteSecurityRow, "No Tor source rows for this site."))}
         ${siteSubsection("Crawler claims to verify", actorVerificationBoard(crawlerClaims, { siteID: id, origin: "site_security_claims" }), "No crawler or service source claims need verification for this site.", "span-2")}
@@ -8436,7 +8455,7 @@ function siteTrendStats(site, mode, rows) {
       ["Probe errors", formatNumber(errors)],
       ["Source IPs", formatNumber(ips.size)],
       ["High+ signals", formatNumber(highSignals)],
-      ["Latest probe", formatTime(latest)],
+      ["Latest activity", formatTime(latest)],
     ];
   }
   if (mode === "reliability") {
@@ -8477,8 +8496,8 @@ function siteTrendActions(site, mode) {
   const actions = [];
   const add = (label, pivot) => actions.push(`<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(pivot)}'>${escapeHTML(label)}</button>`);
   if (mode === "security") {
-    add("Admin logs", { kind: "log_filter", site_id: siteID, evidence_kind: "Admin probe", log_type: "nginx-access", origin: "site_security_trend" });
-    add("Injection logs", { kind: "log_filter", site_id: siteID, evidence_kind: "Injection probe", log_type: "nginx-access", origin: "site_security_trend" });
+    add("Admin logs", { kind: "log_filter", site_id: siteID, evidence_kind: "Admin activity", log_type: "nginx-access", origin: "site_security_trend" });
+    add("Request pattern logs", { kind: "log_filter", site_id: siteID, evidence_kind: "Request pattern", log_type: "nginx-access", origin: "site_security_trend" });
     if (topIP?.ip) add("Top IP", { kind: "ip", value: topIP.ip, site_id: siteID, origin: "site_security_trend" });
   } else if (mode === "reliability") {
     add("Error logs", { kind: "log_filter", site_id: siteID, status_class: "errors", log_type: "nginx-access", origin: "site_reliability_trend" });
@@ -9055,10 +9074,10 @@ function siteActorVerificationRows(siteID) {
 
 function siteSensitiveFileRows(siteID, rows = null) {
   const sourceRows = rows || siteScopedRows(state.data.analysis?.injection_probes || [], siteID)
-    .map((item) => ({ ...item, kind: "Injection probe" }));
+    .map((item) => ({ ...item, kind: requestPatternLabel(item.category) }));
   return sourceRows
     .filter(securityProbeIsSensitiveFile)
-    .map((item) => ({ ...item, kind: "Sensitive file probe" }))
+    .map((item) => ({ ...item, kind: "Sensitive file request" }))
     .sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0)
       || Number(b.requests || 0) - Number(a.requests || 0));
 }
@@ -9185,8 +9204,8 @@ function siteActivityEvents(siteID) {
   });
 
   [
-    ...(siteScopedRows(state.data.analysis?.injection_probes || [], siteID).map((item) => ({ ...item, kind: "Injection probe" }))),
-    ...(siteScopedRows(state.data.analysis?.admin_probes || [], siteID).map((item) => ({ ...item, kind: "Admin probe" }))),
+    ...(siteScopedRows(state.data.analysis?.injection_probes || [], siteID).map((item) => ({ ...item, kind: requestPatternLabel(item.category) }))),
+    ...(siteScopedRows(state.data.analysis?.admin_probes || [], siteID).map((item) => ({ ...item, kind: adminActivityLabel(item.category) }))),
   ].forEach((item) => {
     addEvent({
       group: "security",
@@ -9455,7 +9474,7 @@ function siteReportMetricBand(report) {
       ${reportMetric("5xx rate", formatPercent(summary.status_5xx_rate || 0))}
       ${reportMetric("Slow rate", formatPercent(summary.slow_requests_rate || 0))}
       ${reportMetric("Issues", formatNumber(summary.issue_count || 0))}
-      ${reportMetric("Security probes", formatNumber((summary.admin_probe_requests || 0) + (summary.injection_probe_requests || 0)))}
+      ${reportMetric("Security requests", formatNumber((summary.admin_probe_requests || 0) + (summary.injection_probe_requests || 0)))}
       ${reportMetric("Top IP", summary.top_source_ip || "-")}
       ${reportMetric("Top path", summary.top_path || "-")}
     </section>
@@ -9579,7 +9598,7 @@ function reportDetailMarkup(report) {
       ${reportMetric("5xx rate", formatPercent(summary.status_5xx_rate || 0))}
       ${reportMetric("4xx rate", formatPercent(summary.status_4xx_rate || 0))}
       ${reportMetric("Issues", formatNumber(summary.issue_count || 0))}
-      ${reportMetric("Security probes", formatNumber((summary.admin_probe_requests || 0) + (summary.injection_probe_requests || 0)))}
+      ${reportMetric("Security requests", formatNumber((summary.admin_probe_requests || 0) + (summary.injection_probe_requests || 0)))}
       ${reportMetric("Tor requests", formatNumber(summary.tor_requests || 0))}
       ${reportMetric("Unique IPs", formatNumber(summary.unique_ips || 0))}
       ${reportMetric("Slow rate", formatPercent(summary.slow_requests_rate || 0))}
@@ -9979,8 +9998,8 @@ function reportEvidenceRows(report) {
   const summary = report.summary || {};
   const defs = [
     ["issues", "Issue", "signal"],
-    ["admin_probes", "Admin probe", "security"],
-    ["injection_probes", "Injection probe", "security"],
+    ["admin_probes", "Admin activity", "security"],
+    ["injection_probes", "Request patterns", "security"],
     ["tor_sources", "Tor source", "security"],
     ["source_ips", "Source IP", "source"],
     ["top_paths", "Top path", "path"],
@@ -11737,7 +11756,7 @@ function detailFor(kind, index) {
     const item = collection?.[index];
     if (!item) return null;
     return {
-      eyebrow: kind === "adminProbe" ? "Admin probe" : "Injection probe",
+      eyebrow: kind === "adminProbe" ? "Admin activity" : "Request pattern",
       title: `${item.method || "GET"} ${item.path || "/"}`,
       facts: [
         ["Category", formatCategory(item.category || "-")],

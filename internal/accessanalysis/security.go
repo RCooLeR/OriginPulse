@@ -65,15 +65,15 @@ const injectionProbeCategorySQL = `
 CASE
   WHEN ` + sqlInjectionPredicateSQL + ` THEN 'sql_injection'
   WHEN target LIKE '%<script%' OR target LIKE '%3cscript%' OR target LIKE '%javascript:%' OR target LIKE '%onerror=%' OR target LIKE '%onload=%' OR target LIKE '%alert(%' THEN 'xss'
-  WHEN target LIKE '%../%' OR position('%2e%2e' in target) > 0 OR target LIKE '%/etc/passwd%' OR target LIKE '%proc/self/environ%' OR target LIKE '%boot.ini%' THEN 'path_traversal'
   WHEN path_norm LIKE '/.env%' OR target LIKE '%/.env%' OR target LIKE '%wp-config.php%' OR target LIKE '%composer.json%' OR target LIKE '%composer.lock%' OR target LIKE '%id_rsa%' OR target LIKE '%/.git/%' THEN 'secret_file'
+  WHEN ` + pathTraversalPredicateSQL + ` THEN 'path_traversal'
   ELSE ''
 END`
 
 const injectionProbeReasonSQL = `
 CASE
   WHEN target LIKE '%union%select%' THEN 'union_select'
-  WHEN target LIKE '%select%from%' OR target LIKE '%;select%' OR target LIKE '%3bselect%' THEN 'select_from'
+  WHEN ` + sqlSelectStatementPredicateSQL + ` THEN 'select_from'
   WHEN target LIKE '%information_schema%' THEN 'information_schema'
   WHEN target LIKE '%sleep(%' OR target LIKE '%benchmark(%' THEN 'time_delay_function'
   WHEN target LIKE '%extractvalue(%' OR target LIKE '%updatexml(%' OR target LIKE '%concat(%' THEN 'sql_function'
@@ -81,16 +81,14 @@ CASE
   WHEN (target LIKE '%--%' OR position('%2d%2d' in target) > 0 OR target LIKE '%/*%' OR position('%2f%2a' in target) > 0 OR position('%2f**' in target) > 0) AND (target LIKE '%select%' OR target LIKE '%union%' OR target LIKE '%information_schema%' OR target LIKE '%concat(%' OR target LIKE '%sleep(%' OR target LIKE '%benchmark(%' OR target LIKE '%extractvalue(%' OR target LIKE '%updatexml(%') THEN 'sql_comment_with_keyword'
   WHEN target LIKE '%<script%' OR target LIKE '%3cscript%' THEN 'script_tag'
   WHEN target LIKE '%javascript:%' OR target LIKE '%onerror=%' OR target LIKE '%onload=%' OR target LIKE '%alert(%' THEN 'xss_payload'
-  WHEN target LIKE '%../%' OR position('%2e%2e' in target) > 0 OR target LIKE '%/etc/passwd%' OR target LIKE '%proc/self/environ%' OR target LIKE '%boot.ini%' THEN 'path_traversal'
   WHEN path_norm LIKE '/.env%' OR target LIKE '%/.env%' OR target LIKE '%wp-config.php%' OR target LIKE '%composer.json%' OR target LIKE '%composer.lock%' OR target LIKE '%id_rsa%' OR target LIKE '%/.git/%' THEN 'secret_file'
+  WHEN ` + pathTraversalPredicateSQL + ` THEN 'path_traversal'
   ELSE ''
 END`
 
 const sqlInjectionPredicateSQL = `
 (target LIKE '%union%select%' OR
- target LIKE '%select%from%' OR
- target LIKE '%;select%' OR
- target LIKE '%3bselect%' OR
+ ` + sqlSelectStatementPredicateSQL + ` OR
  target LIKE '%information_schema%' OR
  target LIKE '%sleep(%' OR
  target LIKE '%benchmark(%' OR
@@ -107,11 +105,21 @@ const sqlInjectionPredicateSQL = `
  ((target LIKE '%--%' OR position('%2d%2d' in target) > 0 OR target LIKE '%/*%' OR position('%2f%2a' in target) > 0 OR position('%2f**' in target) > 0) AND
   (target LIKE '%select%' OR target LIKE '%union%' OR target LIKE '%information_schema%' OR target LIKE '%concat(%' OR target LIKE '%sleep(%' OR target LIKE '%benchmark(%' OR target LIKE '%extractvalue(%' OR target LIKE '%updatexml(%')))`
 
+const sqlSelectFromRegex = `(^|[^a-z0-9_])select(%20|\+|[[:space:]])+[^&]{0,240}(%20|\+|[[:space:]])+from([^a-z0-9_]|$)`
+
+const sqlSelectStatementPredicateSQL = `
+(target LIKE '%;select%' OR target LIKE '%3bselect%' OR target ~ '` + sqlSelectFromRegex + `')`
+
 const injectionPathPredicateSQL = `
 (` + sqlInjectionPredicateSQL + ` OR
  target LIKE '%<script%' OR target LIKE '%3cscript%' OR target LIKE '%javascript:%' OR target LIKE '%onerror=%' OR target LIKE '%onload=%' OR target LIKE '%alert(%' OR
- target LIKE '%../%' OR position('%2e%2e' in target) > 0 OR target LIKE '%/etc/passwd%' OR target LIKE '%proc/self/environ%' OR target LIKE '%boot.ini%' OR
- path_norm LIKE '/.env%' OR target LIKE '%/.env%' OR target LIKE '%wp-config.php%' OR target LIKE '%composer.json%' OR target LIKE '%composer.lock%' OR target LIKE '%id_rsa%' OR target LIKE '%/.git/%')`
+ path_norm LIKE '/.env%' OR target LIKE '%/.env%' OR target LIKE '%wp-config.php%' OR target LIKE '%composer.json%' OR target LIKE '%composer.lock%' OR target LIKE '%id_rsa%' OR target LIKE '%/.git/%' OR
+ ` + pathTraversalPredicateSQL + `)`
+
+const pathTraversalRegex = `(^|[^.])(\.\.(/|%2f|%5c)|%2e%2e(/|%2f|%5c))`
+
+const pathTraversalPredicateSQL = `
+(target ~ '` + pathTraversalRegex + `' OR target LIKE '%/etc/passwd%' OR target LIKE '%proc/self/environ%' OR target LIKE '%boot.ini%')`
 
 func (s *Service) loadAdminProbes(ctx context.Context, report *Report, limit int) error {
 	pool, err := s.db.Pool()
@@ -469,22 +477,22 @@ func adminProbeScore(probe AccessProbeSummary) int {
 }
 
 func injectionProbeScore(probe AccessProbeSummary) int {
-	base := 62
+	base := 55
 	switch probe.Category {
 	case "sql_injection":
-		base = 76
-	case "xss":
-		base = 68
-	case "path_traversal":
-		base = 72
-	case "secret_file":
 		base = 70
+	case "xss":
+		base = 64
+	case "path_traversal":
+		base = 68
+	case "secret_file":
+		base = 60
 	}
-	base += int(min(probe.Requests/2, 16))
+	base += int(min(probe.Requests/4, 10))
 	if probe.Status5xx > 0 {
-		base += 6
+		base += 4
 	}
-	return clamp(base, 45, 98)
+	return clamp(base, 35, 90)
 }
 
 func adminProbeTitle(category string) string {
@@ -505,15 +513,15 @@ func adminProbeTitle(category string) string {
 func injectionProbeTitle(category string) string {
 	switch category {
 	case "sql_injection":
-		return "SQL injection probe"
+		return "SQL injection pattern"
 	case "xss":
-		return "XSS probe"
+		return "XSS payload pattern"
 	case "path_traversal":
-		return "Path traversal probe"
+		return "Directory traversal attempt"
 	case "secret_file":
-		return "Secret file probe"
+		return "Sensitive file request"
 	default:
-		return "Injection probe"
+		return "Suspicious request pattern"
 	}
 }
 
@@ -547,11 +555,11 @@ func injectionProbeCategoryLabel(category string) string {
 	case "xss":
 		return "XSS"
 	case "path_traversal":
-		return "path traversal"
+		return "directory traversal"
 	case "secret_file":
-		return "secret-file"
+		return "sensitive-file"
 	default:
-		return "suspicious"
+		return "suspicious-pattern"
 	}
 }
 
