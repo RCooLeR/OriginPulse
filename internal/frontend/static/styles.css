@@ -279,6 +279,73 @@ h2 {
   gap: 6px;
 }
 
+.workspace-investigation-path {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.workspace-path-kicker {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.workspace-path-steps {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.workspace-path-step {
+  min-width: 0;
+  max-width: 260px;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: #fbfcfd;
+  font-size: 0.76rem;
+  text-align: left;
+}
+
+.workspace-path-step.clickable {
+  cursor: pointer;
+  background: #ffffff;
+}
+
+.workspace-path-step.clickable:hover,
+.workspace-path-step.clickable:focus-visible {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.workspace-path-step b {
+  flex: 0 0 auto;
+  color: var(--ink);
+  font-size: 0.72rem;
+}
+
+.workspace-path-step span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .primary,
 .ghost {
   min-height: 38px;
@@ -2881,6 +2948,14 @@ td code,
 
   .workspace-context-actions {
     justify-content: flex-start;
+  }
+
+  .workspace-investigation-path {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-path-step {
+    max-width: 100%;
   }
 
   .priority-signal-head,

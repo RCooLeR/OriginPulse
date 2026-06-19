@@ -550,6 +550,7 @@ function renderWorkspaceContext() {
   setText("#workspaceContextSubtitle", workspaceContextSubtitle(route));
   qs("#workspaceContextChips").innerHTML = activeContext.map(contextChip).join("");
   qs("#workspaceContextActions").innerHTML = workspaceContextActions(route, hasDrilldownContext);
+  qs("#workspaceInvestigationPath").innerHTML = workspaceInvestigationPath(route);
   bar.classList.toggle("has-drilldown", hasDrilldownContext);
 }
 
@@ -599,6 +600,115 @@ function workspaceContextPairs(route = state.route) {
 
 function contextChip([label, value]) {
   return `<span class="context-chip"><b>${escapeHTML(label)}</b>${escapeHTML(value || "-")}</span>`;
+}
+
+function workspaceInvestigationPath(route = state.route) {
+  const steps = workspacePathSteps(route);
+  if (!steps.length) return "";
+  return `
+    <div class="workspace-path-kicker">Investigation path</div>
+    <div class="workspace-path-steps">
+      ${steps.map(workspacePathStep).join("")}
+    </div>
+  `;
+}
+
+function workspacePathSteps(route = state.route) {
+  const context = { ...(state.viewContext || {}), ...activeEntityContext() };
+  const siteID = context.site_id || state.siteID || "";
+  const steps = [
+    {
+      label: "Scope",
+      value: siteID ? siteLabel(siteID) || shortLabel(siteID, 32) : "All sites",
+      pivot: siteID ? { kind: "site", value: siteID, origin: "workspace_path" } : null,
+    },
+  ];
+  const focus = workspaceFocusStep(context, siteID);
+  if (focus) steps.push(focus);
+  steps.push({
+    label: "Evidence",
+    value: workspaceEvidenceLabel(route, context),
+    pivot: currentLogPivot("workspace_path"),
+  });
+  steps.push({
+    label: "Signals",
+    value: state.signalKey ? "Current signal" : formatCategory(state.signalFilter || "all"),
+    pivot: state.signalKey ? { kind: "signal", key: state.signalKey, site_id: siteID, origin: "workspace_path" } : null,
+    action: state.signalKey ? "" : "open-signals",
+  });
+  steps.push({
+    label: "Report",
+    value: workspaceReportLabel(),
+    pivot: currentReportPivot("workspace_path"),
+  });
+  return steps;
+}
+
+function workspaceFocusStep(context, siteID = "") {
+  if (state.signalKey) {
+    return { label: "Signal", value: shortLabel(state.signalKey, 48), pivot: { kind: "signal", key: state.signalKey, site_id: siteID, origin: "workspace_path" } };
+  }
+  if (state.entity?.kind && state.entity.value) {
+    return {
+      label: workspaceEntityLabel(state.entity.kind),
+      value: state.entity.kind === "asn" ? formatASN(state.entity.value) || state.entity.value : state.entity.value,
+      pivot: workspaceEntityPivot(state.entity, siteID, context),
+    };
+  }
+  if (context.ip) return { label: "IP", value: context.ip, pivot: { kind: "ip", value: context.ip, site_id: siteID, origin: "workspace_path" } };
+  if (context.asn) return { label: "ASN", value: formatASN(context.asn) || context.asn, pivot: { kind: "asn", value: context.asn, site_id: siteID, origin: "workspace_path" } };
+  if (context.path) return { label: "Path", value: context.path, pivot: { kind: "path", value: context.path, site_id: siteID, origin: "workspace_path" } };
+  if (context.known_actor) {
+    return { label: "Actor", value: context.known_actor, pivot: { kind: "actor", value: context.known_actor, actor_type: context.actor_type || "", site_id: siteID, origin: "workspace_path" } };
+  }
+  if (context.user_agent) {
+    return { label: "User agent", value: context.user_agent, pivot: { kind: "user-agent", value: context.user_agent, site_id: siteID, origin: "workspace_path" } };
+  }
+  if (siteID) return { label: "Site", value: siteLabel(siteID) || siteID, pivot: { kind: "site", value: siteID, origin: "workspace_path" } };
+  return null;
+}
+
+function workspaceEntityPivot(entity, siteID = "", context = {}) {
+  if (entity.kind === "site") return { kind: "site", value: entity.value, origin: "workspace_path" };
+  if (entity.kind === "ip") return { kind: "ip", value: entity.value, site_id: siteID, origin: "workspace_path" };
+  if (entity.kind === "asn") return { kind: "asn", value: formatASN(entity.value) || entity.value, site_id: siteID, origin: "workspace_path" };
+  if (entity.kind === "path") return { kind: "path", value: entity.value, site_id: siteID, origin: "workspace_path" };
+  if (entity.kind === "actor") return { kind: "actor", value: entity.value, actor_type: context.actor_type || "", site_id: siteID, origin: "workspace_path" };
+  if (entity.kind === "user-agent") return { kind: "user-agent", value: entity.value, site_id: siteID, origin: "workspace_path" };
+  return { kind: entity.kind, value: entity.value, site_id: siteID, origin: "workspace_path" };
+}
+
+function workspaceEntityLabel(kind) {
+  return kind === "asn" ? "ASN" : kind === "user-agent" ? "User agent" : formatCategory(kind || "Entity");
+}
+
+function workspaceEvidenceLabel(route = state.route, context = {}) {
+  const parts = [formatLogType(state.logType || "nginx-access")];
+  if (context.status_class === "errors") parts.push("errors");
+  if (context.path) parts.push(shortLabel(context.path, 28));
+  if (context.ip) parts.push(context.ip);
+  if (route === "logs" && context.evidence_kind) parts.push(formatCategory(context.evidence_kind));
+  return parts.filter(Boolean).join(" / ");
+}
+
+function workspaceReportLabel() {
+  const tab = state.reportTab || "daily";
+  const selected = state.selectedReportIDs[tab];
+  return selected ? shortLabel(selected, 32) : formatCategory(tab);
+}
+
+function workspacePathStep(step) {
+  const actionAttr = step.action ? ` data-context-action="${escapeHTML(step.action)}"` : "";
+  const pivotAttr = step.pivot ? ` data-pivot='${encodePivot(step.pivot)}'` : "";
+  const clickable = step.action || step.pivot;
+  const tag = clickable ? "button" : "span";
+  const typeAttr = clickable ? ` type="button"` : "";
+  return `
+    <${tag} class="workspace-path-step ${clickable ? "clickable" : ""}"${typeAttr}${actionAttr}${pivotAttr}>
+      <b>${escapeHTML(step.label || "-")}</b>
+      <span>${escapeHTML(step.value || "-")}</span>
+    </${tag}>
+  `;
 }
 
 function workspaceHasDrilldownContext() {
