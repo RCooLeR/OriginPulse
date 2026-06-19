@@ -9953,6 +9953,7 @@ function reportEvidenceActions(report, row) {
   if (row.siteID) primary.push(reportActionButton("Site", reportPivot(report, { kind: "site", value: row.siteID, site_id: row.siteID, origin: "report_matrix" })));
   if (row.ip) primary.push(reportActionButton("IP", reportPivot(report, { kind: "ip", value: row.ip, site_id: row.siteID, origin: "report_matrix" })));
   if (row.path) primary.push(reportActionButton("Path", reportPivot(report, { kind: "path", value: row.path, site_id: row.siteID, origin: "report_matrix" })));
+  if (row.userAgent) primary.push(reportActionButton("UA", reportPivot(report, { kind: "user-agent", value: row.userAgent, site_id: row.siteID, origin: "report_matrix" })));
   if (row.errors || Number(row.status || 0) >= 400) logs.push(reportActionButton("Errors", reportEvidenceLogPivot(report, row, "nginx-access", true)));
   if (row.errors || row.path) logs.push(reportActionButton("Nginx", reportEvidenceLogPivot(report, row, "nginx-error", true)));
   if (row.errors || row.path) logs.push(reportActionButton("PHP", reportEvidenceLogPivot(report, row, "php-error", true)));
@@ -10424,13 +10425,15 @@ function reportDrilldownRow(report, key, item, index) {
   const meta = reportDrilldownMeta(item, errors);
   const siteID = item.site_id || report.site_id || "";
   const signalKey = reportSignalKey(key, item);
+  const userAgent = item.user_agent || item.sample || "";
   const detailButtons = `
     ${signalKey ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportSignalPivot(report, key, item, signalKey, siteID, errors))}'>Open signal</button>` : ""}
     ${siteID ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "site", value: siteID, site_id: siteID, origin: "report" }))}'>Open site</button>` : ""}
     ${item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "ip", value: item.ip, site_id: siteID, origin: "report" }))}'>Open IP</button>` : ""}
     ${item.asn ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "asn", value: formatASN(item.asn), site_id: siteID, origin: "report" }))}'>Open ASN</button>` : ""}
     ${item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "path", value: item.path, site_id: siteID, origin: "report" }))}'>Open path</button>` : ""}
-    ${item.path || item.ip || item.asn ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "log_filter", path: item.path || "", ip: item.ip || "", asn: item.asn ? formatASN(item.asn) : "", site_id: siteID, status_class: errors || item.status >= 400 ? "errors" : "", origin: "report" }))}'>Open logs</button>` : ""}
+    ${userAgent ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "user-agent", value: userAgent, site_id: siteID, origin: "report" }))}'>Open UA</button>` : ""}
+    ${item.path || item.ip || item.asn || userAgent ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "log_filter", path: item.path || "", ip: item.ip || "", asn: item.asn ? formatASN(item.asn) : "", user_agent: userAgent, site_id: siteID, status_class: errors || item.status >= 400 ? "errors" : "", origin: "report" }))}'>Open logs</button>` : ""}
     <button class="ghost mini inline-action" type="button" data-report-detail-key="${escapeHTML(key)}" data-report-detail-index="${index}">Details</button>
   `;
   return `
