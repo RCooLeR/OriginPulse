@@ -280,6 +280,17 @@ function wireEvents() {
       return;
     }
 
+    const signalFilterButton = event.target.closest("[data-signal-filter-target]");
+    if (signalFilterButton) {
+      state.signalFilter = signalFilterButton.dataset.signalFilterTarget || "all";
+      state.signalKey = "";
+      state.pages.signals = 0;
+      renderSignals();
+      renderWorkspaceContext();
+      updateURL(true);
+      return;
+    }
+
     const pivotButton = event.target.closest("[data-pivot]");
     if (pivotButton) {
       await handlePivot(decodePivot(pivotButton.dataset.pivot || "{}"));
@@ -1209,6 +1220,11 @@ function signalRow(item) {
     item.errors ? `${formatNumber(item.errors)} errors` : "",
     item.lastSeen ? formatTime(item.lastSeen) : "",
   ].filter(Boolean).join(" - ");
+  const context = [
+    ["Confidence", signalConfidence(item)],
+    ["Blast", signalBlastRadius(item)],
+    ["Source", formatCategory(item.sourceKind || "signal")],
+  ];
   return `
     <div class="signal-card">
       <div class="signal-card-main">
@@ -1217,6 +1233,10 @@ function signalRow(item) {
           <strong>${escapeHTML(item.title || "Signal")}</strong>
           <span>${escapeHTML(item.summary || meta || "No extra context")}</span>
           <small>${escapeHTML(meta)}</small>
+          <div class="signal-card-context">
+            ${context.map(([label, value]) => `<span class="signal-chip"><b>${escapeHTML(label)}</b>${escapeHTML(value || "-")}</span>`).join("")}
+          </div>
+          <small class="signal-recommendation">${escapeHTML(signalRecommendation(item))}</small>
           <div class="signal-actions">${actions}</div>
         </div>
       </div>
@@ -1240,6 +1260,56 @@ function signalActionButtons(item, origin = state.route, size = "mini") {
     `<button class="${klass}" type="button" data-pivot='${encodePivot(signalReportContextPivot(item, origin))}'>Reports</button>`,
   ];
   return actions.filter(Boolean).join("");
+}
+
+function signalQueueSections(signals) {
+  const sectionDefs = [
+    { key: "critical", title: "Critical now", filter: "all", summary: "Highest-risk work across every signal group.", items: signals.filter((item) => severityRank(item.severity) >= severityRank("high")) },
+    { key: "security", title: "Security probes", filter: "security", summary: "Injection, admin, Tor, and hostile source activity.", items: signals.filter((item) => item.group === "security") },
+    { key: "reliability", title: "Reliability", filter: "reliability", summary: "5xx, slow paths, and recent failing requests.", items: signals.filter((item) => item.group === "reliability") },
+    { key: "traffic", title: "Traffic shape", filter: "traffic", summary: "Volume, concentration, and unusual traffic patterns.", items: signals.filter((item) => item.group === "traffic") },
+    { key: "pipeline", title: "Data pipeline", filter: "pipeline", summary: "Collection, indexing, reporting, and freshness problems.", items: signals.filter((item) => item.group === "pipeline") },
+  ];
+  return sectionDefs.map((section) => ({
+    ...section,
+    items: section.items.slice().sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || Number(b.risk || 0) - Number(a.risk || 0)),
+  }));
+}
+
+function signalQueueRow(section) {
+  const top = section.items[0];
+  const sites = new Set(section.items.map((item) => item.siteID).filter(Boolean));
+  const requests = section.items.reduce((sum, item) => sum + Number(item.requests || 0), 0);
+  const errors = section.items.reduce((sum, item) => sum + Number(item.errors || 0), 0);
+  const highCount = section.items.filter((item) => severityRank(item.severity) >= severityRank("high")).length;
+  const active = state.signalFilter === section.filter || (section.key === "critical" && state.signalFilter === "all");
+  return `
+    <div class="signal-queue-row ${active ? "active" : ""}">
+      <div class="signal-queue-head">
+        <div>
+          <strong>${escapeHTML(section.title)}</strong>
+          <span>${escapeHTML(section.summary)}</span>
+        </div>
+        <b>${formatNumber(section.items.length)}</b>
+      </div>
+      ${top ? `
+        <div class="signal-queue-top">
+          <span class="severity severity-${escapeHTML(top.severity || "low")}">${escapeHTML(top.severity || "low")}</span>
+          <div>
+            <strong>${escapeHTML(top.title || "Signal")}</strong>
+            <small>${escapeHTML([`${formatNumber(requests)} requests`, `${formatNumber(errors)} errors`, `${formatNumber(sites.size)} sites`, `${formatNumber(highCount)} high+`].join(" - "))}</small>
+          </div>
+        </div>
+        <div class="signal-actions">
+          <button class="ghost mini inline-action" type="button" data-signal-filter-target="${escapeHTML(section.filter)}">Open group</button>
+          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: top.key, origin: "signals_queue" })}'>Open top signal</button>
+          ${top.sourceKind === "job" ? `<button class="ghost mini inline-action" type="button" data-route-target="system">System</button>` : `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(signalLogPivot(top, "signals_queue"))}'>Open logs</button>`}
+        </div>
+      ` : `
+        <div class="empty compact-empty">No active signals in this lane.</div>
+      `}
+    </div>
+  `;
 }
 
 function signalReportContextPivot(item, origin = state.route) {
@@ -2133,11 +2203,7 @@ function renderSignals() {
   const pageItems = paginate("signals", signals);
   qs("#signalsList").innerHTML = pageItems.map(signalRow).join("") || `<div class="empty">No ${escapeHTML(state.signalFilter)} signals in this scope.</div>`;
   setText("#signalsSummary", `${formatNumber(pageItems.length)} of ${formatNumber(signals.length)} shown`);
-  const groups = ["security", "reliability", "traffic", "pipeline"].map((group) => {
-    const count = allSignals.filter((item) => item.group === group).length;
-    return [formatCategory(group), formatNumber(count)];
-  });
-  qs("#signalsGroupStats").innerHTML = groups.map(statTile).join("");
+  qs("#signalsGroupStats").innerHTML = signalQueueSections(allSignals).map(signalQueueRow).join("");
 }
 
 function renderSignalDetail(signals = buildSignalItems()) {
