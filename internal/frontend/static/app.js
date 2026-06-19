@@ -9077,14 +9077,20 @@ function siteSecurityRow(item) {
   const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
   const path = item.path || "/";
   const siteID = item.site_id || state.siteID || state.viewContext.site_id || "";
+  const signal = signalForLogEvidence({ ...item, path, site_id: siteID });
+  const statusClass = errors ? "errors" : "";
+  const actions = [
+    signal ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: signal.key, site_id: siteID, origin: "site_security" })}'>Open signal</button>` : "",
+    item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: siteID, origin: "site_security" })}'>Open IP</button>` : "",
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: path, site_id: siteID, origin: "site_security" })}'>Open path</button>`,
+    correlatedLogActions({ path, siteID, ip: item.ip || "", statusClass, origin: "site_security" }),
+  ].filter(Boolean).join("");
   return `
     <div class="signal-row">
       <div>
         <strong>${escapeHTML(item.kind || formatCategory(item.category || "Security"))}: ${escapeHTML(path)}</strong>
         <span>${escapeHTML([item.ip, formatCategory(item.match_reason || item.category || ""), `${formatNumber(item.requests || 0)} requests`, `${formatNumber(errors)} errors`].filter(Boolean).join(" - "))}</span>
-        ${item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: siteID, origin: "site" })}'>Open IP</button>` : ""}
-        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: path, site_id: siteID, origin: "site" })}'>Open path</button>
-        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path, ip: item.ip || "", site_id: siteID, status_class: errors ? "errors" : "", origin: "site" })}'>Open logs</button>
+        <div class="signal-actions">${actions}</div>
       </div>
       <div class="signal-numbers"><span>risk</span><b>${escapeHTML(item.risk_score || 0)}</b></div>
     </div>
