@@ -765,6 +765,8 @@ function renderDashboard() {
 
   renderPrioritySignals(signals);
   renderSiteRiskOverview(aggregateSiteRows());
+  renderOverviewHotspots(overviewHotspotRows());
+  renderOverviewActorReview(overviewActorReviewRows());
   renderRecentErrors(traffic.recent_errors || []);
 }
 
@@ -916,6 +918,97 @@ function siteRiskRow(site) {
         <span>${escapeHTML(site.status || "healthy")}</span>
         <b>${formatNumber(site.statusRank || 0)}</b>
       </div>
+    </div>
+  `;
+}
+
+function overviewHotspotRows() {
+  return filteredTopPaths()
+    .filter((item) => Number(item.status_5xx || 0) > 0 || Number(item.status_4xx || 0) > 0 || Number(item.p95_request_time_ms || 0) > 0)
+    .sort((a, b) => {
+      const aErrors = Number(a.status_4xx || 0) + Number(a.status_5xx || 0);
+      const bErrors = Number(b.status_4xx || 0) + Number(b.status_5xx || 0);
+      return Number(b.status_5xx || 0) - Number(a.status_5xx || 0)
+        || bErrors - aErrors
+        || Number(b.p95_request_time_ms || 0) - Number(a.p95_request_time_ms || 0)
+        || Number(b.requests || 0) - Number(a.requests || 0);
+    });
+}
+
+function renderOverviewHotspots(rows) {
+  const container = qs("#overviewHotspotsList");
+  if (!container) return;
+  container.innerHTML = rows.slice(0, 8).map(overviewHotspotRow).join("") || `<div class="empty">No failing or slow paths in this scope.</div>`;
+}
+
+function overviewHotspotRow(item) {
+  const siteID = item.site_id || state.viewContext.site_id || state.siteID || "";
+  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  const statusClass = errors ? "errors" : "";
+  const meta = [
+    siteID || "all sites",
+    `${formatNumber(item.requests || 0)} requests`,
+    Number(item.status_5xx || 0) ? `${formatNumber(item.status_5xx || 0)} 5xx` : "",
+    Number(item.status_4xx || 0) ? `${formatNumber(item.status_4xx || 0)} 4xx` : "",
+    Number(item.p95_request_time_ms || 0) ? `p95 ${formatMs(item.p95_request_time_ms)}` : "",
+  ].filter(Boolean).join(" - ");
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(item.path || "/")}</strong>
+        <span>${escapeHTML(meta)}</span>
+        <div class="signal-actions">
+          ${siteID ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: siteID, origin: "overview_hotspot" })}'>Open site</button>` : ""}
+          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path || "/", site_id: siteID, origin: "overview_hotspot" })}'>Open path</button>
+          ${correlatedLogActions({ path: item.path || "/", siteID, statusClass, origin: "overview_hotspot" })}
+        </div>
+      </div>
+      <div class="signal-numbers"><span>${formatNumber(errors)} errors</span><b>${formatNumber(item.requests || 0)}</b></div>
+    </div>
+  `;
+}
+
+function overviewActorReviewRows() {
+  const rows = (state.data.analysis?.source_ips || []).slice();
+  const reviewRows = rows.filter((item) => actorSourceNeedsReview(item) || item.manual_action);
+  const selected = reviewRows.length ? reviewRows : rows;
+  return selected.sort((a, b) => {
+    const reviewDelta = Number(actorSourceNeedsReview(b)) - Number(actorSourceNeedsReview(a));
+    if (reviewDelta) return reviewDelta;
+    const bErrors = Number(b.status_4xx || 0) + Number(b.status_5xx || 0);
+    const aErrors = Number(a.status_4xx || 0) + Number(a.status_5xx || 0);
+    return Number(b.risk_score || 0) - Number(a.risk_score || 0)
+      || bErrors - aErrors
+      || Number(b.requests || 0) - Number(a.requests || 0);
+  });
+}
+
+function renderOverviewActorReview(rows) {
+  const container = qs("#overviewActorReviewList");
+  if (!container) return;
+  const reviewCount = rows.filter(actorSourceNeedsReview).length;
+  setText("#actorReviewCount", reviewCount ? `${formatNumber(reviewCount)} review` : `${formatNumber(rows.length)} sources`);
+  container.innerHTML = rows.slice(0, 8).map(overviewActorReviewRow).join("") || `<div class="empty">No source IPs need verification in this scope.</div>`;
+}
+
+function overviewActorReviewRow(item) {
+  const siteID = item.site_id || state.viewContext.site_id || state.siteID || "";
+  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  const status = actorSourceStatus(item);
+  const label = item.known_actor || actorLabelFromType(item.actor_type) || item.reverse_dns || "Source IP";
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(item.ip || "-")}</strong>
+        <span>${escapeHTML([status, label, siteID, `${formatNumber(item.requests || 0)} requests`, errors ? `${formatNumber(errors)} errors` : ""].filter(Boolean).join(" - "))}</span>
+        <div class="signal-actions">
+          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: siteID, origin: "overview_actor_review" })}'>Open IP</button>
+          ${(item.known_actor || item.actor_type) ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: item.known_actor || actorLabelFromType(item.actor_type), actor_type: item.actor_type || "", site_id: siteID, origin: "overview_actor_review" })}'>Open actor</button>` : ""}
+          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ip: item.ip || "", known_actor: item.known_actor || "", actor_type: item.actor_type || "", site_id: siteID, status_class: errors ? "errors" : "", origin: "overview_actor_review" })}'>Open logs</button>
+          ${ipManualButtons(item.ip, item, siteID, "mini")}
+        </div>
+      </div>
+      <div class="signal-numbers"><span>${escapeHTML(status)}</span><b>${escapeHTML(item.risk_score ?? 0)}</b></div>
     </div>
   `;
 }

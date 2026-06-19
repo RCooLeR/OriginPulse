@@ -226,6 +226,28 @@
               </div>
             </article>
 
+            <article id="hotspotsPanel" class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Traffic and health</p>
+                  <h2>Reliability hotspots</h2>
+                </div>
+                <button class="ghost mini" type="button" data-pivot='{"kind":"log_filter","status_class":"errors","origin":"overview"}'>Open Logs</button>
+              </div>
+              <div id="overviewHotspotsList" class="signal-list"></div>
+            </article>
+
+            <article id="actorReviewPanel" class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Actors and attack surface</p>
+                  <h2>Actor verification</h2>
+                </div>
+                <span id="actorReviewCount" class="pill">-</span>
+              </div>
+              <div id="overviewActorReviewList" class="signal-list"></div>
+            </article>
+
             <article id="recentErrorsPanel" class="panel">
               <div class="panel-head">
                 <h2>Recent errors</h2>

@@ -575,7 +575,8 @@ h2 {
     "signals signals status"
     "risk risk sites"
     "timeline timeline sites"
-    "sources agents agents"
+    "hotspots hotspots actors-review"
+    "sources agents actors-review"
     "errors errors errors";
   gap: 12px;
   align-items: start;
@@ -1257,6 +1258,14 @@ h2 {
   grid-area: agents;
 }
 
+#hotspotsPanel {
+  grid-area: hotspots;
+}
+
+#actorReviewPanel {
+  grid-area: actors-review;
+}
+
 #issuesPanel {
   grid-area: issues;
 }
@@ -1793,6 +1802,7 @@ td code,
       "signals signals"
       "risk risk"
       "timeline timeline"
+      "hotspots actors-review"
       "status sites"
       "sources agents"
       "errors errors";
@@ -1935,6 +1945,20 @@ td code,
   .report-chart-grid,
   .report-drilldown-grid {
     grid-template-columns: 1fr;
+  }
+
+  .overview-grid {
+    grid-template-areas:
+      "signals"
+      "risk"
+      "timeline"
+      "hotspots"
+      "actors-review"
+      "status"
+      "sites"
+      "sources"
+      "agents"
+      "errors";
   }
 
   .situation-bar {
