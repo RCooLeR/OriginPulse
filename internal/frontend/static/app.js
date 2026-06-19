@@ -305,6 +305,17 @@ function wireEvents() {
       return;
     }
 
+    const siteTabTargetButton = event.target.closest("[data-site-tab-target]");
+    if (siteTabTargetButton) {
+      state.siteTab = normalizeSiteTab(siteTabTargetButton.dataset.siteTabTarget || "overview");
+      state.pages.logEvidence = 0;
+      renderSites();
+      renderWorkspaceContext();
+      updateURL(true);
+      requestAnimationFrame(() => renderCharts());
+      return;
+    }
+
     const siteQueueButton = event.target.closest("[data-site-queue-action]");
     if (siteQueueButton) {
       if (siteQueueButton.dataset.siteQueueAction === "clear") {
@@ -4469,6 +4480,162 @@ function siteCommandRow(item) {
   `;
 }
 
+function siteInvestigationMap(site, { signals = [], recentErrors = [], topPaths = [], actors = [] } = {}) {
+  const siteID = site.id || "";
+  const securityLead = signals.find((item) => item.group === "security");
+  const reliabilityLead = signals.find((item) => item.group === "reliability");
+  const topError = recentErrors[0] || null;
+  const topPath = topPaths[0] || siteTopPaths(siteID)[0] || null;
+  const topActor = actors[0] || siteActorsToVerify(siteID)[0] || siteTopSourceIPs(siteID)[0] || null;
+  const report = siteReports(siteID)[0] || null;
+  const evidenceCount = siteLogEvidence(siteID).length;
+  const rows = [
+    siteInvestigationSecurity(site, securityLead),
+    siteInvestigationReliability(site, reliabilityLead, topError, topPath),
+    siteInvestigationActor(site, topActor),
+    siteInvestigationEvidence(site, report, evidenceCount),
+  ];
+  return `
+    <div class="site-investigation-map">
+      ${rows.map(siteInvestigationNode).join("")}
+    </div>
+  `;
+}
+
+function siteInvestigationSecurity(site, signal) {
+  const siteID = site.id || "";
+  const actions = [
+    siteTabButton("Security tab", "security"),
+    signal ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: signal.key, site_id: siteID, origin: "site_map" })}'>Open signal</button>` : "",
+    signal?.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: signal.ip, site_id: siteID, origin: "site_map" })}'>Open IP</button>` : "",
+    signal?.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: signal.path, site_id: siteID, origin: "site_map" })}'>Open path</button>` : "",
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(signal ? signalLogPivot(signal, "site_map") : { kind: "log_filter", site_id: siteID, evidence_kind: "Admin probe", origin: "site_map" })}'>Security logs</button>`,
+  ].filter(Boolean).join("");
+  return {
+    title: signal?.title || "No active security lead",
+    meta: signal ? signal.summary || siteInvestigationSignalMeta(signal) : "Review admin, injection, Tor, and datacenter activity for this site.",
+    valueLabel: signal ? "risk" : "state",
+    value: signal ? signal.risk || severityRank(signal.severity) * 20 || 0 : site.status || "healthy",
+    actions,
+  };
+}
+
+function siteInvestigationReliability(site, signal, topError, topPath) {
+  const siteID = site.id || "";
+  const path = signal?.path || topError?.path || topPath?.path || "";
+  const ip = signal?.ip || topError?.client_ip || "";
+  const errors = Number(site.status4xx || 0) + Number(site.status5xx || 0);
+  const actions = [
+    siteTabButton("Reliability tab", "reliability"),
+    signal ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: signal.key, site_id: siteID, origin: "site_map" })}'>Open signal</button>` : "",
+    path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: path, site_id: siteID, origin: "site_map" })}'>Open path</button>` : "",
+    correlatedLogActions({ path, siteID, ip, statusClass: errors ? "errors" : "", origin: "site_map" }),
+  ].filter(Boolean).join("");
+  return {
+    title: signal?.title || (topError ? `${topError.status || "-"} on ${topError.path || "/"}` : topPath?.path || "No active reliability lead"),
+    meta: signal ? signal.summary || siteInvestigationSignalMeta(signal) : siteInvestigationReliabilityMeta(site, topError, topPath),
+    valueLabel: signal ? "risk" : "errors",
+    value: signal ? signal.risk || severityRank(signal.severity) * 20 || 0 : formatNumber(errors),
+    actions,
+  };
+}
+
+function siteInvestigationActor(site, actor) {
+  const siteID = site.id || "";
+  const actorLabel = actor?.label || actor?.known_actor || actorLabelFromType(actor?.actor_type) || actor?.ip || "";
+  const errors = Number(actor?.status_4xx || 0) + Number(actor?.status_5xx || 0) + Number(actor?.errors || 0);
+  const actions = [
+    siteTabButton("Actors tab", "actors"),
+    actor?.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: actor.ip, site_id: siteID, origin: "site_map" })}'>Open IP</button>` : "",
+    actor?.asn ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "asn", value: formatASN(actor.asn), site_id: siteID, origin: "site_map" })}'>Open ASN</button>` : "",
+    actorLabel ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: actorLabel, actor_type: actor?.type || actor?.actor_type || "", site_id: siteID, origin: "site_map" })}'>Open actor</button>` : "",
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ip: actor?.ip || "", known_actor: actor?.known_actor || "", actor_type: actor?.type || actor?.actor_type || "", site_id: siteID, status_class: errors ? "errors" : "", origin: "site_map" })}'>Actor logs</button>`,
+  ].filter(Boolean).join("");
+  return {
+    title: actorLabel || "No notable actor",
+    meta: actor ? [
+      actorSourceStatus(actor),
+      actor.reverse_dns || "",
+      actor.asn ? formatASN(actor.asn) : "",
+      actor.asn_org || actor.network || "",
+      `${formatNumber(actor.requests || 0)} requests`,
+      errors ? `${formatNumber(errors)} errors` : "",
+    ].filter(Boolean).join(" - ") : "Actor classifications are quiet for this site.",
+    valueLabel: actor ? "risk" : "actors",
+    value: actor ? actor.risk || actor.risk_score || 0 : 0,
+    actions,
+  };
+}
+
+function siteInvestigationEvidence(site, report, evidenceCount) {
+  const siteID = site.id || "";
+  const actions = [
+    siteTabButton("Logs tab", "logs"),
+    siteTabButton("Reports tab", "reports"),
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, origin: "site_map" })}'>Open logs</button>`,
+    report ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: siteID, origin: "site_map" }))}'>Open report</button>` : `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "report", report_tab: state.reportTab || "daily", site_id: siteID, origin: "site_map" })}'>Report list</button>`,
+  ].join("");
+  return {
+    title: report ? reportListLabel(report) : "Evidence pack",
+    meta: report ? reportWindowLabel(report) : "Use matching rows and generated reports as supporting evidence.",
+    valueLabel: report?.model || "rows",
+    value: report ? formatNumber(report.summary?.requests || 0) : formatNumber(evidenceCount),
+    actions,
+  };
+}
+
+function siteInvestigationSignalMeta(signal) {
+  return [
+    formatCategory(signal.group || "signal"),
+    signal.siteID || "",
+    signal.ip ? `IP ${signal.ip}` : "",
+    signal.path || "",
+    signal.requests ? `${formatNumber(signal.requests)} requests` : "",
+    signal.errors ? `${formatNumber(signal.errors)} errors` : "",
+    signal.lastSeen ? formatTime(signal.lastSeen) : "",
+  ].filter(Boolean).join(" - ");
+}
+
+function siteInvestigationReliabilityMeta(site, topError, topPath) {
+  if (topError) {
+    return [
+      topError.client_ip ? `IP ${topError.client_ip}` : "",
+      topError.method || "",
+      topError.path || "",
+      topError.ts ? formatTime(topError.ts) : "",
+    ].filter(Boolean).join(" - ");
+  }
+  if (topPath) {
+    const errors = Number(topPath.status_4xx || 0) + Number(topPath.status_5xx || 0);
+    return [
+      `${formatNumber(topPath.requests || 0)} requests`,
+      `${formatNumber(errors)} errors`,
+      `p95 ${formatMs(topPath.p95_request_time_ms || 0)}`,
+    ].join(" - ");
+  }
+  return `${formatPercent(site.status5xxRate || 0)} 5xx / ${formatPercent(site.status4xxRate || 0)} 4xx in this scope.`;
+}
+
+function siteTabButton(label, tab) {
+  return `<button class="ghost mini inline-action" type="button" data-site-tab-target="${escapeHTML(normalizeSiteTab(tab))}">${escapeHTML(label)}</button>`;
+}
+
+function siteInvestigationNode(item) {
+  return `
+    <div class="signal-row site-investigation-node">
+      <div>
+        <strong>${escapeHTML(item.title || "-")}</strong>
+        <span>${escapeHTML(item.meta || "")}</span>
+        <div class="signal-actions">${item.actions || ""}</div>
+      </div>
+      <div class="signal-numbers">
+        <span>${escapeHTML(item.valueLabel || "")}</span>
+        <b>${escapeHTML(item.value ?? "")}</b>
+      </div>
+    </div>
+  `;
+}
+
 function renderSiteTab(site) {
   const id = site.id;
   const signals = siteSignalItems(id);
@@ -4562,6 +4729,7 @@ function renderSiteTab(site) {
   body.innerHTML = `
     <section class="site-tab-grid site-overview-grid">
       ${siteSubsection("Site health trend", siteTrendPanel(site, "overview"), "No timestamped site evidence in this scope.", "span-2")}
+      ${siteSubsection("Investigation map", siteInvestigationMap(site, { signals, recentErrors, topPaths, actors }), "", "span-2 site-map-section")}
       ${siteSubsection("Activity timeline", entityTimeline(timeline), "No timestamped site activity in this scope.", "span-2")}
       ${siteSubsection("Priority signals", `<div class="signal-stack">${signals.slice(0, 8).map(signalRow).join("") || `<div class="empty">No active signals for this site.</div>`}</div>`)}
       ${siteSubsection("Recent errors", siteRowsMarkup(recentErrors.slice(0, 10).map((item) => ({ ...item, kind: "Recent error" })), siteReliabilityRow, "No recent errors for this site."))}
