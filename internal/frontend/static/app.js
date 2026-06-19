@@ -2720,6 +2720,7 @@ function logLaneRow(item) {
   const context = state.viewContext || {};
   const openPivot = logFilterPivotForContext(item.logType, context, "logs_lane");
   const errorPivot = logFilterPivotForContext(item.logType, { ...context, status_class: "errors" }, "logs_lane");
+  const accessPivot = logFilterPivotForContext("nginx-access", context, "logs_lane");
   return `
     <div class="log-lane-row ${item.active ? "active" : ""}">
       <div class="log-lane-main">
@@ -2732,6 +2733,7 @@ function logLaneRow(item) {
       </div>
       <div class="log-lane-actions">
         <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(openPivot)}'>Open</button>
+        ${item.logType !== "nginx-access" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(accessPivot)}'>Access</button>` : ""}
         ${item.canFilterErrors ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(errorPivot)}'>Errors</button>` : ""}
         ${item.pending ? `<button class="ghost mini inline-action" type="button" data-route-target="system">Index</button>` : ""}
       </div>
