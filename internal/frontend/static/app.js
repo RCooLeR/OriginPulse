@@ -7453,6 +7453,7 @@ function reportDetailMarkup(report) {
       ${reportMetric("Slow rate", formatPercent(summary.slow_requests_rate || 0))}
     </section>
 
+    ${reportPeriodPath(report)}
     ${reportInvestigationBoard(report)}
     ${reportEvidenceMatrix(report)}
 
@@ -7657,6 +7658,142 @@ function reportMetric(label, value) {
       <span>${escapeHTML(label)}</span>
       <strong>${escapeHTML(value)}</strong>
     </article>
+  `;
+}
+
+function reportPeriodPath(report) {
+  const summary = report.summary || {};
+  const siteID = report.site_id || summary.top_site || "";
+  const evidenceRows = reportEvidenceRows(report);
+  const sourceLead = reportLeadFor(report, ["source_ips", "tor_sources", "admin_probes", "injection_probes"]);
+  const targetLead = reportLeadFor(report, ["top_paths", "slow_paths", "recent_errors"], (item) => Boolean(item.path || item.site_id));
+  const signalLead = reportLeadFor(report, ["issues", "injection_probes", "admin_probes", "tor_sources", "slow_paths", "recent_errors"]);
+  const sourceItem = sourceLead?.item || {};
+  const targetItem = targetLead?.item || {};
+  const signalItem = signalLead?.item || {};
+  const sourceSiteID = sourceItem.site_id || siteID;
+  const targetSiteID = targetItem.site_id || siteID;
+  const sourceIP = sourceItem.ip || summary.top_source_ip || "";
+  const sourceASN = sourceItem.asn ? formatASN(sourceItem.asn) : "";
+  const sourceActor = sourceItem.known_actor || sourceItem.actor_value || actorLabelFromType(sourceItem.actor_type);
+  const targetPath = targetItem.path || summary.top_path || "";
+  const targetErrors = Number(targetItem.status_4xx || 0) + Number(targetItem.status_5xx || 0) + (Number(targetItem.status || 0) >= 400 ? 1 : 0);
+  const signalErrors = Number(signalItem.status_4xx || 0) + Number(signalItem.status_5xx || 0) + (Number(signalItem.status || 0) >= 400 ? 1 : 0);
+  const signalKey = signalLead ? reportSignalKey(signalLead.key, signalItem) : "";
+  const periodLogs = reportPivot(report, { kind: "log_filter", site_id: report.site_id || "", origin: "report_path" });
+  const errorLogs = reportPivot(report, { kind: "log_filter", site_id: report.site_id || "", status_class: "errors", origin: "report_path" });
+  const steps = [
+    {
+      label: "Period",
+      value: reportListLabel(report),
+      meta: [reportWindowLabel(report), report.model || "local"].filter(Boolean).join(" / "),
+      actions: [
+        reportActionButton("Open report", reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: report.site_id || "", origin: "report_path" })),
+        reportActionButton("Period logs", periodLogs),
+      ].join(""),
+    },
+    {
+      label: "Scope",
+      value: siteID ? siteLabel(siteID) || siteID : "All sites",
+      meta: [
+        `${formatNumber(summary.requests || 0)} requests`,
+        `${formatPercent(summary.status_5xx_rate || 0)} 5xx`,
+        summary.issue_count ? `${formatNumber(summary.issue_count)} issues` : "",
+      ].filter(Boolean).join(" / "),
+      actions: [
+        siteID ? reportActionButton("Open site", reportPivot(report, { kind: "site", value: siteID, site_id: siteID, origin: "report_path" })) : "",
+        reportActionButton("Error logs", errorLogs),
+      ].filter(Boolean).join(""),
+    },
+    {
+      label: "Top source",
+      value: sourceIP || sourceActor || sourceASN || "No source",
+      meta: [
+        sourceActor,
+        sourceASN,
+        sourceItem.asn_org || sourceItem.network || "",
+        sourceItem.requests ? `${formatNumber(sourceItem.requests)} requests` : "",
+      ].filter(Boolean).join(" / "),
+      actions: [
+        sourceIP ? reportActionButton("Open IP", reportPivot(report, { kind: "ip", value: sourceIP, site_id: sourceSiteID, origin: "report_path" })) : "",
+        sourceASN ? reportActionButton("Open ASN", reportPivot(report, { kind: "asn", value: sourceASN, site_id: sourceSiteID, origin: "report_path" })) : "",
+        sourceActor ? reportActionButton("Open actor", reportPivot(report, { kind: "actor", value: sourceActor, actor_type: sourceItem.actor_type || "", site_id: sourceSiteID, origin: "report_path" })) : "",
+        sourceIP || sourceASN || sourceActor ? reportActionButton("Source logs", reportPivot(report, { kind: "log_filter", ip: sourceIP, asn: sourceASN, known_actor: sourceActor || "", actor_type: sourceItem.actor_type || "", site_id: sourceSiteID, origin: "report_path" })) : "",
+      ].filter(Boolean).join(""),
+    },
+    {
+      label: "Top target",
+      value: targetPath || (targetSiteID ? siteLabel(targetSiteID) || targetSiteID : "No target"),
+      meta: [
+        targetLead?.title || "",
+        targetItem.requests ? `${formatNumber(targetItem.requests)} requests` : "",
+        targetErrors ? `${formatNumber(targetErrors)} errors` : "",
+        targetItem.p95_request_time_ms ? `p95 ${formatMs(targetItem.p95_request_time_ms)}` : "",
+      ].filter(Boolean).join(" / "),
+      actions: [
+        targetPath ? reportActionButton("Open path", reportPivot(report, { kind: "path", value: targetPath, site_id: targetSiteID, origin: "report_path" })) : "",
+        targetSiteID ? reportActionButton("Open site", reportPivot(report, { kind: "site", value: targetSiteID, site_id: targetSiteID, origin: "report_path" })) : "",
+        targetPath ? reportActionButton("Target logs", reportPivot(report, { kind: "log_filter", path: targetPath, site_id: targetSiteID, status_class: targetErrors ? "errors" : "", origin: "report_path" })) : "",
+      ].filter(Boolean).join(""),
+    },
+    {
+      label: "Signal",
+      value: signalLead ? signalLead.title || formatCategory(signalLead.key) : "No signal",
+      meta: signalLead ? reportLeadMeta(signalItem, signalErrors) : "No stored signal drilldown for this report",
+      actions: [
+        signalKey ? reportActionButton("Open signal", reportPivot(report, {
+          kind: "signal",
+          key: signalKey,
+          site_id: signalItem.site_id || siteID,
+          ip: signalItem.ip || "",
+          path: signalItem.path || "",
+          known_actor: signalItem.actor_value || signalItem.known_actor || "",
+          status_class: signalErrors || Number(signalItem.status || 0) >= 400 ? "errors" : "",
+          origin: "report_path",
+          report_tab: reportTabForReport(report),
+        })) : "",
+        reportActionButton("Signal logs", reportPivot(report, {
+          kind: "log_filter",
+          path: signalItem.path || targetPath,
+          ip: signalItem.ip || sourceIP,
+          site_id: signalItem.site_id || siteID,
+          status_class: signalErrors || targetErrors ? "errors" : "",
+          origin: "report_path",
+        })),
+      ].filter(Boolean).join(""),
+    },
+    {
+      label: "Raw evidence",
+      value: `${formatNumber(evidenceRows.length)} rows`,
+      meta: [
+        "Evidence matrix",
+        targetPath ? "path context" : "",
+        sourceIP ? "source context" : "",
+      ].filter(Boolean).join(" / "),
+      actions: [
+        reportActionButton("Access", reportPivot(report, { kind: "log_filter", path: targetPath, ip: sourceIP, site_id: targetSiteID || sourceSiteID || report.site_id || "", log_type: "nginx-access", origin: "report_path" })),
+        reportActionButton("Nginx", reportPivot(report, { kind: "log_filter", path: targetPath, ip: sourceIP, site_id: targetSiteID || sourceSiteID || report.site_id || "", log_type: "nginx-error", status_class: targetErrors || signalErrors ? "errors" : "", origin: "report_path" })),
+        reportActionButton("PHP", reportPivot(report, { kind: "log_filter", path: targetPath, ip: sourceIP, site_id: targetSiteID || sourceSiteID || report.site_id || "", log_type: "php-error", status_class: targetErrors || signalErrors ? "errors" : "", origin: "report_path" })),
+      ].join(""),
+    },
+  ];
+  return `
+    <section class="report-path-board" aria-label="Report period investigation path">
+      ${steps.map(reportPeriodPathStep).join("")}
+    </section>
+  `;
+}
+
+function reportPeriodPathStep(step) {
+  return `
+    <div class="report-path-step">
+      <div>
+        <span>${escapeHTML(step.label || "-")}</span>
+        <strong>${escapeHTML(step.value || "-")}</strong>
+        <small>${escapeHTML(step.meta || "")}</small>
+      </div>
+      <div class="signal-actions">${step.actions || ""}</div>
+    </div>
   `;
 }
 

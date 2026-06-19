@@ -2647,6 +2647,59 @@ td code,
   grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
 }
 
+.report-path-board {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.report-path-step {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 10px;
+  border-right: 1px solid var(--line);
+  background: #fbfcfd;
+}
+
+.report-path-step:last-child {
+  border-right: 0;
+}
+
+.report-path-step span,
+.report-path-step strong,
+.report-path-step small {
+  min-width: 0;
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.report-path-step span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.report-path-step strong {
+  font-size: 0.86rem;
+}
+
+.report-path-step small {
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.report-path-step .signal-actions {
+  margin-top: 0;
+}
+
 .report-investigation-board {
   min-width: 0;
   border: 1px solid var(--line);
@@ -3084,6 +3137,18 @@ td code,
   .report-drilldown-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .report-path-board {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .report-path-step:nth-child(3n) {
+    border-right: 0;
+  }
+
+  .report-path-step:nth-child(-n + 3) {
+    border-bottom: 1px solid var(--line);
+  }
 }
 
 @media (max-width: 920px) {
@@ -3192,6 +3257,23 @@ td code,
   }
 
   .signal-path-step:last-child {
+    border-bottom: 0;
+  }
+
+  .report-path-board {
+    grid-template-columns: 1fr;
+  }
+
+  .report-path-step {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .report-path-step:nth-child(-n + 3) {
+    border-bottom: 1px solid var(--line);
+  }
+
+  .report-path-step:last-child {
     border-bottom: 0;
   }
 
