@@ -643,6 +643,7 @@ h2 {
     "risk risk sites"
     "timeline timeline sites"
     "health health sites"
+    "heatmap heatmap sites"
     "hotspots hotspots actors-review"
     "sources agents actors-review"
     "errors errors errors";
@@ -660,6 +661,10 @@ h2 {
 
 #healthMatrixPanel {
   grid-area: health;
+}
+
+#siteHeatmapPanel {
+  grid-area: heatmap;
 }
 
 .health-matrix-wrap {
@@ -682,6 +687,155 @@ h2 {
 .health-matrix-table .severity {
   width: fit-content;
   margin: 2px 0;
+}
+
+.site-heatmap-wrap {
+  overflow-x: auto;
+}
+
+.site-heatmap {
+  min-width: 900px;
+  display: grid;
+}
+
+.site-heatmap-head,
+.site-heatmap-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 1.25fr) repeat(6, minmax(76px, 0.54fr)) minmax(150px, 0.85fr);
+  gap: 0;
+  align-items: stretch;
+}
+
+.site-heatmap-head {
+  min-height: 34px;
+  border-bottom: 1px solid var(--line);
+  background: #fafbfc;
+}
+
+.site-heatmap-head span {
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.site-heatmap-row {
+  min-height: 82px;
+  border-bottom: 1px solid var(--line);
+}
+
+.site-heatmap-row:last-child {
+  border-bottom: 0;
+}
+
+.site-heatmap-site,
+.site-heatmap-actions {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  padding: 9px 10px;
+}
+
+.site-heatmap-site {
+  border-right: 1px solid var(--line);
+}
+
+.site-heatmap-site .severity {
+  width: fit-content;
+}
+
+.site-heatmap-site strong,
+.site-heatmap-site small {
+  min-width: 0;
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.site-heatmap-site strong {
+  font-size: 0.88rem;
+}
+
+.site-heatmap-site small {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.site-heat-cell {
+  min-width: 0;
+  min-height: 82px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  padding: 8px 9px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  background: #ffffff;
+}
+
+.site-heat-cell:hover {
+  outline: 2px solid rgba(35, 100, 170, 0.34);
+  outline-offset: -2px;
+}
+
+.site-heat-cell span,
+.site-heat-cell small {
+  min-width: 0;
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.site-heat-cell span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.site-heat-cell strong {
+  font-size: 0.88rem;
+  line-height: 1.1;
+}
+
+.site-heat-cell small {
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.2;
+}
+
+.heat-level-none {
+  background: #f8fafb;
+}
+
+.heat-level-low {
+  background: #eef8f3;
+}
+
+.heat-level-medium {
+  background: #fff3df;
+}
+
+.heat-level-high {
+  background: #fbe7e2;
+}
+
+.heat-level-critical {
+  background: #f4d8d5;
+}
+
+.site-heatmap-actions {
+  align-content: center;
+  align-items: flex-start;
+  flex-direction: row;
+  flex-wrap: wrap;
 }
 
 .problem-site {
@@ -3040,6 +3194,7 @@ td code,
       "risk risk"
       "timeline timeline"
       "health health"
+      "heatmap heatmap"
       "hotspots actors-review"
       "status sites"
       "sources agents"
@@ -3276,6 +3431,7 @@ td code,
       "risk"
       "timeline"
       "health"
+      "heatmap"
       "hotspots"
       "actors-review"
       "status"

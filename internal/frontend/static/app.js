@@ -1023,6 +1023,7 @@ function renderDashboard() {
   renderPrioritySignals(signals);
   renderSiteRiskOverview(siteRows, signals);
   renderOverviewHealthMatrix(siteRows);
+  renderOverviewSiteHeatmap(siteRows);
   renderOverviewHotspots(overviewHotspotRows());
   renderOverviewActorReview(overviewActorReviewRows());
   renderRecentErrors(traffic.recent_errors || []);
@@ -1359,6 +1360,213 @@ function overviewHealthRow(item) {
       </td>
     </tr>
   `;
+}
+
+function renderOverviewSiteHeatmap(sites) {
+  const rows = overviewSiteHeatmapRows(sites);
+  const requests = rows.reduce((sum, item) => sum + Number(item.requests || 0), 0);
+  setText("#siteHeatmapSummary", rows.length ? `${formatNumber(rows.length)} sites / ${formatNumber(requests)} req` : "no sites");
+  const container = qs("#siteHeatmapGrid");
+  if (!container) return;
+  if (!rows.length) {
+    container.innerHTML = `<div class="empty">No site pressure telemetry is available in this scope.</div>`;
+    return;
+  }
+  container.innerHTML = `
+    <div class="site-heatmap-head">
+      <span>Site</span>
+      <span>Traffic</span>
+      <span>4xx</span>
+      <span>5xx</span>
+      <span>Slow</span>
+      <span>Probes</span>
+      <span>Fresh</span>
+      <span>Drilldowns</span>
+    </div>
+    ${rows.map(overviewSiteHeatmapRow).join("")}
+  `;
+}
+
+function overviewSiteHeatmapRows(sites) {
+  const allSites = (sites || []).filter((site) => site?.id);
+  const maxRequests = Math.max(...allSites.map((site) => Number(site.requests || 0)), 1);
+  return allSites.map((site) => {
+    const siteID = site.id || "";
+    const topPath = siteTopPaths(siteID)[0] || {};
+    const topIP = siteTopSourceIPs(siteID)[0] || {};
+    const signals = siteSignalItems(siteID);
+    const securitySignals = signals.filter((item) => item.group === "security");
+    const topSignal = securitySignals[0] || signals[0] || null;
+    const p95 = Math.max(Number(site.p95 || 0), Number(topPath.p95_request_time_ms || 0));
+    const freshness = overviewSiteFreshness(site);
+    const errors = Number(site.status4xx || 0) + Number(site.status5xx || 0);
+    const cells = [
+      overviewSiteHeatCell({
+        key: "traffic",
+        label: "Traffic",
+        value: formatNumber(site.requests || 0),
+        meta: `${formatNumber(site.uniqueIPs || 0)} IPs`,
+        level: overviewHeatLevel(ratio(site.requests || 0, maxRequests), [0.2, 0.5, 0.8]),
+        title: `${formatNumber(site.requests || 0)} requests in the active window`,
+        pivot: { kind: "site", value: siteID, origin: "overview_heatmap" },
+      }),
+      overviewSiteHeatCell({
+        key: "4xx",
+        label: "4xx",
+        value: formatPercent(site.status4xxRate || 0),
+        meta: formatNumber(site.status4xx || 0),
+        level: overviewHeatLevel(site.status4xxRate || 0, [0.02, 0.1, 0.25]),
+        title: `${formatNumber(site.status4xx || 0)} client errors`,
+        pivot: { kind: "log_filter", site_id: siteID, status_class: Number(site.status4xx || 0) ? "errors" : "", origin: "overview_heatmap_4xx" },
+      }),
+      overviewSiteHeatCell({
+        key: "5xx",
+        label: "5xx",
+        value: formatPercent(site.status5xxRate || 0),
+        meta: formatNumber(site.status5xx || 0),
+        level: overviewHeatLevel(site.status5xxRate || 0, [0.001, 0.01, 0.05]),
+        title: `${formatNumber(site.status5xx || 0)} origin/server errors`,
+        pivot: { kind: "log_filter", site_id: siteID, status_class: Number(site.status5xx || 0) ? "errors" : "", origin: "overview_heatmap_5xx" },
+      }),
+      overviewSiteHeatCell({
+        key: "slow",
+        label: "Slow",
+        value: p95 ? formatMs(p95) : "-",
+        meta: topPath.path ? "top path" : "no p95",
+        level: overviewHeatLevel(p95, [500, 1000, 2500]),
+        title: topPath.path ? `Slowest path ${topPath.path}` : "No slow path data",
+        pivot: topPath.path
+          ? { kind: "path", value: topPath.path, site_id: siteID, origin: "overview_heatmap_slow" }
+          : { kind: "log_filter", site_id: siteID, origin: "overview_heatmap_slow" },
+      }),
+      overviewSiteHeatCell({
+        key: "probes",
+        label: "Probes",
+        value: formatNumber(site.securitySignals || 0),
+        meta: `${formatNumber(signals.length)} signals`,
+        level: overviewHeatLevel(site.securitySignals || 0, [1, 3, 8]),
+        title: `${formatNumber(site.securitySignals || 0)} security signals`,
+        pivot: topSignal
+          ? { kind: "signal", key: topSignal.key, site_id: topSignal.siteID || siteID, origin: "overview_heatmap_probes" }
+          : { kind: "log_filter", site_id: siteID, status_class: errors ? "errors" : "", origin: "overview_heatmap_probes" },
+      }),
+      overviewSiteHeatCell({
+        key: "freshness",
+        label: "Fresh",
+        value: freshness.value,
+        meta: freshness.meta,
+        level: freshness.level,
+        title: freshness.title,
+        pivot: { kind: "log_filter", site_id: siteID, origin: "overview_heatmap_freshness" },
+      }),
+    ];
+    const heatScore = cells.reduce((sum, cell) => sum + overviewHeatRank(cell.level), 0)
+      + Number(site.statusRank || 0) * 2
+      + Math.min(5, signals.length)
+      + Math.min(5, Math.floor(errors / 100));
+    return { ...site, topPath, topIP, topSignal, cells, heatScore, errors };
+  }).sort((a, b) => b.heatScore - a.heatScore || b.requests - a.requests || String(a.name || a.id).localeCompare(String(b.name || b.id))).slice(0, 16);
+}
+
+function overviewSiteHeatmapRow(item) {
+  const siteID = item.id || "";
+  const topPath = item.topPath || {};
+  const topIP = item.topIP || {};
+  const report = siteReports(siteID)[0];
+  const errorClass = item.errors ? "errors" : "";
+  const meta = [
+    `${formatNumber(item.requests || 0)} requests`,
+    item.lastSeen ? `last ${formatTime(item.lastSeen)}` : "",
+    topPath.path ? `path ${topPath.path}` : "",
+    topIP.ip ? `IP ${topIP.ip}` : "",
+  ].filter(Boolean).join(" - ");
+  const reportButton = report
+    ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: siteID, origin: "overview_heatmap" }))}'>Report</button>`
+    : `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "report", report_tab: state.reportTab || "daily", site_id: siteID, origin: "overview_heatmap" })}'>Report</button>`;
+  return `
+    <div class="site-heatmap-row">
+      <div class="site-heatmap-site">
+        <span class="severity severity-${escapeHTML(item.severity || "low")}">${escapeHTML(item.status || "healthy")}</span>
+        <strong>${escapeHTML(item.name || siteID)}</strong>
+        <small>${escapeHTML(meta || "No indexed traffic in this scope.")}</small>
+      </div>
+      ${item.cells.map(overviewSiteHeatCellMarkup).join("")}
+      <div class="site-heatmap-actions">
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: siteID, origin: "overview_heatmap" })}'>Site</button>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, status_class: errorClass, origin: "overview_heatmap" })}'>Logs</button>
+        ${topPath.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: topPath.path, site_id: siteID, origin: "overview_heatmap" })}'>Path</button>` : ""}
+        ${topIP.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: topIP.ip, site_id: siteID, origin: "overview_heatmap" })}'>IP</button>` : ""}
+        ${reportButton}
+      </div>
+    </div>
+  `;
+}
+
+function overviewSiteHeatCell(cell) {
+  return {
+    key: cell.key || "",
+    label: cell.label || "",
+    value: cell.value || "-",
+    meta: cell.meta || "",
+    level: cell.level || "none",
+    title: cell.title || "",
+    pivot: cell.pivot || {},
+  };
+}
+
+function overviewSiteHeatCellMarkup(cell) {
+  return `
+    <button class="site-heat-cell heat-level-${escapeHTML(cell.level || "none")}" type="button" title="${escapeHTML(cell.title || cell.label || "")}" data-pivot='${encodePivot(cell.pivot || {})}'>
+      <span>${escapeHTML(cell.label || "")}</span>
+      <strong>${escapeHTML(cell.value || "-")}</strong>
+      <small>${escapeHTML(cell.meta || "")}</small>
+    </button>
+  `;
+}
+
+function overviewHeatLevel(value, thresholds) {
+  const number = Number(value || 0);
+  if (!number) return "none";
+  if (number >= thresholds[2]) return "critical";
+  if (number >= thresholds[1]) return "high";
+  if (number >= thresholds[0]) return "medium";
+  return "low";
+}
+
+function overviewHeatRank(level) {
+  return { none: 0, low: 1, medium: 2, high: 3, critical: 4 }[level] || 0;
+}
+
+function overviewSiteFreshness(site) {
+  const latest = latestObservedTime();
+  const last = site?.lastSeen || "";
+  if (!last) {
+    return {
+      value: "missing",
+      meta: "no events",
+      level: "high",
+      title: "No indexed events for this site in the active scope",
+    };
+  }
+  const lastDate = new Date(last);
+  const latestDate = latest ? new Date(latest) : new Date();
+  if (Number.isNaN(lastDate.getTime()) || Number.isNaN(latestDate.getTime())) {
+    return {
+      value: "unknown",
+      meta: "bad time",
+      level: "medium",
+      title: "Freshness timestamp could not be parsed",
+    };
+  }
+  const lagHours = Math.max(0, (latestDate.getTime() - lastDate.getTime()) / (60 * 60 * 1000));
+  const level = lagHours >= 72 ? "critical" : lagHours >= 24 ? "high" : lagHours >= 6 ? "medium" : "low";
+  const value = lagHours < 1 ? "current" : lagHours < 24 ? `${Math.round(lagHours)}h lag` : `${Math.round(lagHours / 24)}d lag`;
+  return {
+    value,
+    meta: formatTime(last),
+    level,
+    title: `Latest indexed event ${formatTime(last)}`,
+  };
 }
 
 function overviewHotspotRows() {
