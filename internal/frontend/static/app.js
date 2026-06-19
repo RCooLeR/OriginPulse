@@ -5334,6 +5334,7 @@ function entityBody(entity) {
   const sites = entitySites(entity, detail).slice(0, 10);
   const agents = entityUserAgents(entity, detail).slice(0, 10);
   const sourceIPs = entitySourceIPs(entity).slice(0, 16);
+  const securityProbes = entitySecurityProbeRows(entity).slice(0, 12);
   const reports = entityRelatedReports(entity, { detail, signals, evidence, paths, sites, agents, sourceIPs }).slice(0, 8);
   const timeline = entityTimelineRows(entity, { detail, signals, evidence, paths, sites, agents, sourceIPs, reports }).slice(0, 18);
   return `
@@ -5346,6 +5347,7 @@ function entityBody(entity) {
     <section class="entity-detail-grid">
       ${entitySection("Investigation timeline", entityTimeline(timeline), "No timeline events in this scope.", "entity-section-wide")}
       ${entitySection("Related signals", signals.map(signalRow).join(""), "No related signals in this scope.")}
+      ${entitySection("Security probes", securityProbes.map(siteSecurityRow).join(""), "No injection, admin, or Tor probes match this entity in the current scope.")}
       ${entitySection("Recent evidence", evidence.map(logEvidenceRow).join(""), "No recent evidence in this scope.")}
       ${entitySection("Multi-log correlation", entityCorrelationPack(entity, evidence, paths), "No correlated log lanes are available in this scope.")}
       ${entity.kind === "actor" ? entitySection("Source IP verification", actorVerificationPanel(entity), "No source IPs are tied to this actor in the current scope.") : ""}
@@ -6246,6 +6248,39 @@ function entityUserAgents(entity, detail = {}) {
 function entitySourceIPs(entity) {
   if (entity.kind === "asn") return sourceIPsForASN(entity.value);
   return [];
+}
+
+function entitySecurityProbeRows(entity) {
+  const analysis = state.data.analysis || {};
+  const rows = [
+    ...(analysis.injection_probes || []).map((item) => ({ ...item, kind: "Injection probe" })),
+    ...(analysis.admin_probes || []).map((item) => ({ ...item, kind: "Admin probe" })),
+    ...(analysis.tor_sources || []).map((item) => ({ ...item, kind: "Tor source" })),
+  ].filter((item) => entitySecurityProbeMatches(entity, item));
+  return rows.sort((a, b) => {
+    const aErrors = Number(a.status_4xx || 0) + Number(a.status_5xx || 0);
+    const bErrors = Number(b.status_4xx || 0) + Number(b.status_5xx || 0);
+    return Number(b.risk_score || 0) - Number(a.risk_score || 0)
+      || bErrors - aErrors
+      || Number(b.requests || 0) - Number(a.requests || 0);
+  });
+}
+
+function entitySecurityProbeMatches(entity, item = {}) {
+  if (entity.kind === "ip") return item.ip === entity.value;
+  if (entity.kind === "asn") {
+    const ips = new Set(sourceIPsForASN(entity.value).map((source) => source.ip).filter(Boolean));
+    return Boolean(item.ip && ips.has(item.ip));
+  }
+  if (entity.kind === "path") return Boolean(item.path && pathMatches(item.path, entity.value));
+  if (entity.kind === "actor") {
+    const ips = contextActorIPs({ known_actor: entity.value, actor_type: state.viewContext.actor_type || "" });
+    return item.known_actor === entity.value
+      || actorLabelFromType(item.actor_type) === entity.value
+      || Boolean(item.ip && ips.has(item.ip));
+  }
+  if (entity.kind === "user-agent") return userAgentMatches(item.user_agent || item.sample || "", entity.value);
+  return false;
 }
 
 function entityRelatedReports(entity, context = {}) {
@@ -9077,20 +9112,21 @@ function siteLogEventActions({ siteID = "", ip = "", path = "", statusClass = ""
 
 function siteSecurityRow(item) {
   const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
-  const path = item.path || "/";
+  const path = item.path || "";
+  const titleTarget = path || item.ip || "source traffic";
   const siteID = item.site_id || state.siteID || state.viewContext.site_id || "";
   const signal = signalForLogEvidence({ ...item, path, site_id: siteID });
   const statusClass = errors ? "errors" : "";
   const actions = [
     signal ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: signal.key, site_id: siteID, origin: "site_security" })}'>Open signal</button>` : "",
     item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: siteID, origin: "site_security" })}'>Open IP</button>` : "",
-    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: path, site_id: siteID, origin: "site_security" })}'>Open path</button>`,
+    path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: path, site_id: siteID, origin: "site_security" })}'>Open path</button>` : "",
     correlatedLogActions({ path, siteID, ip: item.ip || "", statusClass, origin: "site_security" }),
   ].filter(Boolean).join("");
   return `
     <div class="signal-row">
       <div>
-        <strong>${escapeHTML(item.kind || formatCategory(item.category || "Security"))}: ${escapeHTML(path)}</strong>
+        <strong>${escapeHTML(item.kind || formatCategory(item.category || "Security"))}: ${escapeHTML(titleTarget)}</strong>
         <span>${escapeHTML([item.ip, formatCategory(item.match_reason || item.category || ""), `${formatNumber(item.requests || 0)} requests`, `${formatNumber(errors)} errors`].filter(Boolean).join(" - "))}</span>
         <div class="signal-actions">${actions}</div>
       </div>
