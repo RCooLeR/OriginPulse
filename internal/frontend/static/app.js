@@ -621,6 +621,7 @@ function renderDashboard() {
   setText("#agentClassCount", `${aggregateAgentClasses(analysis.user_agents || []).length} classes`);
 
   renderPrioritySignals(signals.slice(0, 6));
+  renderSiteRiskOverview(aggregateSiteRows());
   renderRecentErrors(traffic.recent_errors || []);
 }
 
@@ -628,6 +629,84 @@ function renderPrioritySignals(items) {
   const container = qs("#prioritySignalsList");
   if (!container) return;
   container.innerHTML = items.map(signalRow).join("") || `<div class="empty">No active signals in this scope.</div>`;
+}
+
+function renderSiteRiskOverview(sites) {
+  const topContainer = qs("#topProblemSite");
+  const listContainer = qs("#siteRiskList");
+  if (!topContainer || !listContainer) return;
+  if (!sites.length) {
+    topContainer.innerHTML = `<div class="empty">No site telemetry is available in this scope.</div>`;
+    listContainer.innerHTML = "";
+    return;
+  }
+
+  const top = sites[0];
+  const topIP = siteTopSourceIPs(top.id)[0];
+  const topPath = siteTopPaths(top.id)[0];
+  const reason = siteRiskReason(top, topIP, topPath);
+  topContainer.innerHTML = `
+    <div class="problem-site-main">
+      <div>
+        <span class="severity severity-${escapeHTML(top.severity || "low")}">${escapeHTML(top.status || "healthy")}</span>
+        <h3>${escapeHTML(top.name || top.id)}</h3>
+        <p>${escapeHTML(reason)}</p>
+      </div>
+      <div class="problem-site-actions">
+        <button class="primary small" type="button" data-pivot='${encodePivot({ kind: "site", value: top.id, origin: "overview" })}'>Open site</button>
+        <button class="ghost small" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: top.id, status_class: top.status5xx || top.status4xx ? "errors" : "", origin: "overview" })}'>Open logs</button>
+        <button class="ghost small" type="button" data-pivot='${encodePivot({ kind: "report", report_tab: "daily", site_id: top.id, origin: "overview" })}'>Reports</button>
+      </div>
+    </div>
+    <div class="field-grid problem-site-facts">
+      ${[
+        ["Requests", formatNumber(top.requests || 0)],
+        ["5xx", `${formatPercent(top.status5xxRate || 0)} / ${formatNumber(top.status5xx || 0)}`],
+        ["4xx", `${formatPercent(top.status4xxRate || 0)} / ${formatNumber(top.status4xx || 0)}`],
+        ["Signals", `${formatNumber(top.signalCount || 0)} total / ${formatNumber(top.securitySignals || 0)} security`],
+        ["Top IP", topIP?.ip || "-"],
+        ["Top path", topPath?.path || "-"],
+      ].map(statTile).join("")}
+    </div>
+  `;
+  listContainer.innerHTML = sites.slice(0, 10).map(siteRiskRow).join("");
+}
+
+function siteRiskReason(site, topIP, topPath) {
+  const parts = [];
+  if (site.status5xxRate >= 0.01 || site.status5xx) parts.push(`${formatPercent(site.status5xxRate || 0)} 5xx`);
+  if (site.securitySignals) parts.push(`${formatNumber(site.securitySignals)} security signals`);
+  if (site.signalCount && !site.securitySignals) parts.push(`${formatNumber(site.signalCount)} active signals`);
+  if (topPath?.path) parts.push(`top path ${topPath.path}`);
+  if (topIP?.ip) parts.push(`top IP ${topIP.ip}`);
+  return parts.length ? parts.join(" / ") : "Lowest-risk site in the current filtered scope.";
+}
+
+function siteRiskRow(site) {
+  const topIP = siteTopSourceIPs(site.id)[0];
+  const topPath = siteTopPaths(site.id)[0];
+  const meta = [
+    `${formatNumber(site.requests || 0)} requests`,
+    `${formatPercent(site.status5xxRate || 0)} 5xx`,
+    `${formatNumber(site.signalCount || 0)} signals`,
+    topPath?.path ? `path ${topPath.path}` : "",
+    topIP?.ip ? `IP ${topIP.ip}` : "",
+  ].filter(Boolean).join(" - ");
+  return `
+    <div class="signal-row site-risk-row">
+      <div>
+        <strong>${escapeHTML(site.name || site.id)}</strong>
+        <span>${escapeHTML(meta)}</span>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: site.id, origin: "overview" })}'>Open site</button>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: site.id, status_class: site.status5xx || site.status4xx ? "errors" : "", origin: "overview" })}'>Logs</button>
+        ${topPath?.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: topPath.path, site_id: site.id, origin: "overview" })}'>Top path</button>` : ""}
+      </div>
+      <div class="signal-numbers">
+        <span>${escapeHTML(site.status || "healthy")}</span>
+        <b>${formatNumber(site.statusRank || 0)}</b>
+      </div>
+    </div>
+  `;
 }
 
 function buildSignalItems() {
@@ -2598,17 +2677,17 @@ function siteRecentErrors(siteID) {
 }
 
 function siteTopSourceIPs(siteID) {
-  if (state.siteID === siteID) return state.data.analysis?.source_ips || [];
-  return [];
+  return siteScopedRows(state.data.analysis?.source_ips || [], siteID)
+    .sort((a, b) => Number(b.requests || 0) - Number(a.requests || 0));
 }
 
 function siteTopUserAgents(siteID) {
-  if (state.siteID === siteID) return state.data.analysis?.user_agents || [];
-  return [];
+  return siteScopedRows(state.data.analysis?.user_agents || [], siteID)
+    .sort((a, b) => Number(b.requests || 0) - Number(a.requests || 0));
 }
 
 function siteTopPaths(siteID) {
-  const trafficPaths = state.siteID === siteID ? (state.data.traffic?.top_paths || []) : [];
+  const trafficPaths = siteScopedRows(state.data.traffic?.top_paths || [], siteID);
   const slowPaths = siteScopedRows(state.data.analysis?.slow_paths || [], siteID);
   const byPath = new Map();
   [...trafficPaths, ...slowPaths].forEach((item) => {

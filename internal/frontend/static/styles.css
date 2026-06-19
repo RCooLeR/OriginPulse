@@ -495,6 +495,7 @@ h2 {
   grid-template-columns: minmax(0, 1.18fr) minmax(0, 1fr) minmax(310px, 0.8fr);
   grid-template-areas:
     "signals signals status"
+    "risk risk sites"
     "timeline timeline sites"
     "sources agents agents"
     "errors errors errors";
@@ -504,6 +505,60 @@ h2 {
 
 #prioritySignalsPanel {
   grid-area: signals;
+}
+
+#siteRiskPanel {
+  grid-area: risk;
+}
+
+.problem-site {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.problem-site-main {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.problem-site-main h3 {
+  margin: 8px 0 4px;
+  font-size: 1.08rem;
+}
+
+.problem-site-main p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.problem-site-actions {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.problem-site-facts {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 0;
+}
+
+.site-risk-list {
+  display: grid;
+  max-height: 380px;
+  overflow: auto;
+}
+
+.site-risk-row .signal-numbers {
+  min-width: 78px;
 }
 
 .signal-stack {
@@ -1535,6 +1590,7 @@ td code,
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     grid-template-areas:
       "signals signals"
+      "risk risk"
       "timeline timeline"
       "status sites"
       "sources agents"
