@@ -334,6 +334,18 @@ function wireEvents() {
       return;
     }
 
+    const siteReportSelectButton = event.target.closest("[data-site-report-select]");
+    if (siteReportSelectButton) {
+      const tab = normalizeReportTab(siteReportSelectButton.dataset.siteReportTab || state.reportTab);
+      state.reportTab = tab;
+      state.selectedReportIDs[tab] = siteReportSelectButton.dataset.siteReportSelect || "";
+      renderSites();
+      renderWorkspaceContext();
+      updateURL(true);
+      requestAnimationFrame(drawReportCharts);
+      return;
+    }
+
     const siteQueueButton = event.target.closest("[data-site-queue-action]");
     if (siteQueueButton) {
       if (siteQueueButton.dataset.siteQueueAction === "clear") {
@@ -6945,8 +6957,9 @@ function renderSiteTab(site) {
   }
   if (state.siteTab === "reports") {
     const rows = siteReports(id);
-    setText("#siteTabSummary", `${formatNumber(Math.min(30, rows.length))} of ${formatNumber(rows.length)} shown`);
-    body.innerHTML = siteRowsMarkup(rows.slice(0, 30), siteReportRow, "No generated reports are scoped to this site yet.");
+    const selected = siteSelectedReport(rows);
+    setText("#siteTabSummary", selected ? `${formatNumber(rows.length)} reports / ${reportListLabel(selected)}` : "no reports");
+    body.innerHTML = siteReportsWorkspace(site, rows, selected);
     return;
   }
   const timeline = siteActivityEvents(id).slice(0, 14);
@@ -7946,6 +7959,135 @@ function sitePathRow(item) {
         ${correlatedLogActions({ path: item.path || "/", siteID: state.siteID || item.site_id || "", statusClass: errors ? "errors" : "", origin: "site" })}
       </div>
       <div class="signal-numbers"><span>requests</span><b>${formatNumber(item.requests || 0)}</b></div>
+    </div>
+  `;
+}
+
+function siteReportsWorkspace(site, reports = siteReports(site.id || ""), selected = siteSelectedReport(reports)) {
+  const siteID = site.id || "";
+  if (!reports.length) {
+    return `
+      <section class="site-tab-grid site-reports-grid">
+        ${siteSubsection("Report periods", siteReportEmptyState(siteID), "No generated reports are scoped to this site yet.", "span-2")}
+      </section>
+    `;
+  }
+  if (!selected) selected = reports[0];
+  const summary = selected.summary || {};
+  return `
+    <section class="site-tab-grid site-reports-grid">
+      ${siteSubsection("Report periods", siteReportPeriodNavigator(siteID, reports, selected), "No generated reports are scoped to this site yet.", "span-2")}
+      ${siteSubsection("Selected report metrics", siteReportMetricBand(selected), "", "span-2")}
+      ${siteSubsection("LLM summary", `<div class="report-copy markdown-body site-report-copy">${renderMarkdown(selected.output || "No LLM summary stored for this report.")}</div>`, "", "span-2")}
+      <div class="span-2">${reportPeriodPath(selected)}</div>
+      <div class="span-2">${reportInvestigationBoard(selected)}</div>
+      <div class="span-2">${reportEvidenceMatrix(selected)}</div>
+      <section class="report-chart-grid span-2 site-report-chart-grid">
+        ${reportChartsMarkup(selected)}
+      </section>
+      <section class="report-drilldown-grid span-2 site-report-drilldown-grid">
+        ${reportDrilldownsMarkup(selected)}
+      </section>
+      ${siteSubsection("Report actions", siteReportActionPanel(siteID, selected, summary), "", "span-2")}
+    </section>
+  `;
+}
+
+function siteSelectedReport(reports = []) {
+  const rows = siteSortedReports(reports);
+  if (!rows.length) return null;
+  const selected = Object.values(state.selectedReportIDs || {})
+    .map((key) => rows.find((report) => reportKey(report) === key))
+    .find(Boolean);
+  const report = selected || rows[0];
+  const tab = reportTabForReport(report);
+  state.reportTab = tab;
+  state.selectedReportIDs[tab] = reportKey(report);
+  return report;
+}
+
+function siteSortedReports(reports = []) {
+  return [...(reports || [])].sort((a, b) => new Date(b.created_at || b.range_end || 0) - new Date(a.created_at || a.range_end || 0));
+}
+
+function siteReportPeriodNavigator(siteID, reports = [], selected = null) {
+  const rows = siteSortedReports(reports);
+  const tabs = ["daily", "weekly", "monthly", "quarterly", "annual"];
+  return `
+    <div class="site-report-period-board">
+      ${tabs.map((tab) => siteReportPeriodGroup(siteID, tab, rows.filter((report) => reportTabForReport(report) === tab), selected)).join("")}
+    </div>
+  `;
+}
+
+function siteReportPeriodGroup(siteID, tab, reports = [], selected = null) {
+  const activeKey = selected ? reportKey(selected) : "";
+  const rows = reports.slice(0, 6);
+  return `
+    <section class="site-report-period-group">
+      <div class="site-report-period-head">
+        <strong>${escapeHTML(reportPeriodLabel(tab))}</strong>
+        <span>${formatNumber(reports.length)}</span>
+      </div>
+      <div class="site-report-period-list">
+        ${rows.map((report) => siteReportPeriodRow(siteID, tab, report, reportKey(report) === activeKey)).join("") || `<div class="compact-empty">No ${escapeHTML(reportPeriodLabel(tab).toLowerCase())} reports.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function siteReportPeriodRow(siteID, tab, report, active) {
+  const summary = report.summary || {};
+  const errors = Number(summary.status_4xx_rate || 0) + Number(summary.status_5xx_rate || 0);
+  const meta = [
+    `${formatNumber(summary.requests || 0)} requests`,
+    `${formatPercent(summary.status_5xx_rate || 0)} 5xx`,
+    summary.issue_count ? `${formatNumber(summary.issue_count)} issues` : "",
+  ].filter(Boolean).join(" / ");
+  return `
+    <button class="site-report-period-row ${active ? "active" : ""}" type="button" data-site-report-tab="${escapeHTML(tab)}" data-site-report-select="${escapeHTML(reportKey(report))}" aria-pressed="${active ? "true" : "false"}">
+      <span>${escapeHTML(reportListLabel(report))}</span>
+      <strong>${escapeHTML(meta)}</strong>
+      <small>${escapeHTML(reportWindowLabel(report))}</small>
+      <small>${escapeHTML(report.model || "local")}${errors ? ` / ${formatPercent(errors)} error rate` : ""}</small>
+    </button>
+  `;
+}
+
+function siteReportMetricBand(report) {
+  const summary = report.summary || {};
+  return `
+    <section class="metrics report-metrics site-report-metrics" aria-label="Selected site report metrics">
+      ${reportMetric("Requests", formatNumber(summary.requests || 0))}
+      ${reportMetric("4xx rate", formatPercent(summary.status_4xx_rate || 0))}
+      ${reportMetric("5xx rate", formatPercent(summary.status_5xx_rate || 0))}
+      ${reportMetric("Slow rate", formatPercent(summary.slow_requests_rate || 0))}
+      ${reportMetric("Issues", formatNumber(summary.issue_count || 0))}
+      ${reportMetric("Security probes", formatNumber((summary.admin_probe_requests || 0) + (summary.injection_probe_requests || 0)))}
+      ${reportMetric("Top IP", summary.top_source_ip || "-")}
+      ${reportMetric("Top path", summary.top_path || "-")}
+    </section>
+  `;
+}
+
+function siteReportActionPanel(siteID, report, summary = report.summary || {}) {
+  return `
+    <div class="site-report-actions">
+      <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: siteID, origin: "site_reports" }))}'>Open in Reports</button>
+      <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "log_filter", site_id: siteID, origin: "site_reports" }))}'>Period logs</button>
+      <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "log_filter", site_id: siteID, status_class: "errors", origin: "site_reports" }))}'>Error logs</button>
+      ${summary.top_source_ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "ip", value: summary.top_source_ip, site_id: siteID, origin: "site_reports" }))}'>Top IP</button>` : ""}
+      ${summary.top_path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "path", value: summary.top_path, site_id: siteID, origin: "site_reports" }))}'>Top path</button>` : ""}
+    </div>
+  `;
+}
+
+function siteReportEmptyState(siteID) {
+  return `
+    <div class="empty">No generated reports are scoped to this site yet.</div>
+    <div class="site-report-actions">
+      <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "report", report_tab: state.reportTab || "daily", site_id: siteID, origin: "site_reports" })}'>Open Reports</button>
+      <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, origin: "site_reports" })}'>Open logs</button>
     </div>
   `;
 }
