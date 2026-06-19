@@ -763,7 +763,7 @@ function renderDashboard() {
   setText("#statusTotal", formatNumber(totals.requests || 0));
   setText("#agentClassCount", `${aggregateAgentClasses(analysis.user_agents || []).length} classes`);
 
-  renderPrioritySignals(signals.slice(0, 6));
+  renderPrioritySignals(signals);
   renderSiteRiskOverview(aggregateSiteRows());
   renderRecentErrors(traffic.recent_errors || []);
 }
@@ -771,7 +771,75 @@ function renderDashboard() {
 function renderPrioritySignals(items) {
   const container = qs("#prioritySignalsList");
   if (!container) return;
-  container.innerHTML = items.map(signalRow).join("") || `<div class="empty">No active signals in this scope.</div>`;
+  const groups = prioritySignalGroups(items);
+  container.innerHTML = groups.map(prioritySignalGroup).join("") || `<div class="empty">No active signals in this scope.</div>`;
+}
+
+function prioritySignalGroups(signals = []) {
+  const groupDefs = [
+    { key: "critical", label: "Critical now", match: (item) => item.severity === "critical" },
+    { key: "security", label: "Security probes", match: (item) => item.group === "security" && item.severity !== "critical" },
+    { key: "reliability", label: "Reliability", match: (item) => item.group === "reliability" && item.severity !== "critical" },
+    { key: "traffic", label: "Traffic shape", match: (item) => item.group === "traffic" && item.severity !== "critical" },
+    { key: "pipeline", label: "Data pipeline", match: (item) => item.group === "pipeline" && item.severity !== "critical" },
+  ];
+  return groupDefs.map((group) => {
+    const rows = signals.filter(group.match);
+    const top = rows[0] || null;
+    return { ...group, rows, top };
+  }).filter((group) => group.rows.length || group.key === "critical" || group.key === "security" || group.key === "reliability");
+}
+
+function prioritySignalGroup(group) {
+  const shown = group.rows.slice(0, 3);
+  const topRisk = group.top ? group.top.risk || severityRank(group.top.severity) * 20 || 0 : 0;
+  return `
+    <section class="priority-signal-group ${group.rows.length ? "" : "muted"}">
+      <div class="priority-signal-head">
+        <div>
+          <h3>${escapeHTML(group.label)}</h3>
+          <span>${group.rows.length ? escapeHTML(prioritySignalGroupSummary(group.rows)) : "No active signals"}</span>
+        </div>
+        <div class="signal-numbers">
+          <span>${formatNumber(group.rows.length)} signals</span>
+          <b>${formatNumber(topRisk)}</b>
+        </div>
+      </div>
+      <div class="priority-signal-list">
+        ${shown.map(prioritySignalRow).join("") || `<div class="empty">No ${escapeHTML(group.label.toLowerCase())} in this scope.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function prioritySignalGroupSummary(rows) {
+  const requests = rows.reduce((sum, item) => sum + Number(item.requests || 0), 0);
+  const errors = rows.reduce((sum, item) => sum + Number(item.errors || 0), 0);
+  const sites = new Set(rows.map((item) => item.siteID).filter(Boolean));
+  const parts = [
+    requests ? `${formatNumber(requests)} requests` : "",
+    errors ? `${formatNumber(errors)} errors` : "",
+    sites.size ? `${formatNumber(sites.size)} sites` : "all selected sites",
+  ];
+  return parts.filter(Boolean).join(" / ");
+}
+
+function prioritySignalRow(item) {
+  const entity = item.ip || item.path || item.actor || item.siteID || "";
+  return `
+    <div class="priority-signal-row">
+      <span class="severity severity-${escapeHTML(item.severity || "low")}">${escapeHTML(item.severity || "low")}</span>
+      <div>
+        <strong>${escapeHTML(item.title || "Signal")}</strong>
+        <span>${escapeHTML([entity, item.lastSeen ? formatTime(item.lastSeen) : ""].filter(Boolean).join(" / ") || item.summary || "No extra context")}</span>
+        <div class="signal-actions">${signalActionButtons(item, "overview", "mini")}</div>
+      </div>
+      <div class="signal-score">
+        <span>risk</span>
+        <b>${escapeHTML(item.risk || severityRank(item.severity) * 20 || 0)}</b>
+      </div>
+    </div>
+  `;
 }
 
 function renderSiteRiskOverview(sites) {
@@ -1002,12 +1070,7 @@ function buildSignalItems() {
 }
 
 function signalRow(item) {
-  const actions = [
-    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: item.key, origin: state.route })}'>Open signal</button>`,
-    item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: item.siteID, origin: "signal" })}'>Open IP</button>` : "",
-    item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path, site_id: item.siteID, origin: "signal" })}'>Open path</button>` : "",
-    item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path, ip: item.ip, site_id: item.siteID, status_class: item.errors ? "errors" : "", origin: "signal" })}'>Open logs</button>` : "",
-  ].filter(Boolean).join("");
+  const actions = signalActionButtons(item, state.route, "mini");
   const meta = [
     formatCategory(item.group || "signal"),
     item.siteID ? `${item.siteID}${item.env ? `/${item.env}` : ""}` : "",
@@ -1033,6 +1096,37 @@ function signalRow(item) {
       </div>
     </div>
   `;
+}
+
+function signalActionButtons(item, origin = state.route, size = "mini") {
+  const klass = `ghost ${size} inline-action`;
+  const actions = [
+    `<button class="${klass}" type="button" data-pivot='${encodePivot({ kind: "signal", key: item.key, origin })}'>Open signal</button>`,
+    item.ip ? `<button class="${klass}" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: item.siteID, origin })}'>Open IP</button>` : "",
+    item.path ? `<button class="${klass}" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path, site_id: item.siteID, origin })}'>Open path</button>` : "",
+    item.sourceKind === "job"
+      ? `<button class="${klass}" type="button" data-route-target="system">System</button>`
+      : `<button class="${klass}" type="button" data-pivot='${encodePivot(signalLogPivot(item, origin))}'>Open logs</button>`,
+    `<button class="${klass}" type="button" data-pivot='${encodePivot(signalReportContextPivot(item, origin))}'>Reports</button>`,
+  ];
+  return actions.filter(Boolean).join("");
+}
+
+function signalReportContextPivot(item, origin = state.route) {
+  const pivot = {
+    kind: "report",
+    report_tab: "daily",
+    site_id: item.siteID || state.siteID || state.viewContext.site_id || "",
+    origin,
+  };
+  if (state.range && state.range !== "24h") pivot.range = state.range;
+  if (state.range === "custom") {
+    const from = localInputToISO(state.from);
+    const to = localInputToISO(state.to);
+    if (from) pivot.from = from;
+    if (to) pivot.to = to;
+  }
+  return pivot;
 }
 
 function latestObservedTime() {
@@ -1815,6 +1909,7 @@ function signalDetailActions(signal) {
     signal.ip ? `<button class="ghost small" type="button" data-pivot='${encodePivot({ kind: "ip", value: signal.ip, site_id: signal.siteID || "", origin: "signal_detail" })}'>Open source IP</button>` : "",
     signal.path ? `<button class="ghost small" type="button" data-pivot='${encodePivot({ kind: "path", value: signal.path, site_id: signal.siteID || "", origin: "signal_detail" })}'>Open affected path</button>` : "",
     signal.siteID ? `<button class="ghost small" type="button" data-pivot='${encodePivot({ kind: "site", value: signal.siteID, origin: "signal_detail" })}'>Open site</button>` : "",
+    `<button class="ghost small" type="button" data-pivot='${encodePivot(signalReportContextPivot(signal, "signal_detail"))}'>Open report context</button>`,
     `<button class="ghost small" type="button" data-route-target="signals">Ranked list</button>`,
   ];
   return actions.filter(Boolean).join("");
@@ -2034,11 +2129,11 @@ function signalPathRow(item) {
   `;
 }
 
-function signalLogPivot(signal) {
+function signalLogPivot(signal, origin = "signal_detail") {
   const pivot = {
     kind: "log_filter",
     site_id: signal.siteID || "",
-    origin: "signal_detail",
+    origin,
   };
   if (signal.ip) pivot.ip = signal.ip;
   if (signal.path) pivot.path = signal.path;

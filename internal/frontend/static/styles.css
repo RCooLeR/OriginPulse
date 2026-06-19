@@ -645,6 +645,64 @@ h2 {
   padding: 10px;
 }
 
+.priority-signal-group {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.priority-signal-group.muted {
+  background: #ffffff;
+}
+
+.priority-signal-head,
+.priority-signal-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.priority-signal-head h3 {
+  margin: 0 0 3px;
+  font-size: 0.84rem;
+}
+
+.priority-signal-head span,
+.priority-signal-row span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.priority-signal-list {
+  display: grid;
+  gap: 7px;
+}
+
+.priority-signal-row {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.priority-signal-row strong,
+.priority-signal-row span {
+  min-width: 0;
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.priority-signal-row strong {
+  font-size: 0.86rem;
+}
+
 .signal-card {
   min-width: 0;
   display: grid;
@@ -1883,6 +1941,20 @@ td code,
 
   .workspace-context-actions {
     justify-content: flex-start;
+  }
+
+  .priority-signal-head,
+  .priority-signal-row {
+    grid-template-columns: 1fr;
+  }
+
+  .priority-signal-row .severity {
+    width: fit-content;
+  }
+
+  .priority-signal-row .signal-score {
+    justify-items: start;
+    text-align: left;
   }
 
   .facts div {
