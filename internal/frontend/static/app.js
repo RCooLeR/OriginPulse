@@ -809,6 +809,9 @@ function workspaceContextActions(route = state.route, hasDrilldownContext = work
   if (route !== "signals") {
     actions.push(`<button class="ghost mini" type="button" data-context-action="open-signals">Signals</button>`);
   }
+  if (route !== "investigate") {
+    actions.push(`<button class="ghost mini" type="button" data-context-action="open-investigate">Investigate</button>`);
+  }
   if (route !== "reports") {
     actions.push(`<button class="ghost mini" type="button" data-pivot='${encodePivot(currentReportPivot("workspace"))}'>Reports</button>`);
   }
@@ -858,6 +861,13 @@ async function handleWorkspaceContextAction(action) {
     showRoute("signals", true);
     renderSignals();
     renderWorkspaceContext();
+    return;
+  }
+  if (action === "open-investigate") {
+    showRoute("investigate", true);
+    renderInvestigate();
+    renderWorkspaceContext();
+    requestAnimationFrame(() => renderCharts());
     return;
   }
   if (action === "clear") {
