@@ -311,6 +311,12 @@ function wireEvents() {
       return;
     }
 
+    const workspaceContextRemoveButton = event.target.closest("[data-workspace-context-remove]");
+    if (workspaceContextRemoveButton) {
+      await removeWorkspaceContextFilter(workspaceContextRemoveButton.dataset.workspaceContextRemove || "");
+      return;
+    }
+
     const siteActionButton = event.target.closest("[data-site-action]");
     if (siteActionButton) {
       await handleSiteAction(siteActionButton.dataset.siteAction || "focus");
@@ -568,11 +574,11 @@ function renderWorkspaceContext() {
   const bar = qs("#workspaceContextBar");
   if (!bar) return;
   const route = normalizeRoute(state.route);
-  const activeContext = workspaceContextPairs(route);
+  const activeContext = workspaceContextItems(route);
   const hasDrilldownContext = workspaceHasDrilldownContext();
   setText("#workspaceContextTitle", `${routes[route].title} workspace`);
   setText("#workspaceContextSubtitle", workspaceContextSubtitle(route));
-  qs("#workspaceContextChips").innerHTML = activeContext.map(contextChip).join("");
+  qs("#workspaceContextChips").innerHTML = activeContext.map(workspaceContextChip).join("");
   qs("#workspaceContextActions").innerHTML = workspaceContextActions(route, hasDrilldownContext);
   qs("#workspaceInvestigationPath").innerHTML = workspaceInvestigationPath(route);
   bar.classList.toggle("has-drilldown", hasDrilldownContext);
@@ -595,37 +601,82 @@ function workspaceContextSubtitle(route = state.route) {
 }
 
 function workspaceContextPairs(route = state.route) {
-  const pairs = [
-    ["Route", routes[route]?.title || "Overview"],
-    ["Scope", activeFilterLabel()],
-  ];
-  if (route === "logs") pairs.push(["Log type", formatLogType(state.logType)]);
-  if (route === "signals") pairs.push(["Signal tab", formatCategory(state.signalFilter || "all")]);
-  if (route === "sites") pairs.push(["Site tab", formatCategory(state.siteTab || "overview")]);
-  if (route === "sites" && state.siteStatusFilter !== "all") pairs.push(["Site state", formatCategory(state.siteStatusFilter)]);
-  if (route === "sites" && state.siteSearch) pairs.push(["Site search", state.siteSearch]);
-  if (route === "sites" && state.siteSort !== "risk") pairs.push(["Site sort", siteSortLabel(state.siteSort)]);
-  if (route === "reports") pairs.push(["Report tab", formatCategory(state.reportTab || "daily")]);
-  if (route === "reports" && state.selectedReportIDs[state.reportTab]) pairs.push(["Report", shortLabel(state.selectedReportIDs[state.reportTab], 42)]);
-  if (state.signalKey) pairs.push(["Signal", shortLabel(state.signalKey, 42)]);
-  if (state.entity?.kind && state.entity.value) {
-    pairs.push([state.entity.kind === "asn" ? "ASN" : formatCategory(state.entity.kind), state.entity.kind === "asn" ? formatASN(state.entity.value) || state.entity.value : state.entity.value]);
-  }
-  const context = state.viewContext || {};
-  if (context.ip && !(state.entity?.kind === "ip" && state.entity.value === context.ip)) pairs.push(["IP", context.ip]);
-  if (context.asn && !(state.entity?.kind === "asn" && formatASN(state.entity.value) === formatASN(context.asn))) pairs.push(["ASN", formatASN(context.asn) || context.asn]);
-  if (context.path && !(state.entity?.kind === "path" && state.entity.value === context.path)) pairs.push(["Path", context.path]);
-  if (context.known_actor && !(state.entity?.kind === "actor" && state.entity.value === context.known_actor)) pairs.push(["Actor", context.known_actor]);
-  if (context.actor_type) pairs.push(["Actor type", formatCategory(context.actor_type)]);
-  if (context.env) pairs.push(["Env", context.env]);
-  if (context.severity) pairs.push(["Min severity", signalSeverityLabel(context.severity)]);
-  if (context.status_class === "errors") pairs.push(["Status", "Errors only"]);
-  if (context.user_agent) pairs.push(["User agent", context.user_agent]);
-  return pairs;
+  return workspaceContextItems(route).map((item) => [item.label, item.value]);
 }
 
-function contextChip([label, value]) {
-  return `<span class="context-chip"><b>${escapeHTML(label)}</b>${escapeHTML(value || "-")}</span>`;
+function workspaceContextItems(route = state.route) {
+  const context = state.viewContext || {};
+  const siteID = state.siteID || context.site_id || "";
+  const items = [
+    { label: "Route", value: routes[route]?.title || "Overview", key: "route" },
+    { label: "Range", value: workspaceRangeLabel(), key: "range", removable: state.range !== "24h" || Boolean(state.from || state.to) },
+  ];
+  if (siteID) {
+    items.push({ label: "Site", value: siteLabel(siteID) || siteID, key: "site_id", removable: true, pivot: { kind: "site", value: siteID, origin: "workspace_context" } });
+  } else {
+    items.push({ label: "Site", value: "All sites", key: "site" });
+  }
+  if (route === "logs") items.push({ label: "Log type", value: formatLogType(state.logType), key: "log_type", removable: state.logType !== "nginx-access" });
+  if (route === "signals") items.push({ label: "Signal tab", value: formatCategory(state.signalFilter || "all"), key: "signal_filter", removable: state.signalFilter !== "all" });
+  if (route === "sites") items.push({ label: "Site tab", value: formatCategory(state.siteTab || "overview"), key: "site_tab", removable: state.siteTab !== "overview" });
+  if (route === "sites" && state.siteStatusFilter !== "all") items.push({ label: "Site state", value: formatCategory(state.siteStatusFilter), key: "site_status", removable: true });
+  if (route === "sites" && state.siteSearch) items.push({ label: "Site search", value: state.siteSearch, key: "site_q", removable: true });
+  if (route === "sites" && state.siteSort !== "risk") items.push({ label: "Site sort", value: siteSortLabel(state.siteSort), key: "site_sort", removable: true });
+  if (route === "reports") items.push({ label: "Report tab", value: formatCategory(state.reportTab || "daily"), key: "report_tab", removable: state.reportTab !== "daily" });
+  if (route === "reports" && state.selectedReportIDs[state.reportTab]) {
+    items.push({ label: "Report", value: shortLabel(state.selectedReportIDs[state.reportTab], 42), key: "report_id", removable: true });
+  }
+  if (state.entity?.kind && state.entity.value) {
+    items.push({
+      label: state.entity.kind === "asn" ? "ASN" : formatCategory(state.entity.kind),
+      value: state.entity.kind === "asn" ? formatASN(state.entity.value) || state.entity.value : state.entity.value,
+      key: "entity",
+      removable: true,
+      pivot: workspaceEntityPivot(state.entity, siteID, context),
+    });
+  }
+  if (state.signalKey) {
+    items.push({ label: "Signal", value: shortLabel(state.signalKey, 42), key: "signal", removable: true, pivot: { kind: "signal", key: state.signalKey, site_id: siteID, origin: "workspace_context" } });
+  }
+  if (context.ip && !(state.entity?.kind === "ip" && state.entity.value === context.ip)) {
+    items.push({ label: "IP", value: context.ip, key: "ip", removable: true, pivot: { kind: "ip", value: context.ip, site_id: siteID, origin: "workspace_context" } });
+  }
+  if (context.asn && !(state.entity?.kind === "asn" && formatASN(state.entity.value) === formatASN(context.asn))) {
+    items.push({ label: "ASN", value: formatASN(context.asn) || context.asn, key: "asn", removable: true, pivot: { kind: "asn", value: context.asn, site_id: siteID, origin: "workspace_context" } });
+  }
+  if (context.path && !(state.entity?.kind === "path" && state.entity.value === context.path)) {
+    items.push({ label: "Path", value: context.path, key: "path", removable: true, pivot: { kind: "path", value: context.path, site_id: siteID, origin: "workspace_context" } });
+  }
+  if (context.known_actor && !(state.entity?.kind === "actor" && state.entity.value === context.known_actor)) {
+    items.push({ label: "Actor", value: context.known_actor, key: "known_actor", removable: true, pivot: { kind: "actor", value: context.known_actor, actor_type: context.actor_type || "", site_id: siteID, origin: "workspace_context" } });
+  }
+  if (context.actor_type) items.push({ label: "Actor type", value: formatCategory(context.actor_type), key: "actor_type", removable: true });
+  if (context.env) items.push({ label: "Env", value: context.env, key: "env", removable: true });
+  if (context.severity) items.push({ label: "Min severity", value: signalSeverityLabel(context.severity), key: "severity", removable: true });
+  if (context.status_class === "errors") items.push({ label: "Status", value: "Errors only", key: "status_class", removable: true });
+  if (context.user_agent && !(state.entity?.kind === "user-agent" && state.entity.value === context.user_agent)) {
+    items.push({ label: "User agent", value: context.user_agent, key: "user_agent", removable: true, pivot: { kind: "user-agent", value: context.user_agent, site_id: siteID, origin: "workspace_context" } });
+  }
+  if (context.evidence_kind) items.push({ label: "Evidence", value: formatCategory(context.evidence_kind), key: "evidence_kind", removable: true });
+  return items;
+}
+
+function workspaceRangeLabel() {
+  if (state.range === "custom" && state.from && state.to) return `${shortDateTime(state.from)} to ${shortDateTime(state.to)}`;
+  return state.range || "24h";
+}
+
+function workspaceContextChip(item) {
+  const actions = [
+    item.pivot ? `<button class="context-chip-action" type="button" data-pivot='${encodePivot(item.pivot)}' aria-label="Open ${escapeHTML(item.label)} ${escapeHTML(item.value)}">Open</button>` : "",
+    item.removable ? `<button class="context-chip-remove" type="button" data-workspace-context-remove="${escapeHTML(item.key)}" aria-label="Remove ${escapeHTML(item.label)} context">&times;</button>` : "",
+  ].filter(Boolean).join("");
+  return `
+    <span class="context-chip context-chip-rich workspace-context-chip">
+      <span><b>${escapeHTML(item.label)}</b>${escapeHTML(item.value || "-")}</span>
+      ${actions}
+    </span>
+  `;
 }
 
 function workspaceInvestigationPath(route = state.route) {
@@ -833,6 +884,64 @@ async function handleWorkspaceContextAction(action) {
       toast("Copy failed; use the address bar link instead.", true);
     }
   }
+}
+
+async function removeWorkspaceContextFilter(key) {
+  if (!key) return;
+  let refetch = false;
+  if (key === "range") {
+    state.range = "24h";
+    state.from = "";
+    state.to = "";
+    refetch = true;
+  } else if (key === "site_id") {
+    state.siteID = "";
+    delete state.viewContext.site_id;
+    refetch = true;
+  } else if (key === "log_type") {
+    state.logType = "nginx-access";
+  } else if (key === "signal_filter") {
+    state.signalFilter = "all";
+  } else if (key === "site_tab") {
+    state.siteTab = "overview";
+  } else if (key === "site_status") {
+    state.siteStatusFilter = "all";
+  } else if (key === "site_q") {
+    state.siteSearch = "";
+  } else if (key === "site_sort") {
+    state.siteSort = "risk";
+  } else if (key === "report_tab") {
+    state.reportTab = "daily";
+  } else if (key === "report_id") {
+    delete state.selectedReportIDs[state.reportTab];
+  } else if (key === "signal") {
+    state.signalKey = "";
+  } else if (key === "entity") {
+    clearActiveEntityContext();
+  } else {
+    delete state.viewContext[key];
+  }
+  if (key === "known_actor") delete state.viewContext.actor_type;
+  resetContextPages();
+  updateURL(false);
+  if (refetch) {
+    await refreshWithValidation();
+    return;
+  }
+  render();
+}
+
+function clearActiveEntityContext() {
+  const kind = state.entity?.kind || "";
+  state.entity = null;
+  if (kind === "ip") delete state.viewContext.ip;
+  if (kind === "asn") delete state.viewContext.asn;
+  if (kind === "path") delete state.viewContext.path;
+  if (kind === "actor") {
+    delete state.viewContext.known_actor;
+    delete state.viewContext.actor_type;
+  }
+  if (kind === "user-agent") delete state.viewContext.user_agent;
 }
 
 function buildFilterQuery(extra = {}) {
