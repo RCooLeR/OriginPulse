@@ -50,6 +50,7 @@ const state = {
   siteSearch: "",
   siteStatusFilter: "all",
   siteSort: "risk",
+  siteDetailID: "",
   entity: null,
   entityDetails: {},
   entityDetailLoading: {},
@@ -4296,6 +4297,7 @@ function currentSiteIDForView(sites, allSites = sites) {
 
 function renderSiteDetail(site) {
   if (!site) {
+    state.siteDetailID = "";
     setText("#siteDetailName", "No sites configured");
     setText("#siteDetailMeta", "Add sites to start building a workspace.");
     setText("#siteTabSummary", "-");
@@ -4304,6 +4306,7 @@ function renderSiteDetail(site) {
     qs("#siteTabBody").innerHTML = `<div class="empty">No enabled sites configured.</div>`;
     return;
   }
+  state.siteDetailID = site.id || "";
   const focused = state.siteID === site.id;
   const signals = siteSignalItems(site.id);
   const topIP = siteTopSourceIPs(site.id)[0];
@@ -4488,6 +4491,7 @@ function renderSiteTab(site) {
     setText("#siteTabSummary", `${formatNumber(Math.min(30, probes.length))} of ${formatNumber(probes.length)} shown`);
     body.innerHTML = `
       <section class="site-tab-grid">
+        ${siteSubsection("Probe pressure", siteTrendPanel(site, "security"), "No timestamped probe evidence in this scope.", "span-2")}
         ${siteSubsection("Security timeline", entityTimeline(securityTimeline), "No timestamped security events in this scope.", "span-2")}
         ${siteSubsection("Injection probes", siteRowsMarkup(injection.slice(0, 12), siteSecurityRow, "No injection probes for this site."))}
         ${siteSubsection("Admin/login probes", siteRowsMarkup(admin.slice(0, 12), siteSecurityRow, "No admin probes for this site."))}
@@ -4508,6 +4512,7 @@ function renderSiteTab(site) {
     setText("#siteTabSummary", `${formatNumber(totalFindings)} reliability findings`);
     body.innerHTML = `
       <section class="site-tab-grid">
+        ${siteSubsection("Error and latency trend", siteTrendPanel(site, "reliability"), "No timestamped reliability evidence in this scope.", "span-2")}
         ${siteSubsection("Reliability timeline", entityTimeline(reliabilityTimeline), "No timestamped reliability events in this scope.", "span-2")}
         ${siteSubsection("Top failing paths", siteRowsMarkup(failingPaths.slice(0, 12), sitePathRow, "No 5xx path concentration for this site."))}
         ${siteSubsection("Top slow paths", siteRowsMarkup(slowPaths.slice(0, 12), siteReliabilityRow, "No slow paths for this site."))}
@@ -4524,6 +4529,7 @@ function renderSiteTab(site) {
     setText("#siteTabSummary", `${formatNumber(Math.min(30, rows.length))} of ${formatNumber(rows.length)} shown`);
     body.innerHTML = `
       <section class="site-tab-grid">
+        ${siteSubsection("Actor pressure", siteActorMixPanel(site), "No actor telemetry for this site.", "span-2")}
         ${siteSubsection("Source IPs", siteRowsMarkup(sourceIPs.slice(0, 15), siteActorRow, "No source IP rows for this site."))}
         ${siteSubsection("ASNs and networks", siteRowsMarkup(asns.slice(0, 12), (item) => asnRow(item, "site"), "No ASN rows for this site."))}
         ${siteSubsection("User agents", siteRowsMarkup(userAgents.slice(0, 15), siteActorRow, "No user-agent rows for this site."))}
@@ -4555,6 +4561,7 @@ function renderSiteTab(site) {
   setText("#siteTabSummary", `${formatNumber(signals.length)} signals / ${formatNumber(timeline.length)} timeline events`);
   body.innerHTML = `
     <section class="site-tab-grid site-overview-grid">
+      ${siteSubsection("Site health trend", siteTrendPanel(site, "overview"), "No timestamped site evidence in this scope.", "span-2")}
       ${siteSubsection("Activity timeline", entityTimeline(timeline), "No timestamped site activity in this scope.", "span-2")}
       ${siteSubsection("Priority signals", `<div class="signal-stack">${signals.slice(0, 8).map(signalRow).join("") || `<div class="empty">No active signals for this site.</div>`}</div>`)}
       ${siteSubsection("Recent errors", siteRowsMarkup(recentErrors.slice(0, 10).map((item) => ({ ...item, kind: "Recent error" })), siteReliabilityRow, "No recent errors for this site."))}
@@ -4576,6 +4583,201 @@ function siteSubsection(title, html, emptyMessage = "", className = "") {
       ${html || `<div class="empty">${escapeHTML(emptyMessage || "No rows in this scope.")}</div>`}
     </div>
   `;
+}
+
+function siteTrendPanel(site, mode = "overview") {
+  const siteID = site.id || "";
+  const rows = siteTrendRows(siteID, mode);
+  const stats = siteTrendStats(site, mode, rows);
+  return `
+    <div class="site-trend-panel">
+      <div class="site-trend-main">
+        <div class="chart-box site-trend-chart">
+          <canvas id="${escapeHTML(siteTrendCanvasID(mode))}"></canvas>
+        </div>
+        <div class="field-grid site-trend-facts">
+          ${stats.map(statTile).join("")}
+        </div>
+      </div>
+      <div class="site-trend-actions">
+        ${siteTrendActions(site, mode)}
+      </div>
+    </div>
+  `;
+}
+
+function siteActorMixPanel(site) {
+  const rows = siteActorMixRows(site.id || "");
+  const sourceIPs = siteTopSourceIPs(site.id || "");
+  const reviewCount = sourceIPs.filter(actorSourceNeedsReview).length;
+  const verifiedCount = sourceIPs.filter((item) => item.verified_source).length;
+  return `
+    <div class="site-trend-panel">
+      <div class="site-trend-main">
+        <div class="chart-box site-trend-chart">
+          <canvas id="siteActorMixChart"></canvas>
+        </div>
+        <div class="field-grid site-trend-facts">
+          ${[
+            ["Actor groups", formatNumber(rows.length)],
+            ["Source IPs", formatNumber(sourceIPs.length)],
+            ["Need review", formatNumber(reviewCount)],
+            ["Verified", formatNumber(verifiedCount)],
+          ].map(statTile).join("")}
+        </div>
+      </div>
+      <div class="site-trend-actions">
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: site.id || "", actor_type: "crawler", origin: "site_actor_panel" })}'>Crawler logs</button>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: site.id || "", actor_type: "scanner", origin: "site_actor_panel" })}'>Scanner logs</button>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: site.id || "", status_class: "errors", origin: "site_actor_panel" })}'>Actor errors</button>
+      </div>
+    </div>
+  `;
+}
+
+function siteTrendCanvasID(mode) {
+  return {
+    overview: "siteOverviewTrendChart",
+    security: "siteSecurityTrendChart",
+    reliability: "siteReliabilityTrendChart",
+  }[mode] || "siteOverviewTrendChart";
+}
+
+function siteTrendRows(siteID, mode = "overview") {
+  const rows = siteTrendEvidence(siteID, mode);
+  const bucketMs = logTimelineBucketMs();
+  const buckets = new Map();
+  rows.forEach((item) => {
+    const date = new Date(item.ts || item.last_seen || item.timestamp || 0);
+    if (Number.isNaN(date.getTime())) return;
+    const bucket = new Date(Math.floor(date.getTime() / bucketMs) * bucketMs).toISOString();
+    const existing = buckets.get(bucket) || { bucket_ts: bucket, requests: 0, secondary: 0, status_4xx: 0, status_5xx: 0 };
+    existing.requests += Math.max(1, Number(item.requests || item.events || 1));
+    const errors = Number(item.errors || 0) + Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+    existing.secondary += errors;
+    existing.status_4xx += Number(item.status_4xx || 0);
+    existing.status_5xx += Number(item.status_5xx || 0);
+    buckets.set(bucket, existing);
+  });
+  const out = Array.from(buckets.values()).sort((a, b) => new Date(a.bucket_ts) - new Date(b.bucket_ts));
+  if (out.length === 1) {
+    const previous = new Date(new Date(out[0].bucket_ts).getTime() - bucketMs).toISOString();
+    out.unshift({ bucket_ts: previous, requests: 0, secondary: 0, status_4xx: 0, status_5xx: 0 });
+  }
+  return out;
+}
+
+function siteTrendEvidence(siteID, mode = "overview") {
+  const evidence = siteLogEvidence(siteID);
+  if (mode === "security") return evidence.filter((item) => siteEvidenceGroup(item) === "security");
+  if (mode === "reliability") return evidence.filter((item) => siteEvidenceGroup(item) === "reliability");
+  return evidence;
+}
+
+function siteEvidenceGroup(item) {
+  const kind = String(item.kind || "").toLowerCase();
+  if (kind.includes("admin") || kind.includes("injection") || kind.includes("tor") || kind.includes("user-agent")) return "security";
+  if (kind.includes("error") || kind.includes("slow")) return "reliability";
+  return "traffic";
+}
+
+function siteTrendStats(site, mode, rows) {
+  const siteID = site.id || "";
+  const evidence = siteTrendEvidence(siteID, mode);
+  const requests = rows.reduce((sum, item) => sum + Number(item.requests || 0), 0);
+  const errors = rows.reduce((sum, item) => sum + Number(item.secondary || 0), 0);
+  const latest = latestSiteEvidenceTime(evidence) || site.lastSeen || "";
+  if (mode === "security") {
+    const ips = new Set(evidence.map((item) => item.ip).filter(Boolean));
+    const highSignals = siteSignalItems(siteID).filter((item) => item.group === "security" && severityRank(item.severity) >= severityRank("high")).length;
+    return [
+      ["Probe requests", formatNumber(requests)],
+      ["Probe errors", formatNumber(errors)],
+      ["Source IPs", formatNumber(ips.size)],
+      ["High+ signals", formatNumber(highSignals)],
+      ["Latest probe", formatTime(latest)],
+    ];
+  }
+  if (mode === "reliability") {
+    const slowPaths = siteScopedRows(state.data.analysis?.slow_paths || [], siteID).length;
+    const failingPaths = siteTopPaths(siteID).filter((item) => Number(item.status_5xx || 0) > 0).length;
+    return [
+      ["Reliability events", formatNumber(evidence.length)],
+      ["Event requests", formatNumber(requests)],
+      ["Event errors", formatNumber(errors)],
+      ["5xx paths", formatNumber(failingPaths)],
+      ["Slow paths", formatNumber(slowPaths)],
+      ["Latest error", formatTime(latest)],
+    ];
+  }
+  return [
+    ["Requests", formatNumber(site.requests || requests)],
+    ["4xx / 5xx", `${formatNumber(site.status4xx || 0)} / ${formatNumber(site.status5xx || 0)}`],
+    ["Trend events", formatNumber(evidence.length)],
+    ["Signals", formatNumber(siteSignalItems(siteID).length)],
+    ["Latest event", formatTime(latest)],
+  ];
+}
+
+function latestSiteEvidenceTime(rows) {
+  const times = (rows || [])
+    .map((item) => item.ts || item.last_seen || item.timestamp)
+    .filter(Boolean)
+    .map((value) => new Date(value))
+    .filter((date) => !Number.isNaN(date.getTime()));
+  if (!times.length) return "";
+  return new Date(Math.max(...times.map((date) => date.getTime()))).toISOString();
+}
+
+function siteTrendActions(site, mode) {
+  const siteID = site.id || "";
+  const topIP = siteTopSourceIPs(siteID)[0];
+  const topPath = siteTopPaths(siteID)[0];
+  const actions = [];
+  const add = (label, pivot) => actions.push(`<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(pivot)}'>${escapeHTML(label)}</button>`);
+  if (mode === "security") {
+    add("Admin logs", { kind: "log_filter", site_id: siteID, evidence_kind: "Admin probe", log_type: "nginx-access", origin: "site_security_trend" });
+    add("Injection logs", { kind: "log_filter", site_id: siteID, evidence_kind: "Injection probe", log_type: "nginx-access", origin: "site_security_trend" });
+    if (topIP?.ip) add("Top IP", { kind: "ip", value: topIP.ip, site_id: siteID, origin: "site_security_trend" });
+  } else if (mode === "reliability") {
+    add("Error logs", { kind: "log_filter", site_id: siteID, status_class: "errors", log_type: "nginx-access", origin: "site_reliability_trend" });
+    add("Slow evidence", { kind: "log_filter", site_id: siteID, evidence_kind: "Slow path", log_type: "nginx-access", origin: "site_reliability_trend" });
+    if (topPath?.path) add("Top path", { kind: "path", value: topPath.path, site_id: siteID, origin: "site_reliability_trend" });
+  } else {
+    add("Access logs", { kind: "log_filter", site_id: siteID, log_type: "nginx-access", origin: "site_overview_trend" });
+    add("Errors", { kind: "log_filter", site_id: siteID, status_class: "errors", log_type: "nginx-access", origin: "site_overview_trend" });
+    add("Reports", { kind: "report", report_tab: state.reportTab || "daily", site_id: siteID, origin: "site_overview_trend" });
+  }
+  return actions.join("");
+}
+
+function siteActorMixRows(siteID) {
+  const groups = new Map();
+  const add = (label, value, type) => {
+    if (!label) return;
+    const key = `${type || "actor"}|${label}`;
+    const existing = groups.get(key) || { key, label, value: 0, type: type || "actor" };
+    existing.value += Number(value || 0);
+    groups.set(key, existing);
+  };
+  siteTopSourceIPs(siteID).forEach((item) => {
+    add(item.known_actor || actorLabelFromType(item.actor_type) || item.asn_org || "Unknown source", item.requests, item.actor_type || "source");
+  });
+  siteTopUserAgents(siteID).forEach((item) => {
+    add(item.family || actorLabelFromType(item.actor_type) || "User agents", item.requests, item.actor_type || "user-agent");
+  });
+  const colors = {
+    crawler: "#2364aa",
+    scanner: "#b93232",
+    tor: "#a96216",
+    browser: "#178a5f",
+    monitor: "#0f766e",
+    source: "#65717d",
+  };
+  return Array.from(groups.values())
+    .sort((a, b) => Number(b.value || 0) - Number(a.value || 0))
+    .slice(0, 8)
+    .map((item) => ({ ...item, color: colors[item.type] || "#2364aa" }));
 }
 
 function siteScopedRows(rows, siteID) {
@@ -5541,7 +5743,17 @@ function renderCharts() {
   drawSites(qs("#siteChart"), state.data.analysis?.sites || []);
   drawSourceIPs(qs("#sourceChart"), state.data.analysis?.source_ips || []);
   drawAgentClasses(qs("#agentChart"), state.data.analysis?.user_agents || []);
+  drawSiteTabCharts();
   drawReportCharts();
+}
+
+function drawSiteTabCharts() {
+  const siteID = state.siteDetailID || state.siteID || "";
+  if (!siteID) return;
+  drawTimeline(qs("#siteOverviewTrendChart"), siteTrendRows(siteID, "overview"), ["requests", "errors"]);
+  drawTimeline(qs("#siteSecurityTrendChart"), siteTrendRows(siteID, "security"), ["probes", "errors"]);
+  drawTimeline(qs("#siteReliabilityTrendChart"), siteTrendRows(siteID, "reliability"), ["requests", "errors"]);
+  drawBars(qs("#siteActorMixChart"), siteActorMixRows(siteID));
 }
 
 function drawTimeline(canvas, timeline, labels = ["requests", "errors"]) {

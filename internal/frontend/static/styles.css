@@ -1442,6 +1442,35 @@ h2 {
   min-height: 0;
 }
 
+.site-trend-panel {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.site-trend-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(240px, 0.8fr);
+  gap: 10px;
+  align-items: stretch;
+}
+
+.site-trend-chart {
+  min-height: 190px;
+  height: 190px;
+}
+
+.site-trend-facts {
+  align-content: start;
+  padding: 0;
+}
+
+.site-trend-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -2106,6 +2135,10 @@ td code,
 
   .site-command-board {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .site-trend-main {
+    grid-template-columns: 1fr;
   }
 
   .entity-next-row:nth-child(2n) {
