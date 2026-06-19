@@ -180,16 +180,20 @@ function wireEvents() {
   });
   qsa("[data-report-tab]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.reportTab = button.dataset.reportTab || "daily";
+      state.reportTab = normalizeReportTab(button.dataset.reportTab || "daily");
       state.pages.reports = 0;
       renderReports();
+      renderWorkspaceContext();
+      updateURL(true);
       requestAnimationFrame(drawReportCharts);
     });
   });
   qsa("[data-site-tab]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.siteTab = button.dataset.siteTab || "overview";
+      state.siteTab = normalizeSiteTab(button.dataset.siteTab || "overview");
       renderSites();
+      renderWorkspaceContext();
+      updateURL(true);
       requestAnimationFrame(() => renderCharts());
     });
   });
@@ -199,6 +203,7 @@ function wireEvents() {
       state.pages.logEvidence = 0;
       updateURL(false);
       renderLogs();
+      renderWorkspaceContext();
       requestAnimationFrame(() => renderCharts());
     });
   });
@@ -209,6 +214,7 @@ function wireEvents() {
       state.pages.signals = 0;
       updateURL(false);
       renderSignals();
+      renderWorkspaceContext();
     });
   });
   qs("#collectButton").addEventListener("click", () => runAction(qs("#collectButton"), "Collect queued", async () => {
@@ -316,6 +322,8 @@ function wireEvents() {
         state.selectedReportIDs[state.reportTab] = reportKey(report);
         state.pages.reports = 0;
         renderReports();
+        renderWorkspaceContext();
+        updateURL(true);
         requestAnimationFrame(drawReportCharts);
       }, false);
     }
@@ -324,6 +332,8 @@ function wireEvents() {
     if (reportSelectButton) {
       state.selectedReportIDs[state.reportTab] = reportSelectButton.dataset.reportSelect || "";
       renderReports();
+      renderWorkspaceContext();
+      updateURL(true);
       requestAnimationFrame(drawReportCharts);
       return;
     }
@@ -480,6 +490,8 @@ function workspaceContextSubtitle(route = state.route) {
   const parts = [activeFilterLabel()];
   if (route === "logs") parts.push(formatLogType(state.logType));
   if (route === "signals" && state.signalFilter !== "all") parts.push(`${formatCategory(state.signalFilter)} signals`);
+  if (route === "sites" && state.siteTab !== "overview") parts.push(`${formatCategory(state.siteTab)} tab`);
+  if (route === "reports") parts.push(`${formatCategory(state.reportTab)} reports`);
   if (state.signalKey) parts.push("signal detail");
   if (state.entity?.kind && state.entity.value) parts.push(`${formatCategory(state.entity.kind)} detail`);
   const context = state.viewContext || {};
@@ -494,7 +506,9 @@ function workspaceContextPairs(route = state.route) {
   ];
   if (route === "logs") pairs.push(["Log type", formatLogType(state.logType)]);
   if (route === "signals") pairs.push(["Signal tab", formatCategory(state.signalFilter || "all")]);
+  if (route === "sites") pairs.push(["Site tab", formatCategory(state.siteTab || "overview")]);
   if (route === "reports") pairs.push(["Report tab", formatCategory(state.reportTab || "daily")]);
+  if (route === "reports" && state.selectedReportIDs[state.reportTab]) pairs.push(["Report", shortLabel(state.selectedReportIDs[state.reportTab], 42)]);
   if (state.signalKey) pairs.push(["Signal", shortLabel(state.signalKey, 42)]);
   if (state.entity?.kind && state.entity.value) pairs.push([formatCategory(state.entity.kind), state.entity.value]);
   const context = state.viewContext || {};
@@ -547,9 +561,20 @@ function currentLogPivot(origin = state.route) {
     log_type: state.logType || "nginx-access",
     origin,
     ...state.viewContext,
+    ...activeEntityContext(),
   };
   if (state.siteID || state.viewContext.site_id) pivot.site_id = state.viewContext.site_id || state.siteID;
   return pivot;
+}
+
+function activeEntityContext() {
+  const entity = state.entity;
+  if (!entity?.kind || !entity.value) return {};
+  if (entity.kind === "ip") return { ip: entity.value };
+  if (entity.kind === "path") return { path: entity.value };
+  if (entity.kind === "actor") return { known_actor: entity.value };
+  if (entity.kind === "user-agent") return { user_agent: entity.value };
+  return {};
 }
 
 function currentReportPivot(origin = state.route) {
@@ -641,6 +666,10 @@ function syncContextFromURL() {
   }
   state.logType = params.get("log_type") || state.logType || "nginx-access";
   state.signalFilter = params.get("signal_filter") || state.signalFilter || "all";
+  state.siteTab = normalizeSiteTab(params.get("site_tab") || state.siteTab || "overview");
+  state.reportTab = normalizeReportTab(params.get("report_tab") || state.reportTab || "daily");
+  const selectedReportID = params.get("report_id");
+  if (selectedReportID) state.selectedReportIDs[state.reportTab] = selectedReportID;
   state.viewContext = {};
   ["ip", "path", "known_actor", "actor_type", "status_class", "site_id", "user_agent", "evidence_kind"].forEach((key) => {
     const value = params.get(key);
@@ -681,11 +710,19 @@ function viewQuery(extra = {}) {
   const to = localInputToISO(state.to);
   if (state.range === "custom" && from) params.set("from", from);
   if (state.range === "custom" && to) params.set("to", to);
-  if (state.route === "sites") return params;
+  if (state.route === "sites") {
+    if (state.siteTab && state.siteTab !== "overview") params.set("site_tab", state.siteTab);
+    return params;
+  }
   if (state.route === "investigate" && state.entity?.kind === "path" && state.entity.value) params.set("path", state.entity.value);
   if (state.siteID) params.set("site_id", state.siteID);
   if (state.route === "logs" && state.logType && state.logType !== "nginx-access") params.set("log_type", state.logType);
   if (state.route === "signals" && state.signalFilter && state.signalFilter !== "all") params.set("signal_filter", state.signalFilter);
+  if (state.route === "reports") {
+    params.set("report_tab", state.reportTab || "daily");
+    const reportID = state.selectedReportIDs[state.reportTab];
+    if (reportID) params.set("report_id", reportID);
+  }
   Object.entries({ ...state.viewContext, ...extra }).forEach(([key, value]) => {
     if (state.route === "investigate" && state.entity?.kind === "ip" && key === "ip") return;
     if (state.route === "investigate" && state.entity?.kind === "actor" && key === "known_actor") return;
@@ -4908,6 +4945,14 @@ function routeFromPath(path) {
 function normalizeRoute(route) {
   const key = routeAliases[route] || route;
   return routes[key] ? key : "overview";
+}
+
+function normalizeSiteTab(tab) {
+  return ["overview", "security", "reliability", "actors", "paths", "logs", "reports"].includes(tab) ? tab : "overview";
+}
+
+function normalizeReportTab(tab) {
+  return ["daily", "weekly", "monthly", "quarterly", "annual"].includes(tab) ? tab : "daily";
 }
 
 function encodePivot(pivot) {
