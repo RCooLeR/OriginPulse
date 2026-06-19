@@ -924,6 +924,33 @@ h2 {
   height: 198px;
 }
 
+.log-cell {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.log-cell strong,
+.log-cell span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.log-cell strong {
+  color: var(--ink);
+  font-size: 0.8rem;
+}
+
+.log-cell span {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.log-cell .signal-actions {
+  margin-top: 1px;
+}
+
 .context-strip {
   display: flex;
   flex-wrap: wrap;

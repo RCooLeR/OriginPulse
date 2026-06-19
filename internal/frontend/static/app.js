@@ -2292,31 +2292,127 @@ function logEvidenceRow(item) {
 
 function logEvidenceTableRow(item) {
   const site = item.site_id ? `${item.site_id}${item.env ? ` / ${item.env}` : ""}` : "-";
-  const source = [
-    item.ip || "",
-    item.asn ? formatASN(item.asn) : "",
-    item.user_agent ? shortLabel(item.user_agent, 58) : "",
-  ].filter(Boolean).join(" / ") || "-";
-  const signal = logSignalMeta(item);
   const siteID = item.site_id || state.viewContext.site_id || state.siteID || "";
   const errors = Number(item.errors || 0);
+  const signal = signalForLogEvidence(item);
   const actions = [
-    item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: siteID, origin: "logs" })}'>Open IP</button>` : "",
-    item.asn ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "asn", value: formatASN(item.asn), site_id: siteID, origin: "logs" })}'>Open ASN</button>` : "",
-    item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path, site_id: siteID, origin: "logs" })}'>Open path</button>` : "",
-    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "", ip: item.ip || "", asn: item.asn ? formatASN(item.asn) : "", site_id: siteID, status_class: errors ? "errors" : "", origin: "logs" })}'>Refine</button>`,
+    signal ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: signal.key, site_id: siteID, origin: "logs" })}'>Open signal</button>` : "",
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(logEvidenceFilterPivot(item, siteID, errors, "logs"))}'>Open rows</button>`,
   ].filter(Boolean).join("");
   return `
     <tr>
       <td>${formatTime(item.ts)}</td>
       <td><strong>${escapeHTML(item.kind || "Evidence")}</strong><br><span>${escapeHTML(logEvidenceStatus(item))}</span></td>
       <td>${escapeHTML(site)}</td>
-      <td>${escapeHTML(source)}</td>
-      <td><strong>${escapeHTML(formatURLTarget(item))}</strong></td>
-      <td>${escapeHTML(signal)}</td>
+      <td>${logEvidenceSourceCell(item, siteID)}</td>
+      <td>${logEvidencePathCell(item, siteID, errors)}</td>
+      <td>${logEvidenceSignalCell(item, signal, siteID)}</td>
       <td class="row-actions">${actions}</td>
     </tr>
   `;
+}
+
+function logEvidenceSourceCell(item, siteID) {
+  const actor = item.known_actor || actorLabelFromType(item.actor_type);
+  const sourceLabel = item.ip || actor || shortLabel(item.user_agent || "", 42) || "-";
+  const meta = [
+    item.asn ? formatASN(item.asn) : "",
+    item.asn_org || item.network || "",
+    actor && actor !== sourceLabel ? actor : "",
+    item.user_agent ? shortLabel(item.user_agent, 52) : "",
+  ].filter(Boolean).join(" / ");
+  const actions = [
+    item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: siteID, origin: "logs_source" })}'>Open IP</button>` : "",
+    item.asn ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "asn", value: formatASN(item.asn), site_id: siteID, origin: "logs_source" })}'>Open ASN</button>` : "",
+    actor ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: actor, actor_type: item.actor_type || "", site_id: siteID, origin: "logs_source" })}'>Open actor</button>` : "",
+    item.user_agent ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "user-agent", value: item.user_agent, site_id: siteID, origin: "logs_source" })}'>Open UA</button>` : "",
+  ].filter(Boolean).join("");
+  return `
+    <div class="log-cell">
+      <strong>${escapeHTML(sourceLabel)}</strong>
+      ${meta ? `<span>${escapeHTML(meta)}</span>` : ""}
+      ${actions ? `<div class="signal-actions">${actions}</div>` : ""}
+    </div>
+  `;
+}
+
+function logEvidencePathCell(item, siteID, errors) {
+  const target = formatURLTarget(item);
+  const meta = [
+    item.query ? `?${item.query}` : "",
+    item.p95_request_time_ms ? `p95 ${formatMs(item.p95_request_time_ms)}` : "",
+  ].filter(Boolean).join(" / ");
+  const actions = [
+    item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path, site_id: siteID, origin: "logs_path" })}'>Open path</button>` : "",
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(logEvidenceFilterPivot(item, siteID, errors, "logs_path"))}'>Open rows</button>`,
+  ].filter(Boolean).join("");
+  return `
+    <div class="log-cell">
+      <strong>${escapeHTML(target || "-")}</strong>
+      ${meta ? `<span>${escapeHTML(meta)}</span>` : ""}
+      ${actions ? `<div class="signal-actions">${actions}</div>` : ""}
+    </div>
+  `;
+}
+
+function logEvidenceSignalCell(item, signal, siteID) {
+  const title = signal?.title || logSignalMeta(item);
+  const meta = signal
+    ? [
+      formatCategory(signal.group || "signal"),
+      signal.ip ? `IP ${signal.ip}` : "",
+      signal.path || "",
+      signal.lastSeen ? formatTime(signal.lastSeen) : "",
+    ].filter(Boolean).join(" / ")
+    : "";
+  const actions = signal
+    ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: signal.key, site_id: siteID, origin: "logs_signal" })}'>Open signal</button>`
+    : "";
+  return `
+    <div class="log-cell">
+      <strong>${escapeHTML(title || "-")}</strong>
+      ${meta ? `<span>${escapeHTML(meta)}</span>` : ""}
+      ${actions ? `<div class="signal-actions">${actions}</div>` : ""}
+    </div>
+  `;
+}
+
+function logEvidenceFilterPivot(item, siteID, errors, origin = "logs") {
+  return {
+    kind: "log_filter",
+    path: item.path || "",
+    ip: item.ip || "",
+    asn: item.asn ? formatASN(item.asn) : "",
+    known_actor: item.known_actor || "",
+    actor_type: item.actor_type || "",
+    user_agent: item.user_agent || "",
+    evidence_kind: item.kind || "",
+    site_id: siteID,
+    status_class: errors ? "errors" : "",
+    origin,
+  };
+}
+
+function signalForLogEvidence(item) {
+  const sourceKind = signalSourceKindForEvidence(item.kind);
+  return buildSignalItems().find((signal) => {
+    if (sourceKind && signal.sourceKind !== sourceKind) return false;
+    if (item.site_id && signal.siteID && signal.siteID !== item.site_id) return false;
+    if (item.ip && signal.ip && signal.ip !== item.ip) return false;
+    if (item.path && signal.path && !pathMatches(signal.path, item.path) && !pathMatches(item.path, signal.path)) return false;
+    if (sourceKind === "recentError" && item.ts && signal.lastSeen && signal.lastSeen !== item.ts) return false;
+    return Boolean(sourceKind || (item.ip && signal.ip === item.ip) || (signal.path && item.path && pathMatches(signal.path, item.path)));
+  }) || null;
+}
+
+function signalSourceKindForEvidence(kind) {
+  const normalized = normalizeEvidenceKind(kind);
+  if (normalized.includes("injection")) return "injectionProbe";
+  if (normalized.includes("admin")) return "adminProbe";
+  if (normalized.includes("tor")) return "torSource";
+  if (normalized.includes("slow")) return "slowPath";
+  if (normalized.includes("recenterror")) return "recentError";
+  return "";
 }
 
 function logEvidenceStatus(item) {
