@@ -5862,6 +5862,7 @@ function renderSiteDetail(site) {
     setText("#siteDetailMeta", "Add sites to start building a workspace.");
     setText("#siteTabSummary", "-");
     qs("#siteRiskStrip").innerHTML = "";
+    qs("#siteScopeMatrix").innerHTML = "";
     qs("#siteCommandStrip").innerHTML = "";
     qs("#siteTabBody").innerHTML = `<div class="empty">No enabled sites configured.</div>`;
     return;
@@ -5886,6 +5887,7 @@ function renderSiteDetail(site) {
     ["Top path", topPath?.path || "-"],
     ["Top actor", topActor?.label || "-"],
   ].map(statTile).join("");
+  qs("#siteScopeMatrix").innerHTML = siteScopeMatrix(site, { topIP, topPath, topActor });
   qs("#siteCommandStrip").innerHTML = siteCommandStrip(site, { signals, topIP, topPath, topActor });
   qs("#siteFocusButton").textContent = focused ? "Focused" : "Focus site";
   qs("#siteFocusButton").disabled = focused;
@@ -6011,6 +6013,72 @@ function siteCommandStrip(site, { signals = [], topIP = null, topPath = null, to
       ${rows.map(siteCommandRow).join("")}
     </section>
   `;
+}
+
+function siteScopeMatrix(site, { topIP = null, topPath = null, topActor = null } = {}) {
+  const siteID = site.id || "";
+  const envs = (site.envs || []).filter(Boolean).slice(0, 5);
+  const errors = Number(site.status4xx || 0) + Number(site.status5xx || 0);
+  const report = siteReports(siteID)[0];
+  const envActions = [
+    siteScopeButton("All envs", { kind: "log_filter", site_id: siteID, log_type: "nginx-access", origin: "site_scope" }),
+    ...envs.map((env) => siteScopeButton(env, { kind: "log_filter", site_id: siteID, env, log_type: "nginx-access", origin: "site_scope" })),
+  ].join("");
+  const laneActions = correlatedLogTypeDefs(true)
+    .map(([logType, label]) => siteScopeButton(label, {
+      kind: "log_filter",
+      site_id: siteID,
+      log_type: logType,
+      status_class: errors ? "errors" : "",
+      origin: "site_scope",
+    }))
+    .join("");
+  const timeActions = [
+    siteScopeButton("24h", { kind: "log_filter", site_id: siteID, range: "24h", origin: "site_scope" }),
+    siteScopeButton("7d", { kind: "log_filter", site_id: siteID, range: "7d", origin: "site_scope" }),
+    siteScopeButton("30d", { kind: "log_filter", site_id: siteID, range: "30d", origin: "site_scope" }),
+    report
+      ? siteScopeButton("Report", reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: siteID, origin: "site_scope" }))
+      : siteScopeButton("Reports", { kind: "report", report_tab: state.reportTab || "daily", site_id: siteID, origin: "site_scope" }),
+  ].join("");
+  const contextActions = [
+    topPath?.path ? siteScopeButton("Top path", { kind: "path", value: topPath.path || "/", site_id: siteID, origin: "site_scope" }) : "",
+    topIP?.ip ? siteScopeButton("Top IP", { kind: "ip", value: topIP.ip, site_id: siteID, origin: "site_scope" }) : "",
+    topActor?.label ? siteScopeButton("Top actor", { kind: "actor", value: topActor.label, actor_type: topActor.type || "", site_id: siteID, origin: "site_scope" }) : "",
+    siteScopeButton("Site logs", { kind: "log_filter", site_id: siteID, status_class: errors ? "errors" : "", origin: "site_scope" }),
+  ].filter(Boolean).join("");
+  return `
+    <section class="site-scope-board" aria-label="Site quick scope controls">
+      ${siteScopeGroup("Environment", envs.length ? `${formatNumber(envs.length)} envs` : "site scope", envActions)}
+      ${siteScopeGroup("Log lanes", errors ? `${formatNumber(errors)} errors` : "all requests", laneActions)}
+      ${siteScopeGroup("Time", activeFilterLabel(), timeActions)}
+      ${siteScopeGroup("Top context", siteScopeContextMeta(topIP, topPath, topActor), contextActions)}
+    </section>
+  `;
+}
+
+function siteScopeGroup(title, meta, actions) {
+  return `
+    <div class="site-scope-group">
+      <div>
+        <strong>${escapeHTML(title)}</strong>
+        <span>${escapeHTML(meta || "")}</span>
+      </div>
+      <div class="site-scope-actions">${actions || ""}</div>
+    </div>
+  `;
+}
+
+function siteScopeButton(label, pivot) {
+  return `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(pivot)}'>${escapeHTML(label)}</button>`;
+}
+
+function siteScopeContextMeta(topIP, topPath, topActor) {
+  return [
+    topPath?.path || "",
+    topIP?.ip ? `IP ${topIP.ip}` : "",
+    topActor?.label || "",
+  ].filter(Boolean).join(" / ") || "no dominant entity";
 }
 
 function siteCommandRow(item) {
