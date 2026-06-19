@@ -657,6 +657,75 @@ h2 {
   padding: 0;
 }
 
+.problem-brief {
+  display: grid;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.problem-brief-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: #f8fafb;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.problem-brief-title strong {
+  color: var(--text);
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.problem-brief-list {
+  display: grid;
+}
+
+.problem-brief-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  min-height: 58px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.problem-brief-row:last-child {
+  border-bottom: 0;
+}
+
+.problem-brief-row > div:first-child {
+  min-width: 0;
+}
+
+.problem-brief-row strong {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 0.88rem;
+}
+
+.problem-brief-row span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.problem-brief-row .signal-actions {
+  margin-top: 7px;
+}
+
 .site-risk-list {
   display: grid;
   max-height: 380px;
@@ -2824,6 +2893,19 @@ td code,
   }
 
   .priority-signal-row .signal-score {
+    justify-items: start;
+    text-align: left;
+  }
+
+  .problem-site-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .problem-brief-row {
+    grid-template-columns: 1fr;
+  }
+
+  .problem-brief-row .signal-numbers {
     justify-items: start;
     text-align: left;
   }

@@ -891,7 +891,7 @@ function renderDashboard() {
 
   const siteRows = aggregateSiteRows();
   renderPrioritySignals(signals);
-  renderSiteRiskOverview(siteRows);
+  renderSiteRiskOverview(siteRows, signals);
   renderOverviewHealthMatrix(siteRows);
   renderOverviewHotspots(overviewHotspotRows());
   renderOverviewActorReview(overviewActorReviewRows());
@@ -972,7 +972,7 @@ function prioritySignalRow(item) {
   `;
 }
 
-function renderSiteRiskOverview(sites) {
+function renderSiteRiskOverview(sites, signals = buildSignalItems()) {
   const topContainer = qs("#topProblemSite");
   const listContainer = qs("#siteRiskList");
   if (!topContainer || !listContainer) return;
@@ -985,6 +985,7 @@ function renderSiteRiskOverview(sites) {
   const top = sites[0];
   const topIP = siteTopSourceIPs(top.id)[0];
   const topPath = siteTopPaths(top.id)[0];
+  const topSignal = signals.find((item) => item.siteID === top.id) || signals[0] || null;
   const reason = siteRiskReason(top, topIP, topPath);
   topContainer.innerHTML = `
     <div class="problem-site-main">
@@ -1009,8 +1010,115 @@ function renderSiteRiskOverview(sites) {
         ["Top path", topPath?.path || "-"],
       ].map(statTile).join("")}
     </div>
+    ${overviewProblemBrief(top, { topIP, topPath, topSignal })}
   `;
   listContainer.innerHTML = sites.slice(0, 10).map(siteRiskRow).join("");
+}
+
+function overviewProblemBrief(site, { topIP = null, topPath = null, topSignal = null } = {}) {
+  const siteID = site.id || "";
+  const report = siteReports(siteID)[0] || null;
+  const pathErrors = Number(topPath?.status_4xx || 0) + Number(topPath?.status_5xx || 0);
+  const ipErrors = Number(topIP?.status_4xx || 0) + Number(topIP?.status_5xx || 0);
+  const source = topIP?.ip ? sourceIPContextForIP(topIP.ip) : {};
+  const reportAction = report
+    ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: siteID, origin: "overview_brief" }))}'>Open report</button>`
+    : `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "report", report_tab: state.reportTab || "daily", site_id: siteID, origin: "overview_brief" })}'>Reports</button>`;
+  const rows = [
+    {
+      title: "First response",
+      meta: topSignal
+        ? [topSignal.title, topSignal.summary, topSignal.lastSeen ? `last ${formatTime(topSignal.lastSeen)}` : ""].filter(Boolean).join(" - ")
+        : "No ranked signal is attached to this site yet.",
+      valueLabel: topSignal ? "risk" : "site",
+      value: topSignal ? (topSignal.risk || severityRank(topSignal.severity) * 20 || 0) : (site.status || "watch"),
+      actions: topSignal
+        ? [
+          `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: topSignal.key, site_id: topSignal.siteID || siteID, origin: "overview_brief" })}'>Open signal</button>`,
+          topSignal.sourceKind === "job"
+            ? `<button class="ghost mini inline-action" type="button" data-route-target="system">System</button>`
+            : `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(signalLogPivot({ ...topSignal, siteID: topSignal.siteID || siteID }, "overview_brief"))}'>Signal logs</button>`,
+          `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: siteID, origin: "overview_brief" })}'>Open site</button>`,
+        ].join("")
+        : `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: siteID, origin: "overview_brief" })}'>Open site</button>`,
+    },
+    {
+      title: "Failing path",
+      meta: topPath?.path
+        ? [
+          `${formatNumber(topPath.requests || 0)} requests`,
+          pathErrors ? `${formatNumber(pathErrors)} errors` : "",
+          topPath.last_seen ? `last ${formatTime(topPath.last_seen)}` : "",
+        ].filter(Boolean).join(" - ")
+        : "No dominant path in this scope.",
+      valueLabel: pathErrors ? "errors" : "requests",
+      value: formatNumber(pathErrors || topPath?.requests || 0),
+      actions: topPath?.path
+        ? [
+          `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: topPath.path || "/", site_id: siteID, origin: "overview_brief" })}'>Open path</button>`,
+          correlatedLogActions({ path: topPath.path || "/", siteID, statusClass: pathErrors ? "errors" : "", origin: "overview_brief" }),
+        ].join("")
+        : `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, status_class: site.status5xx || site.status4xx ? "errors" : "", origin: "overview_brief" })}'>Open logs</button>`,
+    },
+    {
+      title: "Source pressure",
+      meta: topIP?.ip
+        ? [
+          topIP.ip,
+          source.known_actor || actorLabelFromType(source.actor_type || topIP.actor_type),
+          topIP.asn ? formatASN(topIP.asn) : "",
+          `${formatNumber(topIP.requests || 0)} requests`,
+        ].filter(Boolean).join(" - ")
+        : "No dominant source IP in this scope.",
+      valueLabel: ipErrors ? "errors" : "requests",
+      value: formatNumber(ipErrors || topIP?.requests || 0),
+      actions: topIP?.ip
+        ? [
+          `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: topIP.ip, site_id: siteID, origin: "overview_brief" })}'>Open IP</button>`,
+          topIP.asn ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "asn", value: formatASN(topIP.asn), site_id: siteID, origin: "overview_brief" })}'>Open ASN</button>` : "",
+          (source.known_actor || source.actor_type || topIP.actor_type) ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: source.known_actor || actorLabelFromType(source.actor_type || topIP.actor_type), actor_type: source.actor_type || topIP.actor_type || "", site_id: siteID, origin: "overview_brief" })}'>Open actor</button>` : "",
+          `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ip: topIP.ip, site_id: siteID, status_class: ipErrors ? "errors" : "", origin: "overview_brief" })}'>IP logs</button>`,
+        ].filter(Boolean).join("")
+        : `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, origin: "overview_brief" })}'>Source logs</button>`,
+    },
+    {
+      title: "Report context",
+      meta: report
+        ? [reportListLabel(report), reportWindowLabel(report), report.model || ""].filter(Boolean).join(" - ")
+        : "Open the report workspace for this site and period.",
+      valueLabel: report ? reportTabForReport(report) : "period",
+      value: report ? formatNumber(report.summary?.requests || 0) : formatCategory(state.reportTab || "daily"),
+      actions: [
+        reportAction,
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, status_class: site.status5xx || site.status4xx ? "errors" : "", origin: "overview_brief" })}'>Report logs</button>`,
+      ].join(""),
+    },
+  ];
+  return `
+    <section class="problem-brief" aria-label="Top site operator brief">
+      <div class="problem-brief-title">
+        <span>Operator brief</span>
+        <strong>${escapeHTML(site.status || "watch")} / ${formatNumber(site.statusRank || 0)}</strong>
+      </div>
+      <div class="problem-brief-list">${rows.map(overviewProblemBriefRow).join("")}</div>
+    </section>
+  `;
+}
+
+function overviewProblemBriefRow(row) {
+  return `
+    <div class="problem-brief-row">
+      <div>
+        <strong>${escapeHTML(row.title || "-")}</strong>
+        <span>${escapeHTML(row.meta || "")}</span>
+        <div class="signal-actions">${row.actions || ""}</div>
+      </div>
+      <div class="signal-numbers">
+        <span>${escapeHTML(row.valueLabel || "")}</span>
+        <b>${escapeHTML(row.value || "0")}</b>
+      </div>
+    </div>
+  `;
 }
 
 function siteRiskReason(site, topIP, topPath) {
