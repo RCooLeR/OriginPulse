@@ -1061,6 +1061,72 @@ h2 {
   grid-area: summary;
 }
 
+.log-type-profile {
+  padding: 0 10px 10px;
+}
+
+.log-profile-card {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.log-profile-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.log-profile-head strong,
+.log-profile-head span {
+  min-width: 0;
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.log-profile-head strong {
+  font-size: 0.88rem;
+}
+
+.log-profile-head span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.log-profile-grid {
+  display: grid;
+  border-top: 1px solid var(--line);
+}
+
+.log-profile-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.log-profile-row:last-child {
+  border-bottom: 0;
+}
+
+.log-profile-row span {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.log-profile-row strong {
+  min-width: 0;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
 .logs-lanes-panel {
   grid-area: lanes;
 }
@@ -2956,6 +3022,11 @@ td code,
 
   .workspace-path-step {
     max-width: 100%;
+  }
+
+  .log-profile-row {
+    grid-template-columns: 1fr;
+    gap: 3px;
   }
 
   .priority-signal-head,

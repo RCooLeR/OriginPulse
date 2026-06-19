@@ -1776,6 +1776,7 @@ function renderLogs() {
   const pageItems = paginate("logEvidence", evidence);
 
   qs("#logsFieldStats").innerHTML = accessLogStats(totals, evidence, topPaths).map(statTile).join("");
+  renderLogTypeProfile({ evidence, topPaths });
   setText("#logsTimelineSummary", `${formatNumber(timeline.length)} buckets`);
   renderPager("#logsPager", "logEvidence", evidence);
   setText("#logsEvidenceCount", `${formatNumber(pageItems.length)} of ${formatNumber(evidence.length)} rows`);
@@ -1811,6 +1812,7 @@ function renderUnsupportedLogExplorer() {
     ["Latest segment", formatTime(latest?.bucket_start || latest?.min_ts)],
     ["Correlated access rows", formatNumber(correlatedEvidence.length)],
   ].map(statTile).join("");
+  renderLogTypeProfile({ evidence: correlatedEvidence, topPaths: correlatedPaths, segments });
   setText("#logsTimelineSummary", segmentTimeline.length ? `${formatNumber(segmentTimeline.length)} segment buckets` : "no segments");
   setText("#logsEvidenceEyebrow", "Segment evidence");
   setText("#logsEvidenceTitle", `${formatLogType(state.logType)} combined segments`);
@@ -1868,6 +1870,129 @@ function renderLogLaneOverview(evidence = filteredLogEvidence(), topPaths = filt
   const container = qs("#logsLaneOverview");
   if (!container) return;
   container.innerHTML = rows.map(logLaneRow).join("") || `<div class="empty">No log lanes are configured.</div>`;
+}
+
+function renderLogTypeProfile({ evidence = [], topPaths = [], segments = [] } = {}) {
+  const container = qs("#logsTypeProfile");
+  if (!container) return;
+  const profile = logTypeProfile(state.logType, { evidence, topPaths, segments });
+  container.innerHTML = `
+    <section class="log-profile-card" aria-label="Selected log type profile">
+      <div class="log-profile-head">
+        <span class="lane-state lane-state-${escapeHTML(profile.state)}">${escapeHTML(formatCategory(profile.state))}</span>
+        <div>
+          <strong>${escapeHTML(profile.title)}</strong>
+          <span>${escapeHTML(profile.scope)}</span>
+        </div>
+      </div>
+      <div class="log-profile-grid">
+        ${profile.rows.map(logTypeProfileRow).join("")}
+      </div>
+      <div class="signal-actions">${profile.actions}</div>
+    </section>
+  `;
+}
+
+function logTypeProfile(logType = state.logType, { evidence = [], topPaths = [], segments = [] } = {}) {
+  const def = logTypeDefinition(logType);
+  const isAccess = logType === "nginx-access";
+  const summary = isAccess ? null : segmentSummaryForLogType(logType);
+  const segmentRows = segments.length ? segments : unsupportedLogSegments(logType);
+  const accessErrors = evidence.reduce((sum, item) => sum + Number(item.errors || 0) + Number(item.status_4xx || 0) + Number(item.status_5xx || 0), 0);
+  const stateLabel = isAccess
+    ? "active"
+    : summary?.count ? summary.pending ? "pending" : "indexed" : "empty";
+  const evidenceValue = isAccess
+    ? `${formatNumber(evidence.length)} rows / ${formatNumber(evidence.reduce((sum, item) => sum + Number(item.requests || 0), 0))} requests`
+    : `${formatNumber(segmentRows.length || summary?.count || 0)} segments / ${formatNumber(segmentRows.reduce((sum, item) => sum + Number(item.line_count || 0), 0) || summary?.lines || 0)} lines`;
+  const rows = [
+    ["Mode", def.mode],
+    ["Evidence", evidenceValue],
+    ["Fields", def.fields.join(", ")],
+    ["Entity pivots", def.entities.join(", ")],
+    ["Correlation", logTypeProfileCorrelation(logType, evidence, topPaths, segmentRows)],
+  ];
+  return {
+    title: `${formatLogType(logType)} profile`,
+    state: stateLabel,
+    scope: logContextLabel(),
+    rows,
+    actions: logTypeProfileActions(logType, evidence, topPaths, accessErrors),
+  };
+}
+
+function logTypeDefinition(logType = "nginx-access") {
+  return {
+    "nginx-access": {
+      mode: "Parsed request evidence",
+      fields: ["status", "method", "path/query", "source IP", "ASN/actor", "user-agent", "bytes/time"],
+      entities: ["site", "IP", "ASN", "path", "user-agent", "signal"],
+    },
+    "nginx-error": {
+      mode: "Error segment lane",
+      fields: ["severity", "message fingerprint", "site/env/container", "correlated path", "request id"],
+      entities: ["site", "path", "source IP", "signal", "access rows"],
+    },
+    "php-error": {
+      mode: "Application error lane",
+      fields: ["severity", "message fingerprint", "file/function", "site/env/container", "correlated path"],
+      entities: ["site", "path", "source IP", "signal", "access rows"],
+    },
+    "php-slow": {
+      mode: "Slow execution lane",
+      fields: ["script", "duration", "stack fingerprint", "site/env/container", "correlated path"],
+      entities: ["site", "path", "source IP", "slow signal", "access rows"],
+    },
+    "mysql-slow": {
+      mode: "Database slow-query lane",
+      fields: ["query fingerprint", "duration", "rows examined", "site/env/container"],
+      entities: ["site", "path", "slow signal", "access rows"],
+    },
+  }[logType] || {
+    mode: "Segment lane",
+    fields: ["severity", "message", "site/env", "timestamp"],
+    entities: ["site", "path", "source IP", "access rows"],
+  };
+}
+
+function logTypeProfileCorrelation(logType, evidence = [], topPaths = [], segments = []) {
+  const parts = [];
+  if (logType !== "nginx-access") parts.push(`${formatNumber(evidence.length)} access rows`);
+  if (topPaths.length) parts.push(`${formatNumber(topPaths.length)} paths`);
+  if (segments.length) parts.push(`${formatNumber(segments.filter((item) => item.indexed || item.status === "indexed").length)} indexed`);
+  if (state.viewContext.status_class === "errors") parts.push("errors only");
+  return parts.join(" / ") || "current scope";
+}
+
+function logTypeProfileActions(logType, evidence = [], topPaths = [], accessErrors = 0) {
+  const context = state.viewContext || {};
+  const siteID = context.site_id || state.siteID || "";
+  const report = reportContextsForLogContext(evidence, topPaths)[0];
+  const actions = [
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(logFilterPivotForContext(logType, context, "logs_profile"))}'>Open lane</button>`,
+  ];
+  if (logType !== "nginx-access") {
+    actions.push(`<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(logFilterPivotForContext("nginx-access", context, "logs_profile"))}'>Access rows</button>`);
+  } else if (accessErrors && context.status_class !== "errors") {
+    actions.push(`<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ ...logFilterPivotForContext(logType, context, "logs_profile"), status_class: "errors" })}'>Errors only</button>`);
+  }
+  if (context.ip) actions.push(`<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: context.ip, site_id: siteID, origin: "logs_profile" })}'>Open IP</button>`);
+  else if (evidence[0]?.ip) actions.push(`<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: evidence[0].ip, site_id: evidence[0].site_id || siteID, origin: "logs_profile" })}'>Top IP</button>`);
+  if (context.path) actions.push(`<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: context.path, site_id: siteID, origin: "logs_profile" })}'>Open path</button>`);
+  else if (topPaths[0]?.path) actions.push(`<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: topPaths[0].path, site_id: topPaths[0].site_id || siteID, origin: "logs_profile" })}'>Top path</button>`);
+  if (report) {
+    actions.push(`<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: report.site_id || siteID, origin: "logs_profile" }))}'>Open report</button>`);
+  }
+  return actions.join("");
+}
+
+function logTypeProfileRow([label, value]) {
+  return `
+    <div class="log-profile-row">
+      <span>${escapeHTML(label)}</span>
+      <strong>${escapeHTML(value || "-")}</strong>
+    </div>
+  `;
 }
 
 function logLaneRows(evidence = [], topPaths = []) {
