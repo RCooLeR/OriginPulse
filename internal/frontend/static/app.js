@@ -4770,6 +4770,7 @@ function entityBody(entity) {
     <div class="field-grid entity-facts">${facts.map(statTile).join("")}</div>
     ${entityInvestigationPath(entity, { detail, signals, evidence, paths, sites, agents, sourceIPs })}
     ${entityNextSteps(entity, { detail, signals, evidence, paths, sites, agents, sourceIPs })}
+    ${entityIdentityPanel(entity, { detail, signals, evidence, paths, sites, agents, sourceIPs })}
     ${entityImpactMatrix(entity, { evidence, paths, sites, agents })}
     <section class="entity-detail-grid">
       ${entitySection("Investigation timeline", entityTimeline(timeline), "No timeline events in this scope.", "entity-section-wide")}
@@ -5210,6 +5211,287 @@ function entityNextStepSummary(entity, signals, errors) {
     errors ? `${formatNumber(errors)} errors` : "",
   ];
   return parts.filter(Boolean).join(" / ");
+}
+
+function entityIdentityPanel(entity, context = {}) {
+  const model = entityIdentityModel(entity, context);
+  if (!model) return "";
+  const facts = entityIdentityFacts(model.facts || []);
+  const actions = (model.actions || []).filter(Boolean).join("");
+  const notes = (model.notes || []).filter(Boolean);
+  return `
+    <section class="entity-identity-panel" aria-label="Entity identity and attribution">
+      <div class="entity-next-title">
+        <span>Identity and attribution</span>
+        <strong>${escapeHTML(model.summary || "")}</strong>
+      </div>
+      <div class="entity-identity-grid">
+        <div class="entity-identity-main">
+          <div class="entity-identity-heading">
+            <h3>${escapeHTML(model.title || "Entity identity")}</h3>
+            <p>${escapeHTML(model.description || "Attribution, verification state, and source intelligence for this entity.")}</p>
+          </div>
+          <dl class="entity-identity-facts">${facts}</dl>
+          ${notes.length ? `<div class="entity-identity-notes">${notes.map((note) => `<span>${escapeHTML(note)}</span>`).join("")}</div>` : ""}
+        </div>
+        <div class="entity-identity-actions">
+          <strong>Useful pivots</strong>
+          <div class="signal-actions">${actions || `<span class="muted">No pivots available in this scope.</span>`}</div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function entityIdentityModel(entity, context = {}) {
+  if (entity.kind === "ip") return entityIPIdentityModel(entity, context);
+  if (entity.kind === "asn") return entityASNIdentityModel(entity, context);
+  if (entity.kind === "actor") return entityActorIdentityModel(entity, context);
+  if (entity.kind === "path") return entityPathIdentityModel(entity, context);
+  if (entity.kind === "user-agent") return entityUserAgentIdentityModel(entity, context);
+  return null;
+}
+
+function entityIPIdentityModel(entity, context = {}) {
+  const detail = context.detail || {};
+  const siteID = state.viewContext.site_id || state.siteID || "";
+  const local = sourceIPContextForIP(entity.value);
+  const stored = detail.stored_intel || {};
+  const dns = detail.dns || {};
+  const asn = detail.asn || {};
+  const rdap = detail.rdap || {};
+  const traffic = detail.traffic || {};
+  const asnValue = asn.asn || stored.asn || local.asn;
+  const asnLabel = asnValue ? formatASN(asnValue) : "";
+  const actorType = stored.actor_type || local.actor_type || "";
+  const actor = stored.known_actor || local.known_actor || actorLabelFromType(actorType);
+  const reverseDNS = joinLimited(dns.reverse_names) || stored.reverse_dns || local.reverse_dns || "";
+  const forwardAddresses = joinLimited(dns.forward_addresses);
+  const forwardConfirmed = Boolean(dns.forward_confirmed || stored.forward_confirmed || local.forward_confirmed);
+  const verifiedActor = Boolean(stored.verified_actor || local.verified_actor || local.verified_source);
+  const network = asn.prefix || stored.network || local.network || joinLimited(rdap.cidrs);
+  const country = asn.country_code || stored.country_code || local.country_code || rdap.country_code || "";
+  const asnOrg = asn.name || stored.asn_org || local.asn_org || "";
+  const rdapRange = [rdap.start_address, rdap.end_address].filter(Boolean).join(" - ");
+  const rdapContacts = entityRDAPContacts(rdap.entities);
+  const verification = entityIPVerificationLabel({ local, stored, reverseDNS, forwardConfirmed, verifiedActor });
+  const lookupErrors = [
+    ...(detail.lookup_errors || []),
+    dns.reverse_lookup_error,
+    dns.forward_lookup_error,
+    asn.error,
+    rdap.error,
+  ].filter(Boolean);
+  const notes = [
+    state.entityDetailLoading[entityKey(entity)] ? "Refreshing DNS, ASN, RDAP, and stored intelligence." : "",
+    detail.external_provider ? `External provider: ${detail.external_provider}` : "",
+    lookupErrors.length ? `Lookup notes: ${lookupErrors.join("; ")}` : "",
+  ];
+  const topPath = (context.paths || [])[0] || {};
+  const errors = Number(traffic.status_4xx || local.status_4xx || 0) + Number(traffic.status_5xx || local.status_5xx || 0);
+  return {
+    title: `Source IP ${entity.value}`,
+    summary: [verification, actor || actorType ? actor || formatCategory(actorType) : "", asnLabel, country].filter(Boolean).join(" / ") || "Unattributed source",
+    description: "DNS, ASN, RDAP, manual labels, and verification proof collected for this source IP.",
+    facts: [
+      ["Verification", verification, forwardConfirmed ? "DNS forward-confirmed" : ""],
+      ["Reverse DNS", reverseDNS || "-"],
+      ["Forward DNS", forwardAddresses || "-", forwardConfirmed ? "confirmed" : ""],
+      ["Known actor", actor || "-", actorType ? formatCategory(actorType) : ""],
+      ["Manual label", stored.manual_label || local.manual_label || "-", formatManualAction(stored.manual_action || local.manual_action)],
+      ["ASN", asnLabel || "-", asnOrg],
+      ["Network", network || "-"],
+      ["Country", country || "-"],
+      ["RDAP object", [rdap.name, rdap.handle].filter(Boolean).join(" / ") || "-", rdap.type || ""],
+      ["RDAP range", rdapRange || "-"],
+      ["RDAP contacts", rdapContacts || "-"],
+      ["Registered", formatMaybeDate(rdap.registration), rdap.last_changed ? `changed ${formatMaybeDate(rdap.last_changed)}` : ""],
+      ["Tor/datacenter", [stored.is_tor_exit || local.is_tor_exit ? "Tor exit" : "", stored.is_datacenter || local.is_datacenter ? "Datacenter" : ""].filter(Boolean).join(" / ") || "-"],
+      ["Intel refreshed", formatMaybeDate(stored.refreshed_at || local.refreshed_at || detail.generated_at)],
+    ],
+    actions: [
+      `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ip: entity.value, site_id: siteID, log_type: "nginx-access", origin: "entity_identity" })}'>Access logs</button>`,
+      errors ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ip: entity.value, site_id: siteID, status_class: "errors", log_type: "nginx-access", origin: "entity_identity" })}'>Error rows</button>` : "",
+      asnLabel ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "asn", value: asnLabel, site_id: siteID, origin: "entity_identity" })}'>Open ASN</button>` : "",
+      actor ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: actor, actor_type: actorType, site_id: siteID, origin: "entity_identity" })}'>Open actor</button>` : "",
+      topPath.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: topPath.path, site_id: topPath.site_id || siteID, origin: "entity_identity" })}'>Top path</button>` : "",
+      ipManualButtons(entity.value, stored.manual_action || stored.manual_label ? stored : local, siteID, "mini"),
+    ],
+    notes,
+  };
+}
+
+function entityASNIdentityModel(entity, context = {}) {
+  const sourceIPs = context.sourceIPs?.length ? context.sourceIPs : sourceIPsForASN(entity.value);
+  const first = sourceIPs[0] || {};
+  const actors = new Set(sourceIPs.map((item) => item.known_actor || actorLabelFromType(item.actor_type)).filter(Boolean));
+  const sites = new Set(sourceIPs.map((item) => item.site_id).filter(Boolean));
+  const verified = sourceIPs.filter(actorSourceIsVerified).length;
+  const review = sourceIPs.filter(actorSourceNeedsReview).length;
+  const requests = sourceIPs.reduce((sum, item) => sum + Number(item.requests || 0), 0);
+  const errors = sourceIPs.reduce((sum, item) => sum + Number(item.status_4xx || 0) + Number(item.status_5xx || 0), 0);
+  const siteID = state.viewContext.site_id || state.siteID || "";
+  const topActor = Array.from(actors)[0] || "";
+  return {
+    title: formatASN(entity.value) || entity.value,
+    summary: [first.asn_org || first.network || "Network", `${formatNumber(sourceIPs.length)} IPs`, review ? `${formatNumber(review)} need review` : ""].filter(Boolean).join(" / "),
+    description: "Network-level source concentration, actor labels, verification state, and affected sites.",
+    facts: [
+      ["Organization", first.asn_org || "-"],
+      ["Network", first.network || "-"],
+      ["Country", first.country_code || "-"],
+      ["Source IPs", formatNumber(sourceIPs.length)],
+      ["Actors", formatNumber(actors.size), Array.from(actors).slice(0, 3).join(", ")],
+      ["Sites", formatNumber(sites.size)],
+      ["Requests", formatNumber(requests)],
+      ["Errors", formatNumber(errors)],
+      ["Verified IPs", formatNumber(verified)],
+      ["Need review", formatNumber(review)],
+    ],
+    actions: [
+      `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", asn: formatASN(entity.value) || entity.value, site_id: siteID, log_type: "nginx-access", origin: "entity_identity" })}'>Access logs</button>`,
+      errors ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", asn: formatASN(entity.value) || entity.value, site_id: siteID, status_class: "errors", log_type: "nginx-access", origin: "entity_identity" })}'>Error rows</button>` : "",
+      first.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: first.ip, site_id: first.site_id || siteID, origin: "entity_identity" })}'>Highest risk IP</button>` : "",
+      topActor ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: topActor, actor_type: first.actor_type || "", site_id: first.site_id || siteID, origin: "entity_identity" })}'>Top actor</button>` : "",
+    ],
+    notes: review ? [`${formatNumber(review)} source IPs need service/actor verification.`] : [],
+  };
+}
+
+function entityActorIdentityModel(entity, context = {}) {
+  const actor = aggregateActors().find((item) => item.label === entity.value) || {};
+  const rows = actorSourceRows(entity.value, state.viewContext.actor_type || actor.type);
+  const topSource = rows[0] || {};
+  const siteID = state.viewContext.site_id || state.siteID || "";
+  const errors = rows.reduce((sum, item) => sum + Number(item.status_4xx || 0) + Number(item.status_5xx || 0), 0);
+  return {
+    title: entity.value,
+    summary: [formatCategory(actor.type || state.viewContext.actor_type || "actor"), actorVerificationState(actor), `${formatNumber(actor.ips || rows.length)} IPs`].join(" / "),
+    description: "Known service, crawler, scanner, or manually labeled actor with source proof and verification state.",
+    facts: [
+      ["Type", formatCategory(actor.type || state.viewContext.actor_type || "-")],
+      ["Verification", actorVerificationState(actor)],
+      ["Requests", formatNumber(actor.requests || rows.reduce((sum, item) => sum + Number(item.requests || 0), 0))],
+      ["Errors", formatNumber(actor.errors || errors)],
+      ["Source IPs", formatNumber(actor.ips || rows.length)],
+      ["Verified IPs", formatNumber(actor.verifiedIPs || rows.filter(actorSourceIsVerified).length)],
+      ["Need review", formatNumber(actor.reviewIPs || rows.filter(actorSourceNeedsReview).length)],
+      ["Top ASN", topSource.asn ? formatASN(topSource.asn) : "-", topSource.asn_org || topSource.network || ""],
+      ["Top source", topSource.ip || "-", topSource.reverse_dns || ""],
+      ["Last seen", formatTime(actor.lastSeen || topSource.last_seen)],
+    ],
+    actions: [
+      `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", known_actor: entity.value, actor_type: actor.type || state.viewContext.actor_type || "", site_id: siteID, log_type: "nginx-access", origin: "entity_identity" })}'>Access logs</button>`,
+      topSource.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: topSource.ip, site_id: topSource.site_id || siteID, origin: "entity_identity" })}'>Top IP</button>` : "",
+      topSource.asn ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "asn", value: formatASN(topSource.asn), site_id: topSource.site_id || siteID, origin: "entity_identity" })}'>Open ASN</button>` : "",
+      errors ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", known_actor: entity.value, actor_type: actor.type || state.viewContext.actor_type || "", site_id: siteID, status_class: "errors", log_type: "nginx-access", origin: "entity_identity" })}'>Error rows</button>` : "",
+    ],
+    notes: actor.reviewIPs ? [`${formatNumber(actor.reviewIPs)} actor sources still need verification.`] : [],
+  };
+}
+
+function entityPathIdentityModel(entity, context = {}) {
+  const evidence = context.evidence || entityEvidence(entity);
+  const paths = context.paths || entityPaths(entity);
+  const sites = context.sites || entitySites(entity);
+  const sourceIPs = new Set(evidence.map((item) => item.ip || item.client_ip).filter(Boolean));
+  const topPath = paths[0] || {};
+  const topEvidence = evidence[0] || {};
+  const siteID = state.viewContext.site_id || state.siteID || topEvidence.site_id || "";
+  const requests = paths.reduce((sum, item) => sum + Number(item.requests || 0), 0) || evidence.length;
+  const errors = evidence.reduce((sum, item) => sum + Number(item.errors || 0) + Number(item.status_4xx || 0) + Number(item.status_5xx || 0), 0);
+  return {
+    title: entity.value,
+    summary: [`${formatNumber(requests)} requests`, `${formatNumber(sourceIPs.size)} sources`, errors ? `${formatNumber(errors)} errors` : ""].filter(Boolean).join(" / "),
+    description: "URL target footprint across sites, source IPs, user agents, and matching evidence.",
+    facts: [
+      ["Path", entity.value],
+      ["Requests", formatNumber(requests)],
+      ["Errors", formatNumber(errors)],
+      ["Source IPs", formatNumber(sourceIPs.size)],
+      ["Sites", formatNumber(sites.length)],
+      ["Bytes sent", formatBytes(topPath.bytes_sent || 0)],
+      ["p95 latency", topPath.p95_request_time_ms ? formatMs(topPath.p95_request_time_ms) : "-"],
+      ["Top source", topEvidence.ip || "-", topEvidence.known_actor || actorLabelFromType(topEvidence.actor_type) || ""],
+      ["Top site", topEvidence.site_id || siteID || "-"],
+    ],
+    actions: [
+      `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: entity.value, site_id: siteID, log_type: "nginx-access", origin: "entity_identity" })}'>Access logs</button>`,
+      errors ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: entity.value, site_id: siteID, status_class: "errors", log_type: "nginx-access", origin: "entity_identity" })}'>Error rows</button>` : "",
+      topEvidence.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: topEvidence.ip, site_id: topEvidence.site_id || siteID, origin: "entity_identity" })}'>Top IP</button>` : "",
+      topEvidence.user_agent ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "user-agent", value: topEvidence.user_agent, site_id: topEvidence.site_id || siteID, origin: "entity_identity" })}'>Top user-agent</button>` : "",
+    ],
+    notes: [],
+  };
+}
+
+function entityUserAgentIdentityModel(entity, context = {}) {
+  const evidence = context.evidence || entityEvidence(entity);
+  const row = (state.data.analysis?.user_agents || []).find((item) => userAgentMatches(item.sample || item.family || "", entity.value)) || {};
+  const ips = new Set(evidence.map((item) => item.ip).filter(Boolean));
+  const sites = new Set(evidence.map((item) => item.site_id).filter(Boolean));
+  const paths = context.paths || entityPaths(entity);
+  const topEvidence = evidence[0] || {};
+  const siteID = state.viewContext.site_id || state.siteID || topEvidence.site_id || "";
+  const errors = Number(row.status_4xx || 0) + Number(row.status_5xx || 0) || evidence.reduce((sum, item) => sum + Number(item.errors || 0), 0);
+  return {
+    title: row.family || "User agent",
+    summary: [formatCategory(row.actor_type || "unknown"), `${formatNumber(row.requests || evidence.length)} requests`, `${formatNumber(ips.size || row.unique_ips || 0)} IPs`].join(" / "),
+    description: "User-agent family/sample footprint, affected paths, source IPs, and actor classification.",
+    facts: [
+      ["Family", row.family || "-"],
+      ["Actor type", formatCategory(row.actor_type || "-")],
+      ["Requests", formatNumber(row.requests || evidence.length)],
+      ["Errors", formatNumber(errors)],
+      ["Source IPs", formatNumber(row.unique_ips || ips.size)],
+      ["Sites", formatNumber(sites.size)],
+      ["Risk", row.risk_score || "-"],
+      ["Sample", entity.value],
+      ["Top path", paths[0]?.path || topEvidence.path || "-"],
+      ["Top source", topEvidence.ip || "-"],
+    ],
+    actions: [
+      `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", user_agent: entity.value, site_id: siteID, log_type: "nginx-access", origin: "entity_identity" })}'>Access logs</button>`,
+      errors ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", user_agent: entity.value, site_id: siteID, status_class: "errors", log_type: "nginx-access", origin: "entity_identity" })}'>Error rows</button>` : "",
+      paths[0]?.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: paths[0].path, site_id: paths[0].site_id || siteID, origin: "entity_identity" })}'>Top path</button>` : "",
+      topEvidence.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: topEvidence.ip, site_id: topEvidence.site_id || siteID, origin: "entity_identity" })}'>Top IP</button>` : "",
+    ],
+    notes: [],
+  };
+}
+
+function entityIdentityFacts(rows = []) {
+  return rows.map(([label, value, meta]) => `
+    <div>
+      <dt>${escapeHTML(label)}</dt>
+      <dd>${escapeHTML(value === undefined || value === null || value === "" ? "-" : value)}</dd>
+      ${meta ? `<small>${escapeHTML(meta)}</small>` : ""}
+    </div>
+  `).join("");
+}
+
+function entityIPVerificationLabel({ local = {}, stored = {}, reverseDNS = "", forwardConfirmed = false, verifiedActor = false } = {}) {
+  const manualAction = String(stored.manual_action || local.manual_action || "").toLowerCase();
+  if (manualAction === "verified") return "operator verified";
+  if (manualAction === "suspicious") return "operator suspicious";
+  if (manualAction === "watch") return "operator watch";
+  if (verifiedActor) return "verified actor";
+  if (forwardConfirmed) return "forward-confirmed DNS";
+  if (reverseDNS) return "reverse DNS only";
+  return "unverified";
+}
+
+function entityRDAPContacts(entities = []) {
+  if (!Array.isArray(entities) || !entities.length) return "";
+  const preferred = entities.filter((entity) => {
+    const roles = (entity.roles || []).map((role) => String(role).toLowerCase());
+    return roles.some((role) => ["abuse", "admin", "technical", "registrant"].includes(role));
+  });
+  const shown = (preferred.length ? preferred : entities).map((entity) => {
+    const roles = (entity.roles || []).join(", ");
+    return [entity.name || entity.handle || "", roles ? `(${roles})` : ""].filter(Boolean).join(" ");
+  }).filter(Boolean);
+  return joinLimited(shown, 3);
 }
 
 function entityFacts(entity, detail = {}) {
