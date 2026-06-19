@@ -976,27 +976,31 @@ function renderLogs() {
 }
 
 function renderUnsupportedLogExplorer() {
-  const segments = (state.data.segments || []).filter((item) => item.log_type === state.logType);
+  const segments = unsupportedLogSegments();
+  const segmentTimeline = logSegmentTimelineRows(segments);
   const indexed = segments.filter((item) => item.indexed || item.status === "indexed").length;
+  const pending = Math.max(0, segments.length - indexed);
   const lines = segments.reduce((sum, item) => sum + Number(item.line_count || 0), 0);
+  const latest = segments[0];
   const correlatedEvidence = filteredLogEvidence();
   const correlatedPaths = filteredTopPaths();
-  const pageItems = paginate("logEvidence", correlatedEvidence);
+  const pageItems = paginate("logEvidence", segments);
   qs("#logsFieldStats").innerHTML = [
     ["Log type", formatLogType(state.logType)],
-    ["Collection", segments.length ? "Raw segments found" : "Configured"],
+    ["Explorer mode", "Segment evidence"],
     ["Combined segments", formatNumber(segments.length)],
     ["Indexed segments", formatNumber(indexed)],
+    ["Pending parser", formatNumber(pending)],
     ["Lines combined", formatNumber(lines)],
-    ["Parser", "Pending"],
+    ["Latest segment", formatTime(latest?.bucket_start || latest?.min_ts)],
     ["Correlated access rows", formatNumber(correlatedEvidence.length)],
   ].map(statTile).join("");
-  setText("#logsTimelineSummary", correlatedEvidence.length ? "access context" : "parser pending");
-  setText("#logsEvidenceEyebrow", "Correlation");
-  setText("#logsEvidenceTitle", "Access rows for this error-log context");
-  renderPager("#logsPager", "logEvidence", correlatedEvidence);
-  setText("#logsEvidenceCount", correlatedEvidence.length ? `${formatNumber(pageItems.length)} of ${formatNumber(correlatedEvidence.length)} access rows` : "parser pending");
-  qs("#logsEvidenceTable").innerHTML = pageItems.map(logEvidenceTableRow).join("") || emptyRow(7, `${formatLogType(state.logType)} rows are not parsed yet, and no matching access rows exist in this context.`);
+  setText("#logsTimelineSummary", segmentTimeline.length ? `${formatNumber(segmentTimeline.length)} segment buckets` : "no segments");
+  setText("#logsEvidenceEyebrow", "Segment evidence");
+  setText("#logsEvidenceTitle", `${formatLogType(state.logType)} combined segments`);
+  renderPager("#logsPager", "logEvidence", segments);
+  setText("#logsEvidenceCount", segments.length ? `${formatNumber(pageItems.length)} of ${formatNumber(segments.length)} segments` : "no segments");
+  qs("#logsEvidenceTable").innerHTML = pageItems.map(logSegmentTableRow).join("") || emptyRow(7, `${formatLogType(state.logType)} has no combined segments in the recent segment window.`);
   qs("#logsFacetsList").innerHTML = `
     <section class="facet-section">
       <h3>Ingestion state</h3>
@@ -1005,8 +1009,16 @@ function renderUnsupportedLogExplorer() {
         <strong>${formatNumber(segments.length)}</strong>
       </div>
       <div class="facet-row">
-        <span>Parser</span>
-        <strong>Pending</strong>
+        <span>Indexed</span>
+        <strong>${formatNumber(indexed)}</strong>
+      </div>
+      <div class="facet-row">
+        <span>Parser pending</span>
+        <strong>${formatNumber(pending)}</strong>
+      </div>
+      <div class="facet-row">
+        <span>Lines combined</span>
+        <strong>${formatNumber(lines)}</strong>
       </div>
     </section>
     <section class="facet-section">
@@ -1014,13 +1026,97 @@ function renderUnsupportedLogExplorer() {
       ${unsupportedLogFieldFacets(state.logType)}
     </section>
     <section class="facet-section">
+      <h3>Access correlation</h3>
+      ${unsupportedLogCorrelationFacet(correlatedEvidence)}
+    </section>
+    <section class="facet-section">
       <h3>Current context</h3>
       ${logContextFacetRows()}
     </section>
   `;
-  setText("#logsFacetSummary", "parser plan");
-  setText("#logsTopPathCount", correlatedPaths.length ? `${formatNumber(correlatedPaths.length)} correlated paths` : "parser pending");
-  qs("#logsTopPathsList").innerHTML = correlatedPaths.slice(0, 12).map(correlatedPathRow).join("") || `<div class="empty">Path statistics will appear when the ${escapeHTML(formatLogType(state.logType))} parser is enabled.</div>`;
+  setText("#logsFacetSummary", `${formatNumber(segments.length)} segments`);
+  setText("#logsTopPathCount", correlatedPaths.length ? `${formatNumber(correlatedPaths.length)} correlated paths` : "no correlated paths");
+  qs("#logsTopPathsList").innerHTML = correlatedPaths.slice(0, 12).map(correlatedPathRow).join("") || `<div class="empty">No access-log path context matches this ${escapeHTML(formatLogType(state.logType))} scope yet.</div>`;
+}
+
+function unsupportedLogSegments(logType = state.logType) {
+  return (state.data.segments || [])
+    .filter((item) => item.log_type === logType)
+    .sort((a, b) => new Date(b.bucket_start || b.min_ts || 0) - new Date(a.bucket_start || a.min_ts || 0));
+}
+
+function logSegmentTimelineRows(segments = unsupportedLogSegments()) {
+  const buckets = new Map();
+  segments.forEach((segment) => {
+    const key = segment.bucket_start || segment.min_ts || segment.bucket_end;
+    if (!key) return;
+    const date = new Date(key);
+    if (Number.isNaN(date.getTime())) return;
+    const bucket = date.toISOString();
+    const existing = buckets.get(bucket) || { bucket_ts: bucket, requests: 0, secondary: 0, status_4xx: 0, status_5xx: 0 };
+    existing.requests += Number(segment.line_count || 0);
+    if (!(segment.indexed || segment.status === "indexed")) {
+      existing.secondary += 1;
+    }
+    buckets.set(bucket, existing);
+  });
+  return Array.from(buckets.values()).sort((a, b) => new Date(a.bucket_ts) - new Date(b.bucket_ts));
+}
+
+function unsupportedLogCorrelationFacet(evidence) {
+  const pivot = {
+    kind: "log_filter",
+    log_type: "nginx-access",
+    origin: "logs",
+    ...state.viewContext,
+  };
+  if (state.siteID || state.viewContext.site_id) pivot.site_id = state.viewContext.site_id || state.siteID;
+  return `
+    <div class="facet-row">
+      <div>
+        <span>Matching access rows</span>
+        <small>${escapeHTML(logContextLabel())}</small>
+        <div class="signal-actions">
+          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(pivot)}'>Open access rows</button>
+        </div>
+      </div>
+      <strong>${formatNumber(evidence.length)}</strong>
+    </div>
+  `;
+}
+
+function logSegmentTableRow(segment) {
+  const status = segment.indexed || segment.status === "indexed" ? "indexed" : segment.status || "combined";
+  const start = segment.min_ts || segment.bucket_start;
+  const end = segment.max_ts || segment.bucket_end;
+  const accessPivot = {
+    kind: "log_filter",
+    log_type: "nginx-access",
+    origin: "logs",
+    ...state.viewContext,
+  };
+  if (state.siteID || state.viewContext.site_id) accessPivot.site_id = state.viewContext.site_id || state.siteID;
+  return `
+    <tr>
+      <td><strong>${formatTime(segment.bucket_start || start)}</strong><br><span>${formatTime(segment.bucket_end || end)}</span></td>
+      <td><span class="status-${escapeHTML(status)}">${escapeHTML(status)}</span><br><span>${escapeHTML(formatLogType(segment.log_type))}</span></td>
+      <td>${escapeHTML(state.siteID || state.viewContext.site_id || "all sites")}<br><span>combined scope</span></td>
+      <td><strong>${formatNumber(segment.line_count || 0)} lines</strong><br><span>${escapeHTML(shortHash(segment.sha256 || segment.id || ""))}</span></td>
+      <td class="clip">${escapeHTML(segment.path || "-")}</td>
+      <td>${escapeHTML([start ? `min ${formatTime(start)}` : "", end ? `max ${formatTime(end)}` : ""].filter(Boolean).join(" / ") || "parser pending")}</td>
+      <td class="row-actions">
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(accessPivot)}'>Access rows</button>
+        <button class="ghost mini inline-action" type="button" data-route-target="system">System</button>
+      </td>
+    </tr>
+  `;
+}
+
+function shortHash(value) {
+  value = String(value || "");
+  if (!value) return "-";
+  if (value.length <= 12) return value;
+  return `${value.slice(0, 12)}...`;
 }
 
 function unsupportedLogFieldFacets(logType) {
@@ -3507,7 +3603,8 @@ function renderUsers() {
 
 function renderCharts() {
   drawTimeline(qs("#timelineChart"), state.data.traffic?.timeline || []);
-  drawTimeline(qs("#logsTimelineChart"), logTimelineRows(filteredLogEvidence(), state.logType !== "nginx-access"));
+  const logTimeline = state.logType === "nginx-access" ? logTimelineRows(filteredLogEvidence()) : logSegmentTimelineRows();
+  drawTimeline(qs("#logsTimelineChart"), logTimeline, state.logType === "nginx-access" ? ["requests", "errors"] : ["lines", "pending"]);
   drawStatus(qs("#statusChart"), state.data.analysis?.status_breakdown || []);
   drawSites(qs("#siteChart"), state.data.analysis?.sites || []);
   drawSourceIPs(qs("#sourceChart"), state.data.analysis?.source_ips || []);
@@ -3515,7 +3612,7 @@ function renderCharts() {
   drawReportCharts();
 }
 
-function drawTimeline(canvas, timeline) {
+function drawTimeline(canvas, timeline, labels = ["requests", "errors"]) {
   const chart = setupCanvas(canvas);
   if (!chart) return;
   const { ctx, width, height } = chart;
@@ -3526,10 +3623,10 @@ function drawTimeline(canvas, timeline) {
     return;
   }
   const maxValue = Math.max(1, ...rows.map((item) => item.value || item.requests || 0));
-  const maxErrors = Math.max(1, ...rows.map((item) => (item.status_4xx || 0) + (item.status_5xx || 0)));
+  const maxSecondary = Math.max(1, ...rows.map((item) => item.secondary ?? ((item.status_4xx || 0) + (item.status_5xx || 0))));
   drawLine(ctx, rows.map((item) => item.requests || 0), maxValue, width, height, "#2364aa", 2);
-  drawLine(ctx, rows.map((item) => (item.status_4xx || 0) + (item.status_5xx || 0)), maxErrors, width, height, "#b93232", 2);
-  drawLegend(ctx, [["requests", "#2364aa"], ["errors", "#b93232"]], width);
+  drawLine(ctx, rows.map((item) => item.secondary ?? ((item.status_4xx || 0) + (item.status_5xx || 0))), maxSecondary, width, height, "#b93232", 2);
+  drawLegend(ctx, [[labels[0] || "requests", "#2364aa"], [labels[1] || "errors", "#b93232"]], width);
 }
 
 function drawStatus(canvas, rows) {
