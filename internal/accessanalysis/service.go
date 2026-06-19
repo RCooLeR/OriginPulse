@@ -97,6 +97,10 @@ type SourceIPSummary struct {
 	FirstSeen        time.Time `json:"first_seen"`
 	LastSeen         time.Time `json:"last_seen"`
 	ReverseDNS       string    `json:"reverse_dns,omitempty"`
+	ASN              int64     `json:"asn,omitempty"`
+	ASNOrg           string    `json:"asn_org,omitempty"`
+	Network          string    `json:"network,omitempty"`
+	CountryCode      string    `json:"country_code,omitempty"`
 	KnownActor       string    `json:"known_actor,omitempty"`
 	ActorType        string    `json:"actor_type,omitempty"`
 	RiskScore        *int      `json:"risk_score,omitempty"`
@@ -314,6 +318,10 @@ SELECT host(e.client_ip),
        min(e.ts),
        max(e.ts),
        coalesce(ii.reverse_dns, ''),
+       coalesce(ii.asn, 0),
+       coalesce(ii.asn_org, ''),
+       coalesce(ii.network, ''),
+       coalesce(ii.country_code, ''),
        coalesce(ii.known_actor, ''),
        coalesce(ii.actor_type, ''),
        coalesce(ii.risk_score, -1),
@@ -325,7 +333,7 @@ SELECT host(e.client_ip),
 FROM access_events e
 LEFT JOIN ip_intel ii ON ii.ip = e.client_ip
 WHERE e.ts >= $1 AND e.ts < $2 AND ($3 = '' OR e.site_id = $3) AND e.client_ip IS NOT NULL
-GROUP BY e.client_ip, ii.reverse_dns, ii.known_actor, ii.actor_type, ii.risk_score, ii.forward_confirmed, ii.verified_actor, ii.is_tor_exit, ii.manual_label, ii.manual_action
+GROUP BY e.client_ip, ii.reverse_dns, ii.asn, ii.asn_org, ii.network, ii.country_code, ii.known_actor, ii.actor_type, ii.risk_score, ii.forward_confirmed, ii.verified_actor, ii.is_tor_exit, ii.manual_label, ii.manual_action
 ORDER BY count(*) DESC
 LIMIT $4`, report.Since, report.Until, report.SiteID, limit)
 	if err != nil {
@@ -345,6 +353,10 @@ LIMIT $4`, report.Since, report.Until, report.SiteID, limit)
 			&item.FirstSeen,
 			&item.LastSeen,
 			&item.ReverseDNS,
+			&item.ASN,
+			&item.ASNOrg,
+			&item.Network,
+			&item.CountryCode,
 			&item.KnownActor,
 			&item.ActorType,
 			&riskScore,
