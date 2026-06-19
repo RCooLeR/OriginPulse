@@ -980,6 +980,48 @@ h2 {
   font-size: 0.72rem;
 }
 
+.context-chip-rich {
+  padding: 4px 5px 4px 8px;
+}
+
+.context-chip-rich > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.context-chip-action,
+.context-chip-remove {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: #ffffff;
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.context-chip-action {
+  padding: 0 7px;
+  color: var(--blue);
+}
+
+.context-chip-remove {
+  font-size: 1rem;
+}
+
+.context-chip-action:hover,
+.context-chip-remove:hover {
+  color: #ffffff;
+  border-color: var(--blue);
+  background: var(--blue);
+}
+
 .facet-list {
   display: grid;
   gap: 10px;

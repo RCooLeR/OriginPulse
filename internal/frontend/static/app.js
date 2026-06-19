@@ -305,6 +305,12 @@ function wireEvents() {
       return;
     }
 
+    const logContextRemoveButton = event.target.closest("[data-log-context-remove]");
+    if (logContextRemoveButton) {
+      await removeLogContextFilter(logContextRemoveButton.dataset.logContextRemove || "");
+      return;
+    }
+
     const siteTabTargetButton = event.target.closest("[data-site-tab-target]");
     if (siteTabTargetButton) {
       state.siteTab = normalizeSiteTab(siteTabTargetButton.dataset.siteTabTarget || "overview");
@@ -1682,25 +1688,73 @@ function accessLogStats(totals, evidence, topPaths) {
 }
 
 function logContextChips() {
-  return logContextPairs().map(contextChip);
+  return logContextItems().map(logContextChip);
 }
 
 function logContextPairs() {
+  return logContextItems().map((item) => [item.label, item.value]);
+}
+
+function logContextItems() {
   const context = state.viewContext || {};
-  const pairs = [
-    ["Scope", activeFilterLabel()],
-    ["Log type", formatLogType(state.logType)],
+  const siteID = context.site_id || state.siteID || "";
+  const entityPivot = (kind, value, extra = {}) => ({
+    ...context,
+    ...extra,
+    kind,
+    value,
+    site_id: siteID,
+    origin: "logs_context",
+  });
+  const items = [
+    { label: "Scope", value: activeFilterLabel(), key: "scope" },
+    { label: "Log type", value: formatLogType(state.logType), key: "log_type", removable: state.logType !== "nginx-access" },
   ];
-  if (context.ip) pairs.push(["IP", context.ip]);
-  if (context.asn) pairs.push(["ASN", formatASN(context.asn) || context.asn]);
-  if (context.path) pairs.push(["Path", context.path]);
-  if (context.known_actor) pairs.push(["Actor", context.known_actor]);
-  if (context.actor_type) pairs.push(["Actor type", formatCategory(context.actor_type)]);
-  if (context.env) pairs.push(["Env", context.env]);
-  if (context.status_class === "errors") pairs.push(["Status", "Errors only"]);
-  if (context.user_agent) pairs.push(["User agent", context.user_agent]);
-  if (context.evidence_kind) pairs.push(["Evidence", context.evidence_kind]);
-  return pairs;
+  if (siteID) items.push({ label: "Site", value: siteID, key: "site_id", removable: true, pivot: { kind: "site", value: siteID, origin: "logs_context" } });
+  if (context.ip) items.push({ label: "IP", value: context.ip, key: "ip", removable: true, pivot: entityPivot("ip", context.ip) });
+  if (context.asn) items.push({ label: "ASN", value: formatASN(context.asn) || context.asn, key: "asn", removable: true, pivot: entityPivot("asn", context.asn) });
+  if (context.path) items.push({ label: "Path", value: context.path, key: "path", removable: true, pivot: entityPivot("path", context.path) });
+  if (context.known_actor) items.push({ label: "Actor", value: context.known_actor, key: "known_actor", removable: true, pivot: entityPivot("actor", context.known_actor, { actor_type: context.actor_type || "" }) });
+  if (context.actor_type) items.push({ label: "Actor type", value: formatCategory(context.actor_type), key: "actor_type", removable: true });
+  if (context.env) items.push({ label: "Env", value: context.env, key: "env", removable: true });
+  if (context.status_class === "errors") items.push({ label: "Status", value: "Errors only", key: "status_class", removable: true });
+  if (context.user_agent) items.push({ label: "User agent", value: context.user_agent, key: "user_agent", removable: true, pivot: entityPivot("user-agent", context.user_agent) });
+  if (context.evidence_kind) items.push({ label: "Evidence", value: context.evidence_kind, key: "evidence_kind", removable: true });
+  return items;
+}
+
+function logContextChip(item) {
+  const actions = [
+    item.pivot ? `<button class="context-chip-action" type="button" data-pivot='${encodePivot(item.pivot)}' aria-label="Open ${escapeHTML(item.label)} ${escapeHTML(item.value)}">Open</button>` : "",
+    item.removable ? `<button class="context-chip-remove" type="button" data-log-context-remove="${escapeHTML(item.key)}" aria-label="Remove ${escapeHTML(item.label)} filter">&times;</button>` : "",
+  ].filter(Boolean).join("");
+  return `
+    <span class="context-chip context-chip-rich">
+      <span><b>${escapeHTML(item.label)}</b>${escapeHTML(item.value || "-")}</span>
+      ${actions}
+    </span>
+  `;
+}
+
+async function removeLogContextFilter(key) {
+  if (!key) return;
+  if (key === "log_type") {
+    state.logType = "nginx-access";
+  } else if (key === "site_id") {
+    state.siteID = "";
+    delete state.viewContext.site_id;
+  } else {
+    delete state.viewContext[key];
+  }
+  if (key === "known_actor") delete state.viewContext.actor_type;
+  resetContextPages();
+  updateURL(false);
+  if (key === "site_id") await refreshWithValidation();
+  else {
+    renderLogs();
+    renderWorkspaceContext();
+    requestAnimationFrame(() => renderCharts());
+  }
 }
 
 function logTimelineRows(evidence = filteredLogEvidence(), allowCorrelated = false) {
