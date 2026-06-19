@@ -8150,16 +8150,25 @@ function renderSiteTab(site) {
     const tor = siteScopedRows(state.data.analysis?.tor_sources || [], id)
       .map((item) => ({ ...item, kind: "Tor source" }))
       .sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0));
-    const probes = [...injection, ...admin, ...tor].sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0));
+    const unknownSources = siteUnknownSourceRows(id);
+    const crawlerClaims = siteCrawlerClaimRows(id);
+    const probes = [...injection, ...admin, ...tor, ...unknownSources, ...crawlerClaims].sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0));
     const securityTimeline = siteActivityEvents(id).filter((event) => event.group === "security").slice(0, 12);
-    setText("#siteTabSummary", `${formatNumber(Math.min(30, probes.length))} of ${formatNumber(probes.length)} shown`);
+    const visibleFindings = Math.min(12, injection.length)
+      + Math.min(12, admin.length)
+      + Math.min(12, tor.length)
+      + Math.min(12, unknownSources.length)
+      + Math.min(16, crawlerClaims.length);
+    setText("#siteTabSummary", `${formatNumber(visibleFindings)} of ${formatNumber(probes.length)} shown`);
     body.innerHTML = `
       <section class="site-tab-grid">
         ${siteSubsection("Probe pressure", siteTrendPanel(site, "security"), "No timestamped probe evidence in this scope.", "span-2")}
         ${siteSubsection("Security timeline", entityTimeline(securityTimeline), "No timestamped security events in this scope.", "span-2")}
         ${siteSubsection("Injection probes", siteRowsMarkup(injection.slice(0, 12), siteSecurityRow, "No injection probes for this site."))}
         ${siteSubsection("Admin/login probes", siteRowsMarkup(admin.slice(0, 12), siteSecurityRow, "No admin probes for this site."))}
-        ${siteSubsection("Tor/datacenter sources", siteRowsMarkup(tor.slice(0, 12), siteSecurityRow, "No Tor source rows for this site."), "", "span-2")}
+        ${siteSubsection("Unknown high-volume IPs", siteRowsMarkup(unknownSources.slice(0, 12), siteActorRow, "No unknown high-volume source IPs for this site."))}
+        ${siteSubsection("Tor/datacenter sources", siteRowsMarkup(tor.slice(0, 12), siteSecurityRow, "No Tor source rows for this site."))}
+        ${siteSubsection("Crawler claims to verify", actorVerificationBoard(crawlerClaims, { siteID: id, origin: "site_security_claims" }), "No crawler or service source claims need verification for this site.", "span-2")}
       </section>
     `;
     return;
@@ -8980,6 +8989,31 @@ function siteActorsToVerify(siteID) {
 
 function siteActorVerificationRows(siteID) {
   return actorVerificationRows(siteScopedRows(state.data.analysis?.source_ips || [], siteID));
+}
+
+function siteUnknownSourceRows(siteID) {
+  return siteTopSourceIPs(siteID)
+    .filter((item) => {
+      const actor = String(item.known_actor || "").trim();
+      const actorType = String(item.actor_type || "").toLowerCase();
+      if (actor || (actorType && actorType !== "unknown")) return false;
+      const requests = Number(item.requests || 0);
+      const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+      const risk = Number(item.risk_score || 0);
+      return requests >= 500 || errors >= 10 || risk >= 50;
+    })
+    .map((item) => ({ ...item, kind: "Source IP" }))
+    .sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0)
+      || (Number(b.status_4xx || 0) + Number(b.status_5xx || 0)) - (Number(a.status_4xx || 0) + Number(a.status_5xx || 0))
+      || Number(b.requests || 0) - Number(a.requests || 0));
+}
+
+function siteCrawlerClaimRows(siteID) {
+  return siteActorVerificationRows(siteID)
+    .filter((item) => {
+      const actorType = String(item.actor_type || "").toLowerCase();
+      return actorSourceNeedsReview(item) && (item.known_actor || ["crawler", "service", "monitor", "scanner", "tool"].includes(actorType));
+    });
 }
 
 function siteActivityEvents(siteID) {
