@@ -6641,13 +6641,15 @@ function entitySiteRow(item) {
 
 function entityPathRow(item) {
   const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  const siteID = item.site_id || state.siteID || state.viewContext.site_id || "";
+  const ip = state.entity?.kind === "ip" ? state.entity.value : item.ip || "";
   return `
     <div class="signal-row">
       <div>
         <strong>${escapeHTML(item.path || "/")}</strong>
         <span>${escapeHTML(`${formatNumber(errors)} errors - ${formatBytes(item.bytes_sent || 0)}`)}</span>
-        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path || "/", site_id: state.siteID || state.viewContext.site_id || "", origin: "entity" })}'>Open path</button>
-        ${correlatedLogActions({ path: item.path || "/", siteID: state.siteID || state.viewContext.site_id || "", statusClass: errors ? "errors" : "", origin: "entity" })}
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path || "/", site_id: siteID, ip, origin: "entity" })}'>Open path</button>
+        ${correlatedLogActions({ path: item.path || "/", siteID, ip, statusClass: errors ? "errors" : "", origin: "entity" })}
       </div>
       <div class="signal-numbers"><span>requests</span><b>${formatNumber(item.requests || 0)}</b></div>
     </div>
