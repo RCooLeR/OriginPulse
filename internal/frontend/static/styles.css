@@ -575,6 +575,7 @@ h2 {
     "signals signals status"
     "risk risk sites"
     "timeline timeline sites"
+    "health health sites"
     "hotspots hotspots actors-review"
     "sources agents actors-review"
     "errors errors errors";
@@ -588,6 +589,32 @@ h2 {
 
 #siteRiskPanel {
   grid-area: risk;
+}
+
+#healthMatrixPanel {
+  grid-area: health;
+}
+
+.health-matrix-wrap {
+  max-height: 390px;
+}
+
+.health-matrix-table {
+  min-width: 920px;
+}
+
+.health-matrix-table td {
+  vertical-align: top;
+}
+
+.health-matrix-table td span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.health-matrix-table .severity {
+  width: fit-content;
+  margin: 2px 0;
 }
 
 .problem-site {
@@ -2258,6 +2285,7 @@ td code,
       "signals signals"
       "risk risk"
       "timeline timeline"
+      "health health"
       "hotspots actors-review"
       "status sites"
       "sources agents"
@@ -2451,6 +2479,7 @@ td code,
       "signals"
       "risk"
       "timeline"
+      "health"
       "hotspots"
       "actors-review"
       "status"

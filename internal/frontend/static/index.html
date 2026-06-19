@@ -183,6 +183,32 @@
               </div>
             </article>
 
+            <article id="healthMatrixPanel" class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Traffic and health</p>
+                  <h2>Health matrix</h2>
+                </div>
+                <span id="healthMatrixSummary" class="pill">-</span>
+              </div>
+              <div class="table-wrap health-matrix-wrap">
+                <table class="health-matrix-table">
+                  <thead>
+                    <tr>
+                      <th>Site</th>
+                      <th>4xx</th>
+                      <th>5xx</th>
+                      <th>Slow p95</th>
+                      <th>Top path</th>
+                      <th>Actor</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="overviewHealthMatrix"></tbody>
+                </table>
+              </div>
+            </article>
+
             <article id="statusPanel" class="panel">
               <div class="panel-head">
                 <h2>Status mix</h2>

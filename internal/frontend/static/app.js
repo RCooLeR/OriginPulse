@@ -889,8 +889,10 @@ function renderDashboard() {
   setText("#statusTotal", formatNumber(totals.requests || 0));
   setText("#agentClassCount", `${aggregateAgentClasses(analysis.user_agents || []).length} classes`);
 
+  const siteRows = aggregateSiteRows();
   renderPrioritySignals(signals);
-  renderSiteRiskOverview(aggregateSiteRows());
+  renderSiteRiskOverview(siteRows);
+  renderOverviewHealthMatrix(siteRows);
   renderOverviewHotspots(overviewHotspotRows());
   renderOverviewActorReview(overviewActorReviewRows());
   renderRecentErrors(traffic.recent_errors || []);
@@ -1045,6 +1047,79 @@ function siteRiskRow(site) {
         <b>${formatNumber(site.statusRank || 0)}</b>
       </div>
     </div>
+  `;
+}
+
+function renderOverviewHealthMatrix(sites) {
+  const rows = overviewHealthRows(sites);
+  setText("#healthMatrixSummary", rows.length ? `${formatNumber(rows.length)} sites` : "no sites");
+  const container = qs("#overviewHealthMatrix");
+  if (!container) return;
+  container.innerHTML = rows.map(overviewHealthRow).join("") || emptyRow(7, "No health telemetry is available in this scope.");
+}
+
+function overviewHealthRows(sites) {
+  return (sites || []).map((site) => {
+    const topPath = siteTopPaths(site.id)[0] || {};
+    const topIP = siteTopSourceIPs(site.id)[0] || {};
+    const errors = Number(site.status4xx || 0) + Number(site.status5xx || 0);
+    const pathErrors = Number(topPath.status_4xx || 0) + Number(topPath.status_5xx || 0);
+    const actor = topIP.known_actor || actorLabelFromType(topIP.actor_type) || topIP.reverse_dns || "";
+    const p95 = Number(topPath.p95_request_time_ms || site.p95 || 0);
+    const matrixScore = Number(site.statusRank || 0) * 1000000
+      + Number(site.status5xx || 0) * 1000
+      + Number(site.status4xx || 0)
+      + Math.round(p95 || 0)
+      + Number(site.signalCount || 0) * 10000;
+    return {
+      ...site,
+      topPath,
+      topIP,
+      actor,
+      errors,
+      pathErrors,
+      p95,
+      matrixScore,
+    };
+  }).sort((a, b) => b.matrixScore - a.matrixScore || b.requests - a.requests).slice(0, 12);
+}
+
+function overviewHealthRow(item) {
+  const topPath = item.topPath || {};
+  const topIP = item.topIP || {};
+  const statusClass = item.errors ? "errors" : "";
+  const actor = item.actor || "-";
+  const siteID = item.id || "";
+  const path = topPath.path || "";
+  const pathMeta = [
+    path || "-",
+    topPath.requests ? `${formatNumber(topPath.requests)} requests` : "",
+    item.pathErrors ? `${formatNumber(item.pathErrors)} errors` : "",
+  ].filter(Boolean).join(" / ");
+  const sourceMeta = [
+    topIP.ip || "",
+    topIP.asn ? formatASN(topIP.asn) : "",
+    topIP.asn_org || topIP.network || "",
+  ].filter(Boolean).join(" / ");
+  return `
+    <tr>
+      <td>
+        <strong>${escapeHTML(item.name || siteID || "-")}</strong><br>
+        <span class="severity severity-${escapeHTML(item.severity || "low")}">${escapeHTML(item.status || "healthy")}</span>
+        <span>${escapeHTML(`${formatNumber(item.requests || 0)} requests / ${formatNumber(item.signalCount || 0)} signals`)}</span>
+      </td>
+      <td>${formatPercent(item.status4xxRate || 0)}<br><span>${formatNumber(item.status4xx || 0)}</span></td>
+      <td>${formatPercent(item.status5xxRate || 0)}<br><span>${formatNumber(item.status5xx || 0)}</span></td>
+      <td>${item.p95 ? formatMs(item.p95) : "-"}<br><span>${escapeHTML(item.p95 ? "slowest path" : "no slow data")}</span></td>
+      <td class="clip"><strong>${escapeHTML(path || "-")}</strong><br><span>${escapeHTML(pathMeta)}</span></td>
+      <td class="clip"><strong>${escapeHTML(actor)}</strong><br><span>${escapeHTML(sourceMeta || "no source IP")}</span></td>
+      <td class="row-actions">
+        ${siteID ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: siteID, origin: "overview_health" })}'>Open site</button>` : ""}
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, status_class: statusClass, origin: "overview_health" })}'>Logs</button>
+        ${path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: path, site_id: siteID, origin: "overview_health" })}'>Path</button>` : ""}
+        ${topIP.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: topIP.ip, site_id: siteID, origin: "overview_health" })}'>IP</button>` : ""}
+      </td>
+    </tr>
   `;
 }
 
