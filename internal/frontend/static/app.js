@@ -1596,7 +1596,9 @@ function overviewHealthRows(sites) {
     const topIP = siteTopSourceIPs(site.id)[0] || {};
     const errors = Number(site.status4xx || 0) + Number(site.status5xx || 0);
     const pathErrors = Number(topPath.status_4xx || 0) + Number(topPath.status_5xx || 0);
-    const actor = topIP.known_actor || actorLabelFromType(topIP.actor_type) || topIP.reverse_dns || "";
+    const actorType = topIP.actor_type || "";
+    const actorValue = topIP.known_actor || actorLabelFromType(actorType);
+    const actor = actorValue || topIP.reverse_dns || "";
     const p95 = Number(topPath.p95_request_time_ms || site.p95 || 0);
     const matrixScore = Number(site.statusRank || 0) * 1000000
       + Number(site.status5xx || 0) * 1000
@@ -1608,6 +1610,8 @@ function overviewHealthRows(sites) {
       topPath,
       topIP,
       actor,
+      actorType,
+      actorValue,
       errors,
       pathErrors,
       p95,
@@ -1621,6 +1625,8 @@ function overviewHealthRow(item) {
   const topIP = item.topIP || {};
   const statusClass = item.errors ? "errors" : "";
   const actor = item.actor || "-";
+  const actorValue = item.actorValue || "";
+  const actorType = item.actorType || topIP.actor_type || "";
   const siteID = item.id || "";
   const path = topPath.path || "";
   const pathMeta = [
@@ -1650,6 +1656,8 @@ function overviewHealthRow(item) {
         <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, status_class: statusClass, origin: "overview_health" })}'>Logs</button>
         ${path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: path, site_id: siteID, origin: "overview_health" })}'>Path</button>` : ""}
         ${topIP.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: topIP.ip, site_id: siteID, origin: "overview_health" })}'>IP</button>` : ""}
+        ${actorValue ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: actorValue, actor_type: actorType, site_id: siteID, origin: "overview_health" })}'>Actor</button>` : ""}
+        ${(actorValue || actorType) ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ip: topIP.ip || "", known_actor: actorValue, actor_type: actorType, site_id: siteID, status_class: statusClass, origin: "overview_health" })}'>Actor logs</button>` : ""}
       </td>
     </tr>
   `;
