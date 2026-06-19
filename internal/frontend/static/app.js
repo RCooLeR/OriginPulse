@@ -652,11 +652,13 @@ function workspaceContextItems(route = state.route) {
   }
   if (context.actor_type) items.push({ label: "Actor type", value: formatCategory(context.actor_type), key: "actor_type", removable: true });
   if (context.env) items.push({ label: "Env", value: context.env, key: "env", removable: true });
+  if (context.method) items.push({ label: "Method", value: context.method, key: "method", removable: true });
   if (context.severity) items.push({ label: "Min severity", value: signalSeverityLabel(context.severity), key: "severity", removable: true });
   if (context.status_class === "errors") items.push({ label: "Status", value: "Errors only", key: "status_class", removable: true });
   if (context.user_agent && !(state.entity?.kind === "user-agent" && state.entity.value === context.user_agent)) {
     items.push({ label: "User agent", value: context.user_agent, key: "user_agent", removable: true, pivot: { kind: "user-agent", value: context.user_agent, site_id: siteID, origin: "workspace_context" } });
   }
+  if (context.referrer_host) items.push({ label: "Referrer", value: context.referrer_host, key: "referrer_host", removable: true });
   if (context.evidence_kind) items.push({ label: "Evidence", value: formatCategory(context.evidence_kind), key: "evidence_kind", removable: true });
   return items;
 }
@@ -1010,7 +1012,7 @@ function syncContextFromURL() {
   const selectedReportID = params.get("report_id");
   if (selectedReportID) state.selectedReportIDs[state.reportTab] = selectedReportID;
   state.viewContext = {};
-  ["ip", "asn", "path", "known_actor", "actor_type", "status_class", "site_id", "env", "user_agent", "evidence_kind", "severity"].forEach((key) => {
+  ["ip", "asn", "path", "known_actor", "actor_type", "status_class", "site_id", "env", "method", "user_agent", "referrer_host", "evidence_kind", "severity"].forEach((key) => {
     const value = params.get(key);
     if (!value) return;
     if (key === "severity") {
@@ -3241,9 +3243,11 @@ function logContextItems() {
   if (context.known_actor) items.push({ label: "Actor", value: context.known_actor, key: "known_actor", removable: true, pivot: entityPivot("actor", context.known_actor, { actor_type: context.actor_type || "" }) });
   if (context.actor_type) items.push({ label: "Actor type", value: formatCategory(context.actor_type), key: "actor_type", removable: true });
   if (context.env) items.push({ label: "Env", value: context.env, key: "env", removable: true });
+  if (context.method) items.push({ label: "Method", value: context.method, key: "method", removable: true });
   if (context.status_class === "errors") items.push({ label: "Status", value: "Errors only", key: "status_class", removable: true });
   if (context.severity) items.push({ label: "Min severity", value: signalSeverityLabel(context.severity), key: "severity", removable: true });
   if (context.user_agent) items.push({ label: "User agent", value: context.user_agent, key: "user_agent", removable: true, pivot: entityPivot("user-agent", context.user_agent) });
+  if (context.referrer_host) items.push({ label: "Referrer", value: context.referrer_host, key: "referrer_host", removable: true });
   if (context.evidence_kind) items.push({ label: "Evidence", value: context.evidence_kind, key: "evidence_kind", removable: true });
   return items;
 }
@@ -3315,12 +3319,18 @@ function logFacetSections(evidence, topPaths) {
   return [
     facetSectionMarkup("Source IPs", countFacet(evidence, (item) => item.ip, (item) => item.requests).slice(0, 6), "ip"),
     facetSectionMarkup("ASNs", countFacet(evidence, (item) => formatASN(item.asn), (item) => item.requests).slice(0, 6), "asn"),
+    facetSectionMarkup("Methods", countFacet(evidence, (item) => item.method, (item) => item.requests).slice(0, 6), "method"),
+    facetSectionMarkup("Environments", countFacet(evidence, (item) => item.env, (item) => item.requests).slice(0, 6), "env"),
     facetSectionMarkup("Paths", topPaths.slice(0, 6).map((item) => ({
       label: item.path || "/",
       value: Number(item.requests || 0),
       errors: Number(item.status_4xx || 0) + Number(item.status_5xx || 0),
       site_id: item.site_id || "",
     })), "path"),
+    facetSectionMarkup("Known actors", countFacet(evidence, (item) => item.known_actor, (item) => item.requests).slice(0, 6), "actor"),
+    facetSectionMarkup("Actor types", countFacet(evidence, (item) => item.actor_type, (item) => item.requests).slice(0, 6), "actor_type"),
+    facetSectionMarkup("User agents", userAgentFacets(evidence).slice(0, 6), "user_agent"),
+    facetSectionMarkup("Referrers", countFacet(evidence, (item) => item.referrer_host || referrerHost(item.referer || item.referrer), (item) => item.requests).slice(0, 6), "referrer_host"),
     facetSectionMarkup("Sites", countFacet(evidence, (item) => item.site_id, (item) => item.requests).slice(0, 6), "site"),
     facetSectionMarkup("Evidence types", countFacet(evidence, (item) => item.kind, (item) => item.requests).slice(0, 6), "kind"),
     facetSectionMarkup("Status", statusFacets(evidence), "status"),
@@ -3330,7 +3340,13 @@ function logFacetSections(evidence, topPaths) {
 function logFacetCount(evidence, topPaths) {
   return countFacet(evidence, (item) => item.ip).length
     + countFacet(evidence, (item) => formatASN(item.asn)).length
+    + countFacet(evidence, (item) => item.method).length
+    + countFacet(evidence, (item) => item.env).length
     + topPaths.length
+    + countFacet(evidence, (item) => item.known_actor).length
+    + countFacet(evidence, (item) => item.actor_type).length
+    + userAgentFacets(evidence).length
+    + countFacet(evidence, (item) => item.referrer_host || referrerHost(item.referer || item.referrer)).length
     + countFacet(evidence, (item) => item.site_id).length
     + countFacet(evidence, (item) => item.kind).length
     + statusFacets(evidence).length;
@@ -3466,7 +3482,7 @@ function correlatedLogTypeDefs(includeAccess = true) {
 
 function logFilterPivotForContext(logType, context = state.viewContext || {}, origin = "correlation") {
   const pivot = { kind: "log_filter", log_type: logType, origin };
-  ["path", "ip", "asn", "known_actor", "actor_type", "status_class", "env", "user_agent", "evidence_kind", "severity"].forEach((key) => {
+  ["path", "ip", "asn", "known_actor", "actor_type", "status_class", "env", "method", "user_agent", "referrer_host", "evidence_kind", "severity"].forEach((key) => {
     if (context[key]) pivot[key] = context[key];
   });
   const siteID = context.site_id || state.siteID || "";
@@ -3600,6 +3616,26 @@ function countFacet(rows, keyFn, valueFn = (item) => item.requests) {
   return Array.from(map.values()).sort((a, b) => b.value - a.value);
 }
 
+function userAgentFacets(evidence) {
+  return countFacet(evidence, (item) => item.user_agent, (item) => item.requests)
+    .map((item) => ({
+      ...item,
+      target: item.label,
+      label: shortLabel(item.label, 72),
+    }));
+}
+
+function referrerHost(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw === "-") return "";
+  try {
+    return new URL(raw).hostname.toLowerCase();
+  } catch {
+    const host = raw.replace(/^[a-z]+:\/\//i, "").split(/[/?#]/)[0];
+    return host.includes(".") ? host.toLowerCase() : "";
+  }
+}
+
 function statusFacets(evidence) {
   const errors = evidence.reduce((sum, item) => sum + Number(item.errors || 0), 0);
   const requests = evidence.reduce((sum, item) => sum + Number(item.requests || 0), 0);
@@ -3621,19 +3657,28 @@ function facetSectionMarkup(title, items, type) {
 function facetRowMarkup(item, type) {
   const siteID = item.site_id || state.viewContext.site_id || state.siteID || "";
   const label = item.label || "-";
+  const target = item.target || label;
   const refine = {
-    ip: { kind: "log_filter", ip: label, site_id: siteID, origin: "logs" },
-    asn: { kind: "log_filter", asn: label, site_id: siteID, origin: "logs" },
-    path: { kind: "log_filter", path: label, site_id: siteID, status_class: item.errors ? "errors" : "", origin: "logs" },
-    site: { kind: "log_filter", site_id: label, origin: "logs" },
-    kind: { kind: "log_filter", evidence_kind: label, site_id: siteID, origin: "logs" },
+    ip: { kind: "log_filter", ip: target, site_id: siteID, origin: "logs" },
+    asn: { kind: "log_filter", asn: target, site_id: siteID, origin: "logs" },
+    method: { kind: "log_filter", method: target, site_id: siteID, origin: "logs" },
+    env: { kind: "log_filter", env: target, site_id: siteID, origin: "logs" },
+    path: { kind: "log_filter", path: target, site_id: siteID, status_class: item.errors ? "errors" : "", origin: "logs" },
+    actor: { kind: "log_filter", known_actor: target, site_id: siteID, origin: "logs" },
+    actor_type: { kind: "log_filter", actor_type: target, site_id: siteID, origin: "logs" },
+    user_agent: { kind: "log_filter", user_agent: target, site_id: siteID, origin: "logs" },
+    referrer_host: { kind: "log_filter", referrer_host: target, site_id: siteID, origin: "logs" },
+    site: { kind: "log_filter", site_id: target, origin: "logs" },
+    kind: { kind: "log_filter", evidence_kind: target, site_id: siteID, origin: "logs" },
     status: label === "Errors only" ? { kind: "log_filter", site_id: siteID, status_class: "errors", origin: "logs" } : null,
   }[type];
   const secondary = [
-    type === "ip" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: label, site_id: siteID, origin: "logs" })}'>Open IP</button>` : "",
-    type === "asn" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "asn", value: label, site_id: siteID, origin: "logs" })}'>Open ASN</button>` : "",
-    type === "path" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: label, site_id: siteID, origin: "logs" })}'>Open path</button>` : "",
-    type === "site" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: label, origin: "logs" })}'>Open site</button>` : "",
+    type === "ip" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: target, site_id: siteID, origin: "logs" })}'>Open IP</button>` : "",
+    type === "asn" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "asn", value: target, site_id: siteID, origin: "logs" })}'>Open ASN</button>` : "",
+    type === "path" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: target, site_id: siteID, origin: "logs" })}'>Open path</button>` : "",
+    type === "actor" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: target, site_id: siteID, origin: "logs" })}'>Open actor</button>` : "",
+    type === "user_agent" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "user-agent", value: target, site_id: siteID, origin: "logs" })}'>Open UA</button>` : "",
+    type === "site" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: target, origin: "logs" })}'>Open site</button>` : "",
   ].filter(Boolean).join("");
   return `
     <div class="facet-row">
@@ -3642,7 +3687,7 @@ function facetRowMarkup(item, type) {
         ${item.errors ? `<small>${formatNumber(item.errors)} errors</small>` : ""}
         <div class="signal-actions">
           ${type === "path"
-            ? correlatedLogActions({ path: label, siteID, statusClass: item.errors ? "errors" : "", origin: "logs" })
+            ? correlatedLogActions({ path: target, siteID, statusClass: item.errors ? "errors" : "", origin: "logs" })
             : refine ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(refine)}'>Refine</button>` : ""}
           ${secondary}
         </div>
@@ -3728,6 +3773,8 @@ function logContextLabel() {
   if (context.path) parts.push(context.path);
   if (context.known_actor) parts.push(context.known_actor);
   if (context.actor_type) parts.push(formatCategory(context.actor_type));
+  if (context.method) parts.push(context.method);
+  if (context.referrer_host) parts.push(`ref ${context.referrer_host}`);
   if (context.status_class === "errors") parts.push("Errors only");
   return parts.join(" / ");
 }
@@ -3747,6 +3794,8 @@ function filteredLogEvidence() {
       method: item.method || "GET",
       path: item.path || "/",
       query: item.query || "",
+      referer: item.referer || item.referrer || "",
+      referrer_host: referrerHost(item.referer || item.referrer || ""),
       status: item.status || "",
       requests: 1,
       errors: Number(item.status || 0) >= 400 ? 1 : 0,
@@ -3873,6 +3922,8 @@ function logMatchesContext(item) {
   if (context.asn && normalizeASN(item.asn) !== normalizeASN(context.asn)) return false;
   if (context.path && !pathMatches(item.path, context.path)) return false;
   if (context.evidence_kind && !evidenceKindMatches(item.kind, context.evidence_kind)) return false;
+  if (context.method && String(item.method || "").toUpperCase() !== String(context.method).toUpperCase()) return false;
+  if (context.referrer_host && (item.referrer_host || referrerHost(item.referer || item.referrer)) !== context.referrer_host) return false;
   if (context.status_class === "errors") {
     const status = Number(item.status || 0);
     const errors = Number(item.errors || 0) + Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
@@ -3883,9 +3934,12 @@ function logMatchesContext(item) {
     if (severity !== "all" && logEvidenceSeverityRank(item) < severityRank(severity)) return false;
   }
   if (context.known_actor || context.actor_type) {
-    const ips = contextActorIPs(context);
-    if (item.ip && ips.size && !ips.has(item.ip)) return false;
-    if (!item.ip && ips.size) return false;
+    const actorMatches = (!context.known_actor || item.known_actor === context.known_actor)
+      && (!context.actor_type || item.actor_type === context.actor_type);
+    if (!actorMatches) {
+      const ips = contextActorIPs(context);
+      if (!item.ip || !ips.size || !ips.has(item.ip)) return false;
+    }
   }
   if (context.user_agent && !userAgentMatches(item.user_agent || "", context.user_agent)) return false;
   return true;
@@ -4048,6 +4102,8 @@ function logEvidenceFilterPivot(item, siteID, errors, origin = "logs") {
     path: item.path || "",
     ip: item.ip || "",
     asn: item.asn ? formatASN(item.asn) : "",
+    method: item.method || "",
+    referrer_host: item.referrer_host || referrerHost(item.referer || item.referrer),
     known_actor: item.known_actor || "",
     actor_type: item.actor_type || "",
     user_agent: item.user_agent || "",
@@ -11335,7 +11391,7 @@ function isReportPivotOrigin(pivot) {
 
 function pivotContext(pivot) {
   const context = {};
-  ["ip", "asn", "path", "known_actor", "actor_type", "status_class", "site_id", "env", "user_agent", "evidence_kind", "severity"].forEach((key) => {
+  ["ip", "asn", "path", "known_actor", "actor_type", "status_class", "site_id", "env", "method", "user_agent", "referrer_host", "evidence_kind", "severity"].forEach((key) => {
     if (!pivot[key]) return;
     if (key === "severity") {
       const severity = normalizeSignalSeverity(pivot[key]);
