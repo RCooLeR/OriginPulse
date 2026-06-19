@@ -47,6 +47,9 @@ const state = {
   signalFilter: "all",
   signalKey: "",
   siteTab: "overview",
+  siteSearch: "",
+  siteStatusFilter: "all",
+  siteSort: "risk",
   entity: null,
   entityDetails: {},
   entityDetailLoading: {},
@@ -152,6 +155,27 @@ function wireEvents() {
     resetPages();
     updateURL(false);
     await refreshWithValidation();
+  });
+  qs("#siteSearchInput").addEventListener("input", (event) => {
+    state.siteSearch = event.target.value || "";
+    state.pages.sites = 0;
+    renderSites();
+    renderWorkspaceContext();
+    updateURL(false);
+  });
+  qs("#siteStatusFilter").addEventListener("change", (event) => {
+    state.siteStatusFilter = event.target.value || "all";
+    state.pages.sites = 0;
+    renderSites();
+    renderWorkspaceContext();
+    updateURL(false);
+  });
+  qs("#siteSortSelect").addEventListener("change", (event) => {
+    state.siteSort = event.target.value || "risk";
+    state.pages.sites = 0;
+    renderSites();
+    renderWorkspaceContext();
+    updateURL(false);
   });
   qs("#fromInput").addEventListener("change", (event) => {
     state.from = event.target.value;
@@ -277,6 +301,20 @@ function wireEvents() {
     const siteActionButton = event.target.closest("[data-site-action]");
     if (siteActionButton) {
       await handleSiteAction(siteActionButton.dataset.siteAction || "focus");
+      return;
+    }
+
+    const siteQueueButton = event.target.closest("[data-site-queue-action]");
+    if (siteQueueButton) {
+      if (siteQueueButton.dataset.siteQueueAction === "clear") {
+        state.siteSearch = "";
+        state.siteStatusFilter = "all";
+        state.siteSort = "risk";
+        state.pages.sites = 0;
+        renderSites();
+        renderWorkspaceContext();
+        updateURL(false);
+      }
       return;
     }
 
@@ -502,6 +540,8 @@ function workspaceContextSubtitle(route = state.route) {
   if (route === "logs") parts.push(formatLogType(state.logType));
   if (route === "signals" && state.signalFilter !== "all") parts.push(`${formatCategory(state.signalFilter)} signals`);
   if (route === "sites" && state.siteTab !== "overview") parts.push(`${formatCategory(state.siteTab)} tab`);
+  if (route === "sites" && state.siteStatusFilter !== "all") parts.push(`${formatCategory(state.siteStatusFilter)} sites`);
+  if (route === "sites" && state.siteSearch) parts.push(`search "${state.siteSearch}"`);
   if (route === "reports") parts.push(`${formatCategory(state.reportTab)} reports`);
   if (state.signalKey) parts.push("signal detail");
   if (state.entity?.kind && state.entity.value) parts.push(`${state.entity.kind === "asn" ? "ASN" : formatCategory(state.entity.kind)} detail`);
@@ -518,6 +558,9 @@ function workspaceContextPairs(route = state.route) {
   if (route === "logs") pairs.push(["Log type", formatLogType(state.logType)]);
   if (route === "signals") pairs.push(["Signal tab", formatCategory(state.signalFilter || "all")]);
   if (route === "sites") pairs.push(["Site tab", formatCategory(state.siteTab || "overview")]);
+  if (route === "sites" && state.siteStatusFilter !== "all") pairs.push(["Site state", formatCategory(state.siteStatusFilter)]);
+  if (route === "sites" && state.siteSearch) pairs.push(["Site search", state.siteSearch]);
+  if (route === "sites" && state.siteSort !== "risk") pairs.push(["Site sort", siteSortLabel(state.siteSort)]);
   if (route === "reports") pairs.push(["Report tab", formatCategory(state.reportTab || "daily")]);
   if (route === "reports" && state.selectedReportIDs[state.reportTab]) pairs.push(["Report", shortLabel(state.selectedReportIDs[state.reportTab], 42)]);
   if (state.signalKey) pairs.push(["Signal", shortLabel(state.signalKey, 42)]);
@@ -549,6 +592,7 @@ function workspaceHasDrilldownContext() {
     || Object.values(context).some(Boolean)
     || state.logType !== "nginx-access"
     || state.signalFilter !== "all"
+    || (state.route === "sites" && (state.siteSearch || state.siteStatusFilter !== "all" || state.siteSort !== "risk"))
   );
 }
 
@@ -617,6 +661,9 @@ async function handleWorkspaceContextAction(action) {
     state.entity = null;
     state.signalKey = "";
     state.signalFilter = "all";
+    state.siteSearch = "";
+    state.siteStatusFilter = "all";
+    state.siteSort = "risk";
     state.logType = "nginx-access";
     resetContextPages();
     updateURL(false);
@@ -683,6 +730,9 @@ function syncContextFromURL() {
   state.logType = params.get("log_type") || state.logType || "nginx-access";
   state.signalFilter = params.get("signal_filter") || state.signalFilter || "all";
   state.siteTab = normalizeSiteTab(params.get("site_tab") || state.siteTab || "overview");
+  state.siteSearch = params.get("site_q") || "";
+  state.siteStatusFilter = normalizeSiteStatusFilter(params.get("site_status") || state.siteStatusFilter || "all");
+  state.siteSort = normalizeSiteSort(params.get("site_sort") || state.siteSort || "risk");
   state.reportTab = normalizeReportTab(params.get("report_tab") || state.reportTab || "daily");
   const selectedReportID = params.get("report_id");
   if (selectedReportID) state.selectedReportIDs[state.reportTab] = selectedReportID;
@@ -729,6 +779,9 @@ function viewQuery(extra = {}) {
   if (state.range === "custom" && to) params.set("to", to);
   if (state.route === "sites") {
     if (state.siteTab && state.siteTab !== "overview") params.set("site_tab", state.siteTab);
+    if (state.siteSearch) params.set("site_q", state.siteSearch);
+    if (state.siteStatusFilter && state.siteStatusFilter !== "all") params.set("site_status", state.siteStatusFilter);
+    if (state.siteSort && state.siteSort !== "risk") params.set("site_sort", state.siteSort);
     return params;
   }
   if (state.route === "investigate" && state.entity?.kind === "path" && state.entity.value) params.set("path", state.entity.value);
@@ -4067,9 +4120,12 @@ function renderRecentErrors(items) {
 }
 
 function renderSites() {
-  const sites = aggregateSiteRows();
+  const allSites = aggregateSiteRows();
+  const sites = sortSiteRows(filterSiteRows(allSites));
+  syncSiteQueueControls();
+  renderSiteQueueSummary(allSites, sites);
   renderPager("#sitesPager", "sites", sites);
-  const selectedID = currentSiteIDForView(sites);
+  const selectedID = currentSiteIDForView(sites, allSites);
   const rows = paginate("sites", sites).map((site) => `
     <tr>
       <td><strong>${escapeHTML(site.name || site.id)}</strong><br><span>${escapeHTML(site.id)}${site.envs?.length ? ` / ${escapeHTML(site.envs.join(", "))}` : ""}</span></td>
@@ -4084,7 +4140,82 @@ function renderSites() {
     </tr>
   `);
   qs("#sitesTable").innerHTML = rows.join("") || emptyRow(6, "No enabled sites configured.");
-  renderSiteDetail(sites.find((site) => site.id === selectedID) || sites[0] || null);
+  renderSiteDetail(allSites.find((site) => site.id === selectedID) || sites[0] || allSites[0] || null);
+}
+
+function syncSiteQueueControls() {
+  const searchInput = qs("#siteSearchInput");
+  const statusSelect = qs("#siteStatusFilter");
+  const sortSelect = qs("#siteSortSelect");
+  if (searchInput && searchInput.value !== state.siteSearch) searchInput.value = state.siteSearch || "";
+  if (statusSelect) statusSelect.value = normalizeSiteStatusFilter(state.siteStatusFilter);
+  if (sortSelect) sortSelect.value = normalizeSiteSort(state.siteSort);
+}
+
+function renderSiteQueueSummary(allSites, visibleSites) {
+  const container = qs("#siteQueueSummary");
+  if (!container) return;
+  const counts = siteStatusCounts(allSites);
+  const active = state.siteStatusFilter !== "all" || state.siteSearch || state.siteSort !== "risk";
+  const chips = [
+    ["Visible", `${formatNumber(visibleSites.length)} of ${formatNumber(allSites.length)}`],
+    ["Degraded", formatNumber(counts.degraded || 0)],
+    ["Elevated", formatNumber(counts.elevated || 0)],
+    ["Watch", formatNumber(counts.watch || 0)],
+    ["Stale", formatNumber(counts.stale || 0)],
+    ["Healthy", formatNumber(counts.healthy || 0)],
+  ];
+  container.innerHTML = `
+    <div class="site-queue-chips">
+      ${chips.map(([label, value]) => `<span class="context-chip"><b>${escapeHTML(label)}</b>${escapeHTML(value)}</span>`).join("")}
+    </div>
+    ${active ? `<button class="ghost mini" type="button" data-site-queue-action="clear">Clear queue filters</button>` : ""}
+  `;
+}
+
+function siteStatusCounts(sites) {
+  return (sites || []).reduce((counts, site) => {
+    const key = site.status || "unknown";
+    counts[key] = (counts[key] || 0) + 1;
+    return counts;
+  }, {});
+}
+
+function filterSiteRows(sites) {
+  const search = String(state.siteSearch || "").trim().toLowerCase();
+  const status = normalizeSiteStatusFilter(state.siteStatusFilter);
+  return (sites || []).filter((site) => {
+    if (status !== "all" && site.status !== status) return false;
+    if (!search) return true;
+    return siteSearchText(site).includes(search);
+  });
+}
+
+function siteSearchText(site) {
+  return [
+    site.name,
+    site.id,
+    site.pantheon_site_id,
+    site.status,
+    ...(site.envs || []),
+    ...(site.tags || []),
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function sortSiteRows(sites) {
+  const sort = normalizeSiteSort(state.siteSort);
+  const rows = [...(sites || [])];
+  const byName = (a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id));
+  const byRisk = (a, b) => (b.statusRank - a.statusRank) || (b.signalCount - a.signalCount) || (b.requests - a.requests) || byName(a, b);
+  const comparisons = {
+    risk: byRisk,
+    traffic: (a, b) => (b.requests - a.requests) || byRisk(a, b),
+    "5xx": (a, b) => (b.status5xx - a.status5xx) || (b.status5xxRate - a.status5xxRate) || byRisk(a, b),
+    signals: (a, b) => (b.signalCount - a.signalCount) || (b.securitySignals - a.securitySignals) || byRisk(a, b),
+    freshness: (a, b) => new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0) || byRisk(a, b),
+    name: byName,
+  };
+  return rows.sort(comparisons[sort] || byRisk);
 }
 
 function aggregateSiteRows() {
@@ -4158,9 +4289,9 @@ function siteStatus(site) {
   return { label: "healthy", severity: "low", rank: 1 };
 }
 
-function currentSiteIDForView(sites) {
+function currentSiteIDForView(sites, allSites = sites) {
   if (state.siteID) return state.siteID;
-  return sites[0]?.id || "";
+  return sites[0]?.id || allSites[0]?.id || "";
 }
 
 function renderSiteDetail(site) {
@@ -5849,6 +5980,25 @@ function normalizeRoute(route) {
 
 function normalizeSiteTab(tab) {
   return ["overview", "security", "reliability", "actors", "paths", "logs", "reports"].includes(tab) ? tab : "overview";
+}
+
+function normalizeSiteStatusFilter(status) {
+  return ["all", "degraded", "elevated", "watch", "stale", "healthy"].includes(status) ? status : "all";
+}
+
+function normalizeSiteSort(sort) {
+  return ["risk", "traffic", "5xx", "signals", "freshness", "name"].includes(sort) ? sort : "risk";
+}
+
+function siteSortLabel(sort) {
+  return {
+    risk: "Risk first",
+    traffic: "Traffic",
+    "5xx": "5xx",
+    signals: "Signals",
+    freshness: "Freshness",
+    name: "Name",
+  }[normalizeSiteSort(sort)] || "Risk first";
 }
 
 function normalizeReportTab(tab) {

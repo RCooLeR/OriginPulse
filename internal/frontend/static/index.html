@@ -485,6 +485,35 @@
                 </div>
                 <div id="sitesPager" class="pager"></div>
               </div>
+              <div class="site-list-controls" aria-label="Site queue filters">
+                <label class="control-wrap site-search">
+                  <span>Find</span>
+                  <input id="siteSearchInput" type="search" placeholder="Name, id, env">
+                </label>
+                <label class="control-wrap">
+                  <span>Status</span>
+                  <select id="siteStatusFilter">
+                    <option value="all">All states</option>
+                    <option value="degraded">Degraded</option>
+                    <option value="elevated">Elevated</option>
+                    <option value="watch">Watch</option>
+                    <option value="stale">Stale</option>
+                    <option value="healthy">Healthy</option>
+                  </select>
+                </label>
+                <label class="control-wrap">
+                  <span>Sort</span>
+                  <select id="siteSortSelect">
+                    <option value="risk">Risk first</option>
+                    <option value="traffic">Traffic</option>
+                    <option value="5xx">5xx</option>
+                    <option value="signals">Signals</option>
+                    <option value="freshness">Freshness</option>
+                    <option value="name">Name</option>
+                  </select>
+                </label>
+              </div>
+              <div id="siteQueueSummary" class="site-queue-summary"></div>
               <div class="table-wrap">
                 <table class="site-list-table">
                   <thead>
