@@ -2210,8 +2210,7 @@ function signalQueueRow(section) {
         </div>
         <div class="signal-actions">
           <button class="ghost mini inline-action" type="button" data-signal-filter-target="${escapeHTML(section.filter)}">Open group</button>
-          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: top.key, origin: "signals_queue" })}'>Open top signal</button>
-          ${top.sourceKind === "job" ? `<button class="ghost mini inline-action" type="button" data-route-target="system">System</button>` : `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(signalLogPivot(top, "signals_queue"))}'>Open logs</button>`}
+          ${signalActionButtons(top, "signals_queue", "mini")}
         </div>
       ` : `
         <div class="empty compact-empty">No active signals in this lane.</div>
