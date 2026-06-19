@@ -3401,6 +3401,7 @@ function signalDetailBody(signal, signals = buildSignalItems()) {
   const details = signal.details ? JSON.stringify(signal.details, null, 2) : "";
   return `
     <div class="field-grid signal-facts">${signalFacts(signal).map(statTile).join("")}</div>
+    ${signalInvestigationPath(signal, { evidence, paths, sites })}
     ${signalTriagePath(signal, { evidence, paths, sites })}
     ${signalEvidenceMatrix(signal, { evidence, paths })}
     <section class="signal-detail-grid">
@@ -3419,6 +3420,93 @@ function signalDetailBody(signal, signals = buildSignalItems()) {
       ${entitySection("Affected paths", paths.map(signalPathRow).join(""), "No path distribution available.")}
       ${details ? entitySection("Raw signal details", `<pre class="signal-raw">${escapeHTML(details)}</pre>`, "") : ""}
     </section>
+  `;
+}
+
+function signalInvestigationPath(signal, context = {}) {
+  const evidence = context.evidence || [];
+  const paths = context.paths || [];
+  const sites = context.sites || [];
+  const siteID = signal.siteID || state.viewContext.site_id || state.siteID || evidence[0]?.site_id || "";
+  const source = signal.ip ? sourceIPContextForIP(signal.ip) : {};
+  const primaryIP = signal.ip || evidence[0]?.ip || "";
+  const primaryPath = signal.path || paths[0]?.path || evidence[0]?.path || "";
+  const errors = evidence.reduce((sum, item) => sum + Number(item.errors || 0) + Number(item.status_4xx || 0) + Number(item.status_5xx || 0), 0) || Number(signal.errors || 0);
+  const actor = source.known_actor || actorLabelFromType(source.actor_type) || signal.actor || evidence[0]?.known_actor || "";
+  const report = reportContextsForLogContext(evidence, paths)[0];
+  const steps = [
+    {
+      label: "Signal",
+      value: formatCategory(signal.sourceKind || signal.group || "signal"),
+      meta: `${formatCategory(signal.severity || "low")} / risk ${formatNumber(signal.risk || severityRank(signal.severity) * 20 || 0)}`,
+      actions: `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: signal.key, site_id: siteID, origin: "signal_path" })}'>Current signal</button>`,
+    },
+    {
+      label: "Source",
+      value: primaryIP || actor || "Unknown source",
+      meta: [
+        actor && actor !== primaryIP ? actor : "",
+        source.asn ? formatASN(source.asn) : "",
+        source.asn_org || source.network || "",
+      ].filter(Boolean).join(" / "),
+      actions: [
+        primaryIP ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: primaryIP, site_id: siteID, origin: "signal_path" })}'>Open IP</button>` : "",
+        source.asn ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "asn", value: formatASN(source.asn), site_id: siteID, origin: "signal_path" })}'>Open ASN</button>` : "",
+        actor ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: actor, actor_type: source.actor_type || "", site_id: siteID, origin: "signal_path" })}'>Open actor</button>` : "",
+      ].filter(Boolean).join(""),
+    },
+    {
+      label: "Target",
+      value: primaryPath || siteID || "Current scope",
+      meta: [
+        sites.length ? `${formatNumber(sites.length)} affected sites` : siteID ? siteLabel(siteID) || siteID : "",
+        paths.length ? `${formatNumber(paths.length)} affected paths` : "",
+      ].filter(Boolean).join(" / "),
+      actions: [
+        primaryPath ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: primaryPath, site_id: siteID, origin: "signal_path" })}'>Open path</button>` : "",
+        siteID ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: siteID, origin: "signal_path" })}'>Open site</button>` : "",
+      ].filter(Boolean).join(""),
+    },
+    {
+      label: "Raw evidence",
+      value: `${formatNumber(evidence.length)} rows`,
+      meta: [
+        `${formatNumber(signal.requests || 0)} signal requests`,
+        errors ? `${formatNumber(errors)} errors` : "",
+      ].filter(Boolean).join(" / "),
+      actions: [
+        signal.sourceKind === "job"
+          ? `<button class="ghost mini inline-action" type="button" data-route-target="system">Open system</button>`
+          : `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(signalLogPivot(signal, "signal_path"))}'>Matching logs</button>`,
+        primaryPath ? correlatedLogActions({ path: primaryPath, siteID, ip: primaryIP, statusClass: errors ? "errors" : "", origin: "signal_path" }) : "",
+      ].filter(Boolean).join(""),
+    },
+    {
+      label: "Report period",
+      value: report ? reportListLabel(report) : formatCategory(state.reportTab || "daily"),
+      meta: report ? reportWindowLabel(report) : activeFilterLabel(),
+      actions: report
+        ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: report.site_id || siteID, origin: "signal_path" }))}'>Open report</button>`
+        : `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(signalReportContextPivot(signal, "signal_path"))}'>Report context</button>`,
+    },
+  ];
+  return `
+    <section class="signal-path-board" aria-label="Signal investigation path">
+      ${steps.map(signalInvestigationPathStep).join("")}
+    </section>
+  `;
+}
+
+function signalInvestigationPathStep(step) {
+  return `
+    <div class="signal-path-step">
+      <div>
+        <span>${escapeHTML(step.label || "-")}</span>
+        <strong>${escapeHTML(step.value || "-")}</strong>
+        <small>${escapeHTML(step.meta || "")}</small>
+      </div>
+      <div class="signal-actions">${step.actions || ""}</div>
+    </div>
   `;
 }
 

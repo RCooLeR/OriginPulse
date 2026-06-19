@@ -1474,6 +1474,60 @@ h2 {
   padding: 0 10px 10px;
 }
 
+.signal-path-board {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0;
+  margin: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.signal-path-step {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 10px;
+  border-right: 1px solid var(--line);
+  background: #fbfcfd;
+}
+
+.signal-path-step:last-child {
+  border-right: 0;
+}
+
+.signal-path-step span,
+.signal-path-step strong,
+.signal-path-step small {
+  min-width: 0;
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.signal-path-step span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.signal-path-step strong {
+  font-size: 0.88rem;
+}
+
+.signal-path-step small {
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.signal-path-step .signal-actions {
+  margin-top: 0;
+}
+
 .signal-narrative {
   display: grid;
   gap: 10px;
@@ -2819,6 +2873,14 @@ td code,
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .signal-path-board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .signal-path-step:nth-child(2n) {
+    border-right: 0;
+  }
+
   .entity-next-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2997,6 +3059,19 @@ td code,
   .entity-facts,
   .signal-facts {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .signal-path-board {
+    grid-template-columns: 1fr;
+  }
+
+  .signal-path-step {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .signal-path-step:last-child {
+    border-bottom: 0;
   }
 
   .span-2 {
