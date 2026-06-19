@@ -5587,6 +5587,7 @@ function renderSiteTab(site) {
       <section class="site-tab-grid">
         ${siteSubsection("Error and latency trend", siteTrendPanel(site, "reliability"), "No timestamped reliability evidence in this scope.", "span-2")}
         ${siteSubsection("Reliability timeline", entityTimeline(reliabilityTimeline), "No timestamped reliability events in this scope.", "span-2")}
+        ${siteSubsection("Cross-log reliability matrix", siteReliabilityMatrix(site, { slowPaths, failingPaths, recentErrors }), "No failing paths, slow paths, or recent errors for this site.", "span-2")}
         ${siteSubsection("Top failing paths", siteRowsMarkup(failingPaths.slice(0, 12), sitePathRow, "No 5xx path concentration for this site."))}
         ${siteSubsection("Top slow paths", siteRowsMarkup(slowPaths.slice(0, 12), siteReliabilityRow, "No slow paths for this site."))}
         ${siteSubsection("Recent errors", siteRowsMarkup(recentErrors.slice(0, 16).map((item) => ({ ...item, kind: "Recent error" })), siteReliabilityRow, "No recent errors for this site."), "", "span-2")}
@@ -5823,6 +5824,141 @@ function siteTrendActions(site, mode) {
     add("Reports", { kind: "report", report_tab: state.reportTab || "daily", site_id: siteID, origin: "site_overview_trend" });
   }
   return actions.join("");
+}
+
+function siteReliabilityMatrix(site, { slowPaths = [], failingPaths = [], recentErrors = [] } = {}) {
+  const siteID = site.id || "";
+  const rows = siteReliabilityMatrixRows(siteID, { slowPaths, failingPaths, recentErrors }).slice(0, 12);
+  const laneStats = siteReliabilityLaneStats(siteID);
+  if (!rows.length) return "";
+  return `
+    <div class="table-wrap site-reliability-matrix-wrap">
+      <table class="site-reliability-matrix">
+        <thead>
+          <tr>
+            <th>Evidence</th>
+            <th>Impact</th>
+            <th>Error lanes</th>
+            <th>Latest</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((row) => siteReliabilityMatrixRow(siteID, row, laneStats)).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function siteReliabilityMatrixRows(siteID, { slowPaths = [], failingPaths = [], recentErrors = [] } = {}) {
+  const rows = new Map();
+  const add = (kind, item = {}) => {
+    const path = item.path || "/";
+    const key = path || item.client_ip || item.ip || kind;
+    const existing = rows.get(key) || {
+      key,
+      siteID: item.site_id || siteID,
+      path,
+      ips: new Set(),
+      methods: new Set(),
+      envs: new Set(),
+      kinds: new Set(),
+      statuses: new Set(),
+      requests: 0,
+      errors: 0,
+      status5xx: 0,
+      p95: 0,
+      latest: "",
+    };
+    const ip = item.client_ip || item.ip || "";
+    if (ip) existing.ips.add(ip);
+    if (item.method) existing.methods.add(item.method);
+    if (item.env) existing.envs.add(item.env);
+    if (item.status) existing.statuses.add(item.status);
+    existing.kinds.add(kind);
+    existing.siteID = existing.siteID || item.site_id || siteID;
+    existing.requests = Math.max(existing.requests, Number(item.requests || 1));
+    const errorCount = Number(item.status_4xx || 0) + Number(item.status_5xx || 0) + (Number(item.status || 0) >= 400 ? 1 : 0);
+    existing.errors = Math.max(existing.errors, errorCount);
+    existing.status5xx = Math.max(existing.status5xx, Number(item.status_5xx || 0) + (Number(item.status || 0) >= 500 ? 1 : 0));
+    existing.p95 = Math.max(existing.p95, Number(item.p95_request_time_ms || 0));
+    existing.latest = latestISO(existing.latest, item.last_seen || item.ts || item.timestamp || item.max_ts || item.bucket_start || "");
+    rows.set(key, existing);
+  };
+  failingPaths.forEach((item) => add("5xx path", item));
+  slowPaths.forEach((item) => add("Slow path", item));
+  recentErrors.forEach((item) => add("Recent error", item));
+  return Array.from(rows.values())
+    .map((row) => ({
+      ...row,
+      ip: Array.from(row.ips)[0] || "",
+      ipCount: row.ips.size,
+      methodList: Array.from(row.methods),
+      envList: Array.from(row.envs),
+      kindList: Array.from(row.kinds),
+      statusList: Array.from(row.statuses),
+    }))
+    .sort((a, b) => Number(b.status5xx || 0) - Number(a.status5xx || 0)
+      || Number(b.errors || 0) - Number(a.errors || 0)
+      || Number(b.p95 || 0) - Number(a.p95 || 0)
+      || Number(b.requests || 0) - Number(a.requests || 0)
+      || new Date(b.latest || 0) - new Date(a.latest || 0));
+}
+
+function latestISO(current, next) {
+  if (!next) return current || "";
+  const nextDate = new Date(next);
+  if (Number.isNaN(nextDate.getTime())) return current || "";
+  if (!current) return nextDate.toISOString();
+  const currentDate = new Date(current);
+  if (Number.isNaN(currentDate.getTime()) || nextDate > currentDate) return nextDate.toISOString();
+  return current;
+}
+
+function siteReliabilityMatrixRow(siteID, row, laneStats = {}) {
+  const actions = [
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: siteID, origin: "site_reliability_matrix" })}'>Site</button>`,
+    row.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: row.path, site_id: siteID, origin: "site_reliability_matrix" })}'>Path</button>` : "",
+    row.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: row.ip, site_id: siteID, origin: "site_reliability_matrix" })}'>IP</button>` : "",
+    correlatedLogActions({ path: row.path, siteID, ip: row.ip, statusClass: row.errors ? "errors" : "", origin: "site_reliability_matrix" }),
+  ].filter(Boolean).join("");
+  const meta = [
+    row.kindList.join(", "),
+    row.envList.join(", "),
+    row.methodList.join(", "),
+    row.ipCount ? `${formatNumber(row.ipCount)} source IP${row.ipCount === 1 ? "" : "s"}` : "",
+    row.statusList.length ? `status ${row.statusList.join(", ")}` : "",
+  ].filter(Boolean).join(" - ");
+  const lanes = correlatedLogTypeDefs(false)
+    .map(([logType, label]) => {
+      const stats = laneStats[logType] || {};
+      const suffix = stats.count ? `${formatNumber(stats.count)} seg / ${formatNumber(stats.lines || 0)} lines` : "open lane";
+      return `<span><b>${escapeHTML(label)}</b>${escapeHTML(suffix)}</span>`;
+    }).join("");
+  return `
+    <tr>
+      <td class="clip"><strong>${escapeHTML(row.path || row.ip || "-")}</strong><br><span>${escapeHTML(meta || "Reliability evidence")}</span></td>
+      <td>${formatNumber(row.requests || 0)}<br><span>${escapeHTML([row.errors ? `${formatNumber(row.errors)} errors` : "", row.status5xx ? `${formatNumber(row.status5xx)} 5xx` : "", row.p95 ? `p95 ${formatMs(row.p95)}` : ""].filter(Boolean).join(" / ") || "no impact count")}</span></td>
+      <td><div class="site-reliability-lanes">${lanes}</div></td>
+      <td>${formatTime(row.latest)}</td>
+      <td class="row-actions">${actions}</td>
+    </tr>
+  `;
+}
+
+function siteReliabilityLaneStats(siteID) {
+  const stats = {};
+  (state.data.segments || []).forEach((segment) => {
+    if (siteID && segment.site_id && segment.site_id !== siteID) return;
+    const logType = segment.log_type || "unknown";
+    const existing = stats[logType] || { count: 0, lines: 0, latest: "" };
+    existing.count += 1;
+    existing.lines += Number(segment.line_count || 0);
+    existing.latest = latestISO(existing.latest, segment.max_ts || segment.bucket_end || segment.bucket_start || segment.indexed_at || "");
+    stats[logType] = existing;
+  });
+  return stats;
 }
 
 function siteActorMixRows(siteID) {

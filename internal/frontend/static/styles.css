@@ -1767,6 +1767,41 @@ h2 {
   flex-wrap: wrap;
 }
 
+.site-reliability-matrix-wrap {
+  max-height: 380px;
+}
+
+.site-reliability-matrix {
+  min-width: 1080px;
+}
+
+.site-reliability-matrix td {
+  vertical-align: top;
+}
+
+.site-reliability-matrix td span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.site-reliability-lanes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.site-reliability-lanes span {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.site-reliability-lanes b {
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
