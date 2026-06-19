@@ -1284,6 +1284,32 @@ h2 {
   line-height: 1.45;
 }
 
+.signal-evidence-panel {
+  min-width: 0;
+  margin: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.signal-evidence-wrap {
+  max-height: 390px;
+}
+
+.signal-evidence-table {
+  min-width: 1080px;
+}
+
+.signal-evidence-table td {
+  vertical-align: top;
+}
+
+.signal-evidence-table td span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
 .correlated-log-panel {
   display: grid;
   gap: 10px;
