@@ -5151,11 +5151,13 @@ function entityBody(entity) {
   const sites = entitySites(entity, detail).slice(0, 10);
   const agents = entityUserAgents(entity, detail).slice(0, 10);
   const sourceIPs = entitySourceIPs(entity).slice(0, 16);
-  const timeline = entityTimelineRows(entity, { detail, signals, evidence, paths, sites, agents, sourceIPs }).slice(0, 18);
+  const reports = entityRelatedReports(entity, { detail, signals, evidence, paths, sites, agents, sourceIPs }).slice(0, 8);
+  const timeline = entityTimelineRows(entity, { detail, signals, evidence, paths, sites, agents, sourceIPs, reports }).slice(0, 18);
   return `
     <div class="field-grid entity-facts">${facts.map(statTile).join("")}</div>
     ${entityInvestigationPath(entity, { detail, signals, evidence, paths, sites, agents, sourceIPs })}
     ${entityNextSteps(entity, { detail, signals, evidence, paths, sites, agents, sourceIPs })}
+    ${entityRelatedReportsPanel(entity, reports)}
     ${entityIdentityPanel(entity, { detail, signals, evidence, paths, sites, agents, sourceIPs })}
     ${entityImpactMatrix(entity, { evidence, paths, sites, agents })}
     <section class="entity-detail-grid">
@@ -6063,6 +6065,182 @@ function entitySourceIPs(entity) {
   return [];
 }
 
+function entityRelatedReports(entity, context = {}) {
+  const siteIDs = new Set([
+    state.viewContext.site_id || state.siteID || "",
+    ...(context.sites || []).map((item) => item.site_id),
+    ...(context.evidence || []).map((item) => item.site_id),
+    ...(context.paths || []).map((item) => item.site_id),
+    ...(context.sourceIPs || []).map((item) => item.site_id),
+  ].filter(Boolean));
+  const pathHints = new Set((context.paths || []).map((item) => item.path).filter(Boolean));
+  const ipHints = new Set([
+    ...(context.evidence || []).map((item) => item.ip || item.client_ip),
+    ...(context.sourceIPs || []).map((item) => item.ip),
+  ].filter(Boolean));
+  if (entity.kind === "ip") ipHints.add(entity.value);
+  if (entity.kind === "path") pathHints.add(entity.value);
+  return (state.data.reports || [])
+    .map((report) => entityReportMatch(entity, report, { siteIDs, pathHints, ipHints }))
+    .filter((match) => match.score > 0)
+    .sort((a, b) => Number(b.score || 0) - Number(a.score || 0)
+      || new Date(b.report.created_at || b.report.generated_at || b.report.range_end || 0) - new Date(a.report.created_at || a.report.generated_at || a.report.range_end || 0));
+}
+
+function entityReportMatch(entity, report, context = {}) {
+  const summary = report.summary || {};
+  const siteID = report.site_id || summary.top_site || "";
+  let score = 0;
+  let requests = 0;
+  let errors = 0;
+  let latest = report.created_at || report.generated_at || report.range_end || "";
+  let entityMatched = false;
+  const kinds = new Set();
+  const matched = [];
+  if (siteID && context.siteIDs?.has(siteID)) {
+    score += 8;
+    kinds.add("site scope");
+  }
+  if (entityReportSummaryMatches(entity, summary)) {
+    score += 70;
+    entityMatched = true;
+    kinds.add("summary");
+  }
+  if (entity.kind === "path" && summary.top_path && Array.from(context.pathHints || []).some((path) => pathMatches(summary.top_path, path))) {
+    score += 25;
+    entityMatched = true;
+    kinds.add("path context");
+  }
+  if (entity.kind === "ip" && summary.top_source_ip && context.ipHints?.has(summary.top_source_ip)) {
+    score += 25;
+    entityMatched = true;
+    kinds.add("source context");
+  }
+  (report.drilldowns || []).forEach((drilldown) => {
+    (drilldown.items || []).forEach((item) => {
+      if (!entityReportItemMatches(entity, item)) return;
+      const itemErrors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0) + (Number(item.status || 0) >= 400 ? 1 : 0);
+      const itemRequests = Number(item.requests || item.events || 0) || (item.status ? 1 : 0);
+      score += 90 + Math.min(50, itemErrors * 5) + Math.min(35, Number(item.risk_score || item.score || 0) / 2);
+      entityMatched = true;
+      requests += itemRequests;
+      errors += itemErrors;
+      latest = latestISO(latest, item.last_seen || item.last_seen_at || item.ts || item.timestamp || "");
+      kinds.add(drilldown.title || formatCategory(drilldown.key || "drilldown"));
+      matched.push({ key: drilldown.key || "", title: drilldown.title || "", item });
+    });
+  });
+  if (!requests) requests = Number(summary.requests || 0);
+  if (!errors) {
+    errors = Math.round(Number(summary.requests || 0) * (Number(summary.status_4xx_rate || 0) + Number(summary.status_5xx_rate || 0)));
+  }
+  if (!entityMatched) score = 0;
+  return {
+    report,
+    score,
+    requests,
+    errors,
+    latest,
+    matched,
+    kinds: Array.from(kinds),
+  };
+}
+
+function entityReportSummaryMatches(entity, summary = {}) {
+  if (entity.kind === "ip") return summary.top_source_ip === entity.value;
+  if (entity.kind === "path") return Boolean(summary.top_path && pathMatches(summary.top_path, entity.value));
+  if (entity.kind === "user-agent") return userAgentMatches(summary.top_user_agent || "", entity.value);
+  return false;
+}
+
+function entityReportItemMatches(entity, item = {}) {
+  if (entity.kind === "ip") return item.ip === entity.value || item.client_ip === entity.value;
+  if (entity.kind === "asn") return Boolean(item.asn && normalizeASN(item.asn) === normalizeASN(entity.value));
+  if (entity.kind === "path") return Boolean(item.path && pathMatches(item.path, entity.value));
+  if (entity.kind === "actor") {
+    const actor = item.known_actor || item.actor_value || actorLabelFromType(item.actor_type);
+    return actor === entity.value;
+  }
+  if (entity.kind === "user-agent") return userAgentMatches(item.user_agent || item.sample || item.label || "", entity.value);
+  return false;
+}
+
+function entityRelatedReportsPanel(entity, reports = []) {
+  const siteID = state.viewContext.site_id || state.siteID || reports[0]?.report.site_id || "";
+  if (!reports.length) {
+    return `
+      <section class="entity-report-panel" aria-label="Related report periods">
+        <div class="entity-next-title">
+          <span>Related reports</span>
+          <strong>No matched report periods</strong>
+        </div>
+        <div class="entity-report-empty">
+          <span>No generated report currently names this ${escapeHTML(formatCategory(entity.kind))} in its summary or drilldowns.</span>
+          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "report", report_tab: state.reportTab || "daily", site_id: siteID, origin: "entity_reports" })}'>Open reports</button>
+        </div>
+      </section>
+    `;
+  }
+  return `
+    <section class="entity-report-panel" aria-label="Related report periods">
+      <div class="entity-next-title">
+        <span>Related reports</span>
+        <strong>${formatNumber(reports.length)} matched periods</strong>
+      </div>
+      <div class="entity-report-list">
+        ${reports.map((match) => entityRelatedReportRow(entity, match)).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function entityRelatedReportRow(entity, match) {
+  const report = match.report || {};
+  const siteID = report.site_id || state.viewContext.site_id || state.siteID || "";
+  const errors = Number(match.errors || 0);
+  const actions = [
+    reportActionButton("Open report", reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: siteID, origin: "entity_reports" })),
+    reportActionButton("Period logs", entityReportLogPivot(report, entity, siteID, false, "nginx-access")),
+    errors ? reportActionButton("Errors", entityReportLogPivot(report, entity, siteID, true, "nginx-access")) : "",
+    reportActionButton("Error lanes", entityReportLogPivot(report, entity, siteID, true, "nginx-error")),
+    siteID ? reportActionButton("Site", reportPivot(report, { kind: "site", value: siteID, site_id: siteID, origin: "entity_reports" })) : "",
+  ].filter(Boolean).join("");
+  return `
+    <div class="signal-row entity-report-row">
+      <div>
+        <strong>${escapeHTML(reportListLabel(report))}</strong>
+        <span>${escapeHTML([reportWindowLabel(report), match.kinds.slice(0, 3).join(" / "), report.model || ""].filter(Boolean).join(" - "))}</span>
+        <div class="signal-actions">${actions}</div>
+      </div>
+      <div class="signal-numbers">
+        <span>${errors ? `${formatNumber(errors)} errors` : "requests"}</span>
+        <b>${formatNumber(match.requests || report.summary?.requests || 0)}</b>
+      </div>
+    </div>
+  `;
+}
+
+function entityReportLogPivot(report, entity, siteID = "", errorsOnly = false, logType = "nginx-access") {
+  const context = entityReportLogContext(entity);
+  return reportPivot(report, {
+    kind: "log_filter",
+    ...context,
+    site_id: siteID || context.site_id || report.site_id || "",
+    status_class: errorsOnly ? "errors" : "",
+    log_type: logType,
+    origin: "entity_reports",
+  });
+}
+
+function entityReportLogContext(entity) {
+  if (entity.kind === "ip") return { ip: entity.value };
+  if (entity.kind === "asn") return { asn: formatASN(entity.value) || entity.value };
+  if (entity.kind === "path") return { path: entity.value };
+  if (entity.kind === "actor") return { known_actor: entity.value, actor_type: state.viewContext.actor_type || "" };
+  if (entity.kind === "user-agent") return { user_agent: entity.value };
+  return {};
+}
+
 function entityCorrelationPack(entity, evidence = entityEvidence(entity), paths = entityPaths(entity)) {
   const context = {
     ...activeEntityContext(),
@@ -6163,6 +6341,26 @@ function entityTimelineRows(entity, context = {}) {
         statusClass: errors ? "errors" : "",
         origin: "entity_timeline",
       }),
+    });
+  });
+
+  (context.reports || entityRelatedReports(entity, context)).forEach((match) => {
+    const report = match.report || {};
+    addEvent({
+      kind: "Report",
+      time: match.latest || report.created_at || report.generated_at || report.range_end,
+      title: reportListLabel(report),
+      meta: [
+        reportWindowLabel(report),
+        match.kinds?.slice(0, 3).join(" / "),
+        report.model || "",
+      ].filter(Boolean).join(" / "),
+      valueLabel: match.errors ? "errors" : "requests",
+      value: match.errors ? formatNumber(match.errors) : formatNumber(match.requests || report.summary?.requests || 0),
+      actions: [
+        reportActionButton("Open report", reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: report.site_id || state.viewContext.site_id || state.siteID || "", origin: "entity_timeline" })),
+        reportActionButton("Period logs", entityReportLogPivot(report, entity, report.site_id || state.viewContext.site_id || state.siteID || "", false, "nginx-access")),
+      ].join(""),
     });
   });
 
