@@ -2268,9 +2268,11 @@ function entityBody(entity) {
   const paths = entityPaths(entity, detail).slice(0, 10);
   const sites = entitySites(entity, detail).slice(0, 10);
   const agents = entityUserAgents(entity, detail).slice(0, 10);
+  const timeline = entityTimelineRows(entity, { detail, signals, evidence, paths, sites, agents }).slice(0, 18);
   return `
     <div class="field-grid entity-facts">${facts.map(statTile).join("")}</div>
     <section class="entity-detail-grid">
+      ${entitySection("Investigation timeline", entityTimeline(timeline), "No timeline events in this scope.", "entity-section-wide")}
       ${entitySection("Related signals", signals.map(signalRow).join(""), "No related signals in this scope.")}
       ${entitySection("Recent evidence", evidence.map(logEvidenceRow).join(""), "No recent evidence in this scope.")}
       ${entity.kind === "path" ? entitySection("Correlated logs", correlatedLogPanel({
@@ -2407,10 +2409,168 @@ function entityUserAgents(entity, detail = {}) {
   return Array.from(agents.values()).sort((a, b) => b.requests - a.requests);
 }
 
-function entitySection(title, html, emptyMessage) {
-  if (!html && !emptyMessage) return "";
+function entityTimelineRows(entity, context = {}) {
+  const detail = context.detail || {};
+  const events = [];
+  const seen = new Set();
+  const addEvent = (event) => {
+    const time = event.time || "";
+    if (!time) return;
+    const parsed = new Date(time);
+    if (Number.isNaN(parsed.getTime())) return;
+    const key = [event.kind, parsed.toISOString(), event.title, event.meta].join("|");
+    if (seen.has(key)) return;
+    seen.add(key);
+    events.push({ ...event, time: parsed.toISOString() });
+  };
+
+  (context.signals || entitySignals(entity)).forEach((signal) => {
+    addEvent({
+      kind: "Signal",
+      time: signal.lastSeen,
+      title: signal.title || "Signal",
+      meta: [
+        formatCategory(signal.group || "signal"),
+        signal.siteID || "",
+        signal.ip ? `IP ${signal.ip}` : "",
+        signal.path || "",
+        signal.requests ? `${formatNumber(signal.requests)} requests` : "",
+        signal.errors ? `${formatNumber(signal.errors)} errors` : "",
+      ].filter(Boolean).join(" / "),
+      valueLabel: "risk",
+      value: signal.risk || severityRank(signal.severity) * 20 || 0,
+      actions: signalActionButtons(signal, "entity_timeline", "mini"),
+    });
+  });
+
+  (context.evidence || entityEvidence(entity)).forEach((item) => {
+    const errors = Number(item.errors || 0) + Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+    addEvent({
+      kind: item.kind || "Evidence",
+      time: item.ts || item.last_seen,
+      title: [item.method, item.path || "/"].filter(Boolean).join(" "),
+      meta: [
+        item.site_id ? `${item.site_id}${item.env ? `/${item.env}` : ""}` : "",
+        item.ip ? `IP ${item.ip}` : "",
+        item.status ? `status ${item.status}` : "",
+        errors ? `${formatNumber(errors)} errors` : "",
+        item.query ? `?${item.query}` : "",
+      ].filter(Boolean).join(" / "),
+      valueLabel: item.status ? "status" : "requests",
+      value: item.status || formatNumber(item.requests || 1),
+      actions: entityEvidenceTimelineActions(item),
+    });
+  });
+
+  (detail.recent_requests || []).forEach((request) => {
+    addEvent({
+      kind: "Request",
+      time: request.ts,
+      title: formatURLTarget(request),
+      meta: [
+        request.site_id ? `${request.site_id}${request.env ? `/${request.env}` : ""}` : "",
+        request.user_agent || "",
+        request.referer ? `ref ${request.referer}` : "",
+      ].filter(Boolean).join(" / "),
+      valueLabel: "status",
+      value: request.status || "-",
+      actions: entityRequestTimelineActions(request, entity),
+    });
+  });
+
+  (detail.url_hits || []).forEach((hit) => {
+    const errors = Number(hit.status_4xx || 0) + Number(hit.status_5xx || 0);
+    addEvent({
+      kind: "URL hit",
+      time: hit.last_seen || hit.first_seen,
+      title: formatURLTarget(hit),
+      meta: [
+        hit.site_id ? `${hit.site_id}${hit.env ? `/${hit.env}` : ""}` : "",
+        formatStatusBuckets(hit),
+        hit.p95_request_time_ms ? `p95 ${formatMs(hit.p95_request_time_ms)}` : "",
+        errors ? `${formatNumber(errors)} errors` : "",
+      ].filter(Boolean).join(" / "),
+      valueLabel: "requests",
+      value: formatNumber(hit.requests || 0),
+      actions: correlatedLogActions({
+        path: hit.path || "/",
+        siteID: hit.site_id || state.siteID || state.viewContext.site_id || "",
+        ip: entity.kind === "ip" ? entity.value : "",
+        statusClass: errors ? "errors" : "",
+        origin: "entity_timeline",
+      }),
+    });
+  });
+
+  (context.sites || entitySites(entity, detail)).forEach((site) => {
+    const errors = Number(site.status_4xx || 0) + Number(site.status_5xx || 0);
+    addEvent({
+      kind: "Site",
+      time: site.last_seen,
+      title: `${site.site_id || "unknown"}${site.env ? ` / ${site.env}` : ""}`,
+      meta: [
+        `${formatNumber(site.requests || 0)} requests`,
+        errors ? `${formatNumber(errors)} errors` : "",
+      ].filter(Boolean).join(" / "),
+      valueLabel: "errors",
+      value: formatNumber(errors),
+      actions: [
+        site.site_id ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: site.site_id, origin: "entity_timeline" })}'>Open site</button>` : "",
+        site.site_id ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ ...entityLogPivot(entity, site.site_id), origin: "entity_timeline" })}'>Open logs</button>` : "",
+      ].filter(Boolean).join(""),
+    });
+  });
+
+  return events.sort((a, b) => new Date(b.time) - new Date(a.time));
+}
+
+function entityTimeline(events) {
+  if (!events.length) return "";
+  return `<div class="entity-timeline">${events.map(entityTimelineRow).join("")}</div>`;
+}
+
+function entityTimelineRow(event) {
   return `
-    <article class="entity-section">
+    <div class="entity-timeline-row">
+      <time>${formatTime(event.time)}</time>
+      <div>
+        <span>${escapeHTML(event.kind || "Event")}</span>
+        <strong>${escapeHTML(event.title || "Timeline event")}</strong>
+        <small>${escapeHTML(event.meta || "")}</small>
+        <div class="signal-actions">${event.actions || ""}</div>
+      </div>
+      <div class="signal-numbers">
+        <span>${escapeHTML(event.valueLabel || "")}</span>
+        <b>${escapeHTML(event.value ?? "")}</b>
+      </div>
+    </div>
+  `;
+}
+
+function entityEvidenceTimelineActions(item) {
+  const siteID = item.site_id || state.siteID || state.viewContext.site_id || "";
+  const statusClass = Number(item.errors || 0) || Number(item.status || 0) >= 400 ? "errors" : "";
+  return [
+    item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: siteID, origin: "entity_timeline" })}'>Open IP</button>` : "",
+    item.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: item.path, site_id: siteID, origin: "entity_timeline" })}'>Open path</button>` : "",
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: item.path || "", ip: item.ip || "", site_id: siteID, status_class: statusClass, origin: "entity_timeline" })}'>Open logs</button>`,
+  ].filter(Boolean).join("");
+}
+
+function entityRequestTimelineActions(request, entity) {
+  const siteID = request.site_id || state.siteID || state.viewContext.site_id || "";
+  const statusClass = Number(request.status || 0) >= 400 ? "errors" : "";
+  return [
+    request.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: request.path, site_id: siteID, origin: "entity_timeline" })}'>Open path</button>` : "",
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", path: request.path || "", ip: entity.kind === "ip" ? entity.value : "", site_id: siteID, status_class: statusClass, origin: "entity_timeline" })}'>Open logs</button>`,
+  ].filter(Boolean).join("");
+}
+
+function entitySection(title, html, emptyMessage, className = "") {
+  if (!html && !emptyMessage) return "";
+  const classes = ["entity-section", className].filter(Boolean).join(" ");
+  return `
+    <article class="${escapeHTML(classes)}">
       <div class="panel-head"><h2>${escapeHTML(title)}</h2></div>
       <div class="signal-list">${html || `<div class="empty">${escapeHTML(emptyMessage)}</div>`}</div>
     </article>
