@@ -2889,6 +2889,7 @@ function entityBody(entity) {
   const timeline = entityTimelineRows(entity, { detail, signals, evidence, paths, sites, agents, sourceIPs }).slice(0, 18);
   return `
     <div class="field-grid entity-facts">${facts.map(statTile).join("")}</div>
+    ${entityNextSteps(entity, { detail, signals, evidence, paths, sites, agents, sourceIPs })}
     <section class="entity-detail-grid">
       ${entitySection("Investigation timeline", entityTimeline(timeline), "No timeline events in this scope.", "entity-section-wide")}
       ${entitySection("Related signals", signals.map(signalRow).join(""), "No related signals in this scope.")}
@@ -2902,6 +2903,205 @@ function entityBody(entity) {
       ${entity.lookup_errors?.length || detail.lookup_errors?.length ? entitySection("Lookup notes", `<div class="empty">${escapeHTML((entity.lookup_errors || detail.lookup_errors || []).join("\\n"))}</div>`, "") : ""}
     </section>
   `;
+}
+
+function entityNextSteps(entity, context = {}) {
+  const evidence = context.evidence || [];
+  const signals = context.signals || [];
+  const paths = context.paths || [];
+  const sites = context.sites || [];
+  const agents = context.agents || [];
+  const sourceIPs = context.sourceIPs || [];
+  const siteID = state.viewContext.site_id || state.siteID || "";
+  const errors = evidence.reduce((sum, item) => sum + Number(item.errors || 0), 0);
+  const logPivot = {
+    ...entityLogPivot(entity, siteID),
+    status_class: errors ? "errors" : state.viewContext.status_class || "",
+    origin: "entity_next",
+  };
+  const topSignal = signals[0];
+  const report = reportContextsForLogContext(evidence, paths)[0];
+  const rows = [
+    {
+      title: "Open matching evidence",
+      meta: [
+        `${formatNumber(evidence.length)} evidence rows`,
+        errors ? `${formatNumber(errors)} errors` : "",
+        activeFilterLabel(),
+      ].filter(Boolean).join(" - "),
+      valueLabel: "rows",
+      value: formatNumber(evidence.length),
+      actions: [
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(logPivot)}'>Open logs</button>`,
+        paths[0]?.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: paths[0].path || "/", site_id: paths[0].site_id || siteID, origin: "entity_next" })}'>Top path</button>` : "",
+      ].filter(Boolean).join(""),
+    },
+    topSignal ? {
+      title: "Review highest signal",
+      meta: [
+        formatCategory(topSignal.group || "signal"),
+        topSignal.siteID || "",
+        topSignal.ip ? `IP ${topSignal.ip}` : "",
+        topSignal.path || "",
+      ].filter(Boolean).join(" - "),
+      valueLabel: "risk",
+      value: topSignal.risk || severityRank(topSignal.severity) * 20 || 0,
+      actions: [
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: topSignal.key, site_id: topSignal.siteID || siteID, origin: "entity_next" })}'>Open signal</button>`,
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(signalLogPivot(topSignal, "entity_next"))}'>Signal logs</button>`,
+      ].join(""),
+    } : null,
+    entitySpecificNextStep(entity, { evidence, paths, sites, agents, sourceIPs }),
+    report ? {
+      title: "Review report context",
+      meta: [reportListLabel(report), reportWindowLabel(report)].filter(Boolean).join(" - "),
+      valueLabel: report.model || "report",
+      value: formatNumber(report.summary?.requests || 0),
+      actions: `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: report.site_id || siteID, origin: "entity_next" }))}'>Open report</button>`,
+    } : {
+      title: "Open report workspace",
+      meta: activeFilterLabel(),
+      valueLabel: "period",
+      value: formatCategory(state.reportTab || "daily"),
+      actions: `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "report", report_tab: state.reportTab || "daily", site_id: siteID, origin: "entity_next" })}'>Reports</button>`,
+    },
+  ].filter(Boolean);
+  return `
+    <section class="entity-next-steps" aria-label="Recommended next steps">
+      <div class="entity-next-title">
+        <span>Next steps</span>
+        <strong>${escapeHTML(entityNextStepSummary(entity, signals, errors))}</strong>
+      </div>
+      <div class="entity-next-list">${rows.map(entityNextStepRow).join("")}</div>
+    </section>
+  `;
+}
+
+function entitySpecificNextStep(entity, context = {}) {
+  const evidence = context.evidence || [];
+  const paths = context.paths || [];
+  const sites = context.sites || [];
+  const agents = context.agents || [];
+  const siteID = state.viewContext.site_id || state.siteID || "";
+  if (entity.kind === "ip") {
+    const local = (state.data.analysis?.source_ips || []).find((item) => item.ip === entity.value) || {};
+    const actor = local.known_actor || actorLabelFromType(local.actor_type);
+    const action = formatManualAction(local.manual_action);
+    return {
+      title: "Verify source identity",
+      meta: [
+        actor || "unknown actor",
+        local.asn ? formatASN(local.asn) : "",
+        local.asn_org || local.network || "",
+        action !== "-" ? action : "",
+      ].filter(Boolean).join(" - "),
+      valueLabel: "risk",
+      value: local.risk_score || 0,
+      actions: [
+        local.asn ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "asn", value: formatASN(local.asn), site_id: local.site_id || siteID, origin: "entity_next" })}'>Open ASN</button>` : "",
+        actor ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: actor, actor_type: local.actor_type || "", site_id: local.site_id || siteID, origin: "entity_next" })}'>Open actor</button>` : "",
+        ipManualButtons(entity.value, local, local.site_id || siteID, "mini"),
+      ].filter(Boolean).join(""),
+    };
+  }
+  if (entity.kind === "asn") {
+    const sourceIPs = context.sourceIPs || [];
+    const topSource = sourceIPs[0] || {};
+    const review = sourceIPs.filter(actorSourceNeedsReview).length;
+    return {
+      title: "Audit source IPs",
+      meta: [
+        `${formatNumber(sourceIPs.length)} IPs`,
+        review ? `${formatNumber(review)} need review` : "",
+        topSource.asn_org || topSource.network || "",
+      ].filter(Boolean).join(" - "),
+      valueLabel: "risk",
+      value: topSource.risk_score || 0,
+      actions: [
+        topSource.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: topSource.ip, site_id: topSource.site_id || siteID, origin: "entity_next" })}'>Top IP</button>` : "",
+        topSource.known_actor || topSource.actor_type ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: topSource.known_actor || actorLabelFromType(topSource.actor_type), actor_type: topSource.actor_type || "", site_id: topSource.site_id || siteID, origin: "entity_next" })}'>Open actor</button>` : "",
+      ].filter(Boolean).join(""),
+    };
+  }
+  if (entity.kind === "path") {
+    const ips = new Set(evidence.map((item) => item.ip).filter(Boolean));
+    const topSite = sites[0] || {};
+    return {
+      title: "Compare affected scope",
+      meta: [
+        `${formatNumber(sites.length)} sites`,
+        `${formatNumber(ips.size)} source IPs`,
+        paths[0]?.p95_request_time_ms ? `p95 ${formatMs(paths[0].p95_request_time_ms)}` : "",
+      ].filter(Boolean).join(" - "),
+      valueLabel: "sites",
+      value: formatNumber(sites.length),
+      actions: [
+        topSite.site_id && topSite.site_id !== "unknown" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: topSite.site_id, origin: "entity_next" })}'>Top site</button>` : "",
+        evidence[0]?.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: evidence[0].ip, site_id: evidence[0].site_id || siteID, origin: "entity_next" })}'>Top IP</button>` : "",
+      ].filter(Boolean).join(""),
+    };
+  }
+  if (entity.kind === "actor") {
+    const actor = aggregateActors().find((item) => item.label === entity.value) || {};
+    const sources = actorSourceRows(entity.value, state.viewContext.actor_type || actor.type);
+    const topSource = sources[0] || {};
+    return {
+      title: "Verify service sources",
+      meta: [
+        actorVerificationState(actor),
+        `${formatNumber(actor.reviewIPs || 0)} review`,
+        `${formatNumber(actor.verifiedIPs || 0)} verified`,
+      ].join(" - "),
+      valueLabel: "IPs",
+      value: formatNumber(actor.ips || sources.length || 0),
+      actions: [
+        topSource.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: topSource.ip, site_id: topSource.site_id || siteID, origin: "entity_next" })}'>Top IP</button>` : "",
+        topSource.asn ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "asn", value: formatASN(topSource.asn), site_id: topSource.site_id || siteID, origin: "entity_next" })}'>Open ASN</button>` : "",
+      ].filter(Boolean).join(""),
+    };
+  }
+  if (entity.kind === "user-agent") {
+    return {
+      title: "Inspect user-agent footprint",
+      meta: [
+        `${formatNumber(sites.length)} sites`,
+        `${formatNumber(paths.length)} paths`,
+        agents[0]?.sample ? shortLabel(agents[0].sample, 58) : "",
+      ].filter(Boolean).join(" - "),
+      valueLabel: "paths",
+      value: formatNumber(paths.length),
+      actions: [
+        paths[0]?.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: paths[0].path || "/", site_id: paths[0].site_id || siteID, origin: "entity_next" })}'>Top path</button>` : "",
+        evidence[0]?.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: evidence[0].ip, site_id: evidence[0].site_id || siteID, origin: "entity_next" })}'>Top IP</button>` : "",
+      ].filter(Boolean).join(""),
+    };
+  }
+  return null;
+}
+
+function entityNextStepRow(item) {
+  return `
+    <div class="signal-row entity-next-row">
+      <div>
+        <strong>${escapeHTML(item.title || "-")}</strong>
+        <span>${escapeHTML(item.meta || "")}</span>
+        <div class="signal-actions">${item.actions || ""}</div>
+      </div>
+      <div class="signal-numbers">
+        <span>${escapeHTML(item.valueLabel || "")}</span>
+        <b>${escapeHTML(item.value ?? "")}</b>
+      </div>
+    </div>
+  `;
+}
+
+function entityNextStepSummary(entity, signals, errors) {
+  const parts = [
+    entity.kind === "asn" ? formatASN(entity.value) || entity.value : entity.value,
+    signals.length ? `${formatNumber(signals.length)} signals` : "",
+    errors ? `${formatNumber(errors)} errors` : "",
+  ];
+  return parts.filter(Boolean).join(" / ");
 }
 
 function entityFacts(entity, detail = {}) {
