@@ -1041,8 +1041,13 @@ function renderOverviewActorReview(rows) {
   const container = qs("#overviewActorReviewList");
   if (!container) return;
   const reviewCount = rows.filter(actorSourceNeedsReview).length;
+  const asns = aggregateASNs(state.data.analysis?.source_ips || rows).slice(0, 3);
+  const sourceRows = rows.slice(0, 6);
   setText("#actorReviewCount", reviewCount ? `${formatNumber(reviewCount)} review` : `${formatNumber(rows.length)} sources`);
-  container.innerHTML = rows.slice(0, 8).map(overviewActorReviewRow).join("") || `<div class="empty">No source IPs need verification in this scope.</div>`;
+  container.innerHTML = [
+    asns.length ? `<div class="list-kicker">Top networks</div>${asns.map((item) => asnRow(item, "overview_actor_review")).join("")}` : "",
+    sourceRows.length ? `<div class="list-kicker">Source review</div>${sourceRows.map(overviewActorReviewRow).join("")}` : "",
+  ].filter(Boolean).join("") || `<div class="empty">No source IPs need verification in this scope.</div>`;
 }
 
 function overviewActorReviewRow(item) {
@@ -2669,6 +2674,7 @@ function signalContext(signal) {
 function renderInvestigate() {
   renderEntityPage();
   renderSourceIPs();
+  renderASNs();
   renderUserAgents();
   renderActors();
 }
@@ -3456,6 +3462,54 @@ function sourceIPsForASN(asn) {
     .sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0) || Number(b.requests || 0) - Number(a.requests || 0));
 }
 
+function aggregateASNs(rows = state.data.analysis?.source_ips || []) {
+  const groups = new Map();
+  rows.forEach((item) => {
+    const normalized = normalizeASN(item.asn);
+    if (!normalized) return;
+    const label = formatASN(normalized);
+    const existing = groups.get(normalized) || {
+      asn: normalized,
+      label,
+      org: "",
+      network: "",
+      country: "",
+      requests: 0,
+      errors: 0,
+      risk: 0,
+      ips: new Set(),
+      sites: new Set(),
+      actors: new Set(),
+      verifiedIPs: 0,
+      reviewIPs: 0,
+      lastSeen: "",
+    };
+    existing.requests += Number(item.requests || 0);
+    existing.errors += Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+    existing.risk = Math.max(existing.risk, Number(item.risk_score || 0));
+    if (item.ip) existing.ips.add(item.ip);
+    if (item.site_id) existing.sites.add(item.site_id);
+    const actor = item.known_actor || actorLabelFromType(item.actor_type);
+    if (actor) existing.actors.add(actor);
+    if (!existing.org && item.asn_org) existing.org = item.asn_org;
+    if (!existing.network && item.network) existing.network = item.network;
+    if (!existing.country && item.country_code) existing.country = item.country_code;
+    if (item.verified_source) existing.verifiedIPs += 1;
+    if (actorSourceNeedsReview(item)) existing.reviewIPs += 1;
+    if (!existing.lastSeen || new Date(item.last_seen || 0) > new Date(existing.lastSeen || 0)) existing.lastSeen = item.last_seen || "";
+    groups.set(normalized, existing);
+  });
+  return Array.from(groups.values())
+    .map((item) => ({
+      ...item,
+      ipCount: item.ips.size,
+      siteCount: item.sites.size,
+      actorCount: item.actors.size,
+      actors: Array.from(item.actors),
+    }))
+    .sort((a, b) => Number(b.risk || 0) - Number(a.risk || 0) || Number(b.requests || 0) - Number(a.requests || 0) || a.label.localeCompare(b.label));
+}
+
 function contextActorIPs(context = state.viewContext || {}) {
   const label = String(context.known_actor || "").toLowerCase();
   const type = String(context.actor_type || "").toLowerCase();
@@ -3525,6 +3579,45 @@ function renderSourceIPs() {
     `;
   });
   qs("#sourceIPsTable").innerHTML = rows.join("") || emptyRow(7, "No source IPs found.");
+}
+
+function renderASNs() {
+  const items = aggregateASNs();
+  setText("#asnSummary", `${formatNumber(items.length)} networks`);
+  const container = qs("#asnsList");
+  if (!container) return;
+  container.innerHTML = items.slice(0, 12).map((item) => asnRow(item)).join("") || `<div class="empty">No ASN metadata has been collected yet.</div>`;
+}
+
+function asnRow(item, origin = "investigate") {
+  const siteID = state.viewContext.site_id || state.siteID || (item.siteCount === 1 ? Array.from(item.sites || [])[0] : "");
+  const actor = item.actors?.[0] || "";
+  const review = item.reviewIPs ? `${formatNumber(item.reviewIPs)} review` : item.verifiedIPs ? `${formatNumber(item.verifiedIPs)} verified` : "unverified";
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(item.label || "-")}</strong>
+        <span>${escapeHTML([
+          item.org || item.network || "",
+          item.country || "",
+          `${formatNumber(item.ipCount || 0)} IPs`,
+          `${formatNumber(item.siteCount || 0)} sites`,
+          actor || "",
+          review,
+          `${formatNumber(item.errors || 0)} errors`,
+        ].filter(Boolean).join(" - "))}</span>
+        <div class="signal-actions">
+          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "asn", value: item.label, site_id: siteID, origin })}'>Open ASN</button>
+          <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", asn: item.label, site_id: siteID, status_class: item.errors ? "errors" : "", origin })}'>Open logs</button>
+          ${actor ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: actor, site_id: siteID, origin })}'>Open actor</button>` : ""}
+        </div>
+      </div>
+      <div class="signal-numbers">
+        <span>risk</span>
+        <b>${escapeHTML(item.risk || 0)}</b>
+      </div>
+    </div>
+  `;
 }
 
 function renderUserAgents() {
@@ -3859,12 +3952,14 @@ function renderSiteTab(site) {
   }
   if (state.siteTab === "actors") {
     const sourceIPs = siteTopSourceIPs(id).map((item) => ({ ...item, kind: "Source IP" }));
+    const asns = aggregateASNs(siteScopedRows(state.data.analysis?.source_ips || [], id));
     const userAgents = siteTopUserAgents(id).map((item) => ({ ...item, kind: "User agent" }));
-    const rows = [...sourceIPs, ...userAgents];
+    const rows = [...sourceIPs, ...asns, ...userAgents];
     setText("#siteTabSummary", `${formatNumber(Math.min(30, rows.length))} of ${formatNumber(rows.length)} shown`);
     body.innerHTML = `
       <section class="site-tab-grid">
         ${siteSubsection("Source IPs", siteRowsMarkup(sourceIPs.slice(0, 15), siteActorRow, "No source IP rows for this site."))}
+        ${siteSubsection("ASNs and networks", siteRowsMarkup(asns.slice(0, 12), (item) => asnRow(item, "site"), "No ASN rows for this site."))}
         ${siteSubsection("User agents", siteRowsMarkup(userAgents.slice(0, 15), siteActorRow, "No user-agent rows for this site."))}
       </section>
     `;

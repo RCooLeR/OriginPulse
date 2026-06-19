@@ -784,6 +784,15 @@ h2 {
   margin-top: 2px;
 }
 
+.list-kicker {
+  padding: 9px 14px 4px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
 .signal-score {
   min-width: 54px;
   display: grid;
