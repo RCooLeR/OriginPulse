@@ -9472,6 +9472,8 @@ function reportDetailMarkup(report) {
           ${summary.top_site ? `<button class="ghost small" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "site", value: summary.top_site, site_id: summary.top_site, origin: "report" }))}'>Open top site</button>` : ""}
           ${summary.top_source_ip ? `<button class="ghost small" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "ip", value: summary.top_source_ip, site_id: report.site_id || "", origin: "report" }))}'>Open top IP</button>` : ""}
           ${summary.top_path ? `<button class="ghost small" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "log_filter", path: summary.top_path, site_id: report.site_id || "", status_class: "errors", origin: "report" }))}'>Open top path logs</button>` : ""}
+          ${summary.top_user_agent ? `<button class="ghost small" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "user-agent", value: summary.top_user_agent, site_id: report.site_id || "", origin: "report" }))}'>Open top UA</button>` : ""}
+          ${summary.top_user_agent ? `<button class="ghost small" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "log_filter", user_agent: summary.top_user_agent, site_id: report.site_id || "", origin: "report" }))}'>Top UA logs</button>` : ""}
           <button class="ghost small" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "log_filter", site_id: report.site_id || "", origin: "report" }))}'>Open report logs</button>
         </div>
       </article>
@@ -10267,6 +10269,7 @@ function reportChartDatumActions(report, chart, datum) {
     if (item.asn) add("ASN", reportPivot(report, { kind: "asn", value: formatASN(item.asn), site_id: item.site_id || siteID, origin: "report_chart_datum" }));
   } else if (key === "user_agent_classes") {
     add("Class logs", reportPivot(report, { kind: "log_filter", actor_type: datum.label || "", site_id: siteID, origin: "report_chart_datum" }));
+    add("Class signals", reportPivot(report, { kind: "signal_filter", signal_filter: "traffic", actor_type: datum.label || "", site_id: siteID, origin: "report_chart_datum" }));
   } else if (key === "security_signals") {
     const signalPivot = reportChartSecurityPivot(report, datum);
     add("Open signal", signalPivot);
