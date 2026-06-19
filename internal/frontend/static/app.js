@@ -1543,6 +1543,7 @@ function renderLogs() {
   qs("#logsContext").innerHTML = logContextChips().join("");
   setText("#logsEvidenceEyebrow", "Evidence");
   setText("#logsEvidenceTitle", "Recent matching rows");
+  renderLogLaneOverview();
 
   if (!supported) {
     renderUnsupportedLogExplorer();
@@ -1639,6 +1640,109 @@ function renderUnsupportedLogExplorer() {
   const relatedRows = unsupportedLogRelatedEvidenceRows(correlatedEvidence, correlatedPaths, segments);
   setText("#logsRelatedCount", `${formatNumber(relatedRows.length)} links`);
   qs("#logsRelatedList").innerHTML = relatedRows.slice(0, 10).map(logRelatedEvidenceRow).join("") || `<div class="empty">No related access evidence or signals match this ${escapeHTML(formatLogType(state.logType))} scope.</div>`;
+}
+
+function renderLogLaneOverview(evidence = filteredLogEvidence(), topPaths = filteredTopPaths()) {
+  const rows = logLaneRows(evidence, topPaths);
+  const active = rows.find((row) => row.active);
+  const available = rows.filter((row) => row.count || row.requests || row.active).length;
+  setText("#logsLaneSummary", active ? `${active.label} / ${formatNumber(available)} lanes` : `${formatNumber(available)} lanes`);
+  const container = qs("#logsLaneOverview");
+  if (!container) return;
+  container.innerHTML = rows.map(logLaneRow).join("") || `<div class="empty">No log lanes are configured.</div>`;
+}
+
+function logLaneRows(evidence = [], topPaths = []) {
+  const context = state.viewContext || {};
+  const accessErrors = evidence.reduce((sum, item) => sum + Number(item.errors || 0) + Number(item.status_4xx || 0) + Number(item.status_5xx || 0), 0);
+  const accessRequests = evidence.reduce((sum, item) => sum + Number(item.requests || 0), 0);
+  const latestAccess = latestLogEvidenceTime(evidence, topPaths);
+  const rows = [{
+    logType: "nginx-access",
+    label: "Access",
+    status: state.logType === "nginx-access" ? "active" : evidence.length ? "available" : "empty",
+    count: evidence.length,
+    requests: accessRequests,
+    errors: accessErrors,
+    canFilterErrors: accessErrors > 0,
+    latest: latestAccess,
+    meta: [
+      `${formatNumber(evidence.length)} rows`,
+      accessRequests ? `${formatNumber(accessRequests)} requests` : "",
+      accessErrors ? `${formatNumber(accessErrors)} errors` : "",
+      topPaths[0]?.path || "",
+    ].filter(Boolean).join(" - "),
+    active: state.logType === "nginx-access",
+  }];
+  correlatedLogTypeDefs(false).forEach(([logType, label]) => {
+    const summary = segmentSummaryForLogType(logType);
+    rows.push({
+      logType,
+      label,
+      status: state.logType === logType ? "active" : summary.count ? summary.pending ? "pending" : "indexed" : "empty",
+      count: summary.count,
+      requests: summary.lines,
+      errors: 0,
+      canFilterErrors: false,
+      latest: summary.latest,
+      meta: [
+        summary.count ? `${formatNumber(summary.count)} segments` : "no segments",
+        summary.lines ? `${formatNumber(summary.lines)} lines` : "",
+        summary.indexed ? `${formatNumber(summary.indexed)} indexed` : "",
+        summary.pending ? `${formatNumber(summary.pending)} pending` : "",
+      ].filter(Boolean).join(" - "),
+      active: state.logType === logType,
+      pending: summary.pending,
+    });
+  });
+  return rows.map((row) => ({
+    ...row,
+    contextLabel: logLaneContextLabel(context),
+  }));
+}
+
+function logLaneRow(item) {
+  const context = state.viewContext || {};
+  const openPivot = logFilterPivotForContext(item.logType, context, "logs_lane");
+  const errorPivot = logFilterPivotForContext(item.logType, { ...context, status_class: "errors" }, "logs_lane");
+  return `
+    <div class="log-lane-row ${item.active ? "active" : ""}">
+      <div class="log-lane-main">
+        <span class="lane-state lane-state-${escapeHTML(item.status || "empty")}">${escapeHTML(formatCategory(item.status || "empty"))}</span>
+        <div>
+          <strong>${escapeHTML(item.label || formatLogType(item.logType))}</strong>
+          <span>${escapeHTML(item.meta || item.contextLabel || "-")}</span>
+          ${item.latest ? `<small>${escapeHTML(`latest ${formatTime(item.latest)}`)}</small>` : ""}
+        </div>
+      </div>
+      <div class="log-lane-actions">
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(openPivot)}'>Open</button>
+        ${item.canFilterErrors ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(errorPivot)}'>Errors</button>` : ""}
+        ${item.pending ? `<button class="ghost mini inline-action" type="button" data-route-target="system">Index</button>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function logLaneContextLabel(context = state.viewContext || {}) {
+  return [
+    context.site_id || state.siteID || "",
+    context.path || "",
+    context.ip ? `IP ${context.ip}` : "",
+    context.asn ? formatASN(context.asn) : "",
+    context.known_actor || "",
+  ].filter(Boolean).join(" - ");
+}
+
+function latestLogEvidenceTime(evidence = [], topPaths = []) {
+  const times = [
+    ...evidence.map((item) => item.ts || item.last_seen || item.timestamp),
+    ...topPaths.map((item) => item.last_seen || item.ts || item.timestamp),
+  ].filter(Boolean)
+    .map((value) => new Date(value))
+    .filter((date) => !Number.isNaN(date.getTime()));
+  if (!times.length) return "";
+  return new Date(Math.max(...times.map((date) => date.getTime()))).toISOString();
 }
 
 function renderLogsInvestigationPlan(evidence = [], topPaths = [], options = {}) {
