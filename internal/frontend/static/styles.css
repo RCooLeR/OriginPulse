@@ -2482,6 +2482,33 @@ h2 {
   font-size: 0.76rem;
 }
 
+.site-logs-scope .logs-scope-path {
+  margin: 10px;
+}
+
+.site-log-lane-list,
+.site-log-plan {
+  max-height: 430px;
+  overflow: auto;
+}
+
+.site-log-facets {
+  max-height: 430px;
+  overflow: auto;
+}
+
+.site-log-evidence-wrap {
+  max-height: 560px;
+}
+
+.site-log-evidence-table {
+  min-width: 1120px;
+}
+
+.site-log-evidence-table td {
+  vertical-align: top;
+}
+
 .site-reliability-matrix td span {
   color: var(--muted);
   font-size: 0.76rem;

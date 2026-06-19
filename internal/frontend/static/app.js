@@ -6939,9 +6939,8 @@ function renderSiteTab(site) {
     return;
   }
   if (state.siteTab === "logs") {
-    const rows = siteLogEvidence(id).slice(0, 30);
-    setText("#siteTabSummary", `${formatNumber(rows.length)} evidence rows`);
-    body.innerHTML = siteRowsMarkup(rows, logEvidenceRow, "No matching log evidence for this site in scope.");
+    setText("#siteTabSummary", siteLogsSummary(id));
+    body.innerHTML = siteLogsWorkspace(site);
     return;
   }
   if (state.siteTab === "reports") {
@@ -7456,6 +7455,153 @@ function sitePathFindingRow(row) {
         <span>${errors ? "errors" : row.p95 ? "p95" : "requests"}</span>
         <b>${errors ? formatNumber(errors) : row.p95 ? formatMs(row.p95) : formatNumber(row.requests || 0)}</b>
       </div>
+    </div>
+  `;
+}
+
+function siteLogsSummary(siteID) {
+  return withSiteLogContext(siteID, () => {
+    const evidence = siteLogEvidence(siteID);
+    const topPaths = siteTopPaths(siteID);
+    const segmentCount = correlatedLogTypeDefs(false)
+      .reduce((sum, [logType]) => sum + siteLogSegments(logType, siteID).length, 0);
+    return `${formatNumber(evidence.length)} evidence rows / ${formatNumber(topPaths.length)} paths / ${formatNumber(segmentCount)} segments`;
+  });
+}
+
+function siteLogsWorkspace(site) {
+  const siteID = site.id || "";
+  return withSiteLogContext(siteID, () => {
+    const evidence = siteLogEvidence(siteID);
+    const topPaths = siteTopPaths(siteID);
+    const currentSegments = siteLogSegments(state.logType, siteID);
+    const planRows = logInvestigationPlanRows(evidence, topPaths, { segments: currentSegments });
+    const relatedRows = [
+      ...logRelatedEvidenceRows(evidence, topPaths),
+      ...logCorrelationRows(evidence, topPaths, { context: { site_id: siteID }, origin: "site_logs_correlation" }),
+    ];
+    const laneRows = siteLogLaneRows(siteID, evidence, topPaths);
+    return `
+      <section class="site-tab-grid site-logs-grid">
+        ${siteSubsection("Log scope path", `<div class="site-logs-scope">${logsScopePath(evidence, topPaths, { segments: currentSegments })}</div>`, "No log scope is active.", "span-2")}
+        ${siteSubsection("Log lane board", siteLogLaneBoard(laneRows), "No log lanes are configured.")}
+        ${siteSubsection("Context plan", siteLogPlanBoard(planRows), "No investigation steps available for this site.")}
+        ${siteSubsection("Field facets", siteLogFacetBoard(evidence, topPaths), "No facets for this site.")}
+        ${siteSubsection("Related signals and reports", siteRowsMarkup(relatedRows.slice(0, 10), logRelatedEvidenceRow, "No related signals, reports, or log lanes for this site."))}
+        ${siteSubsection("Access evidence", siteLogEvidenceTable(evidence.slice(0, 18)), "No matching access-log evidence for this site.", "span-2")}
+      </section>
+    `;
+  });
+}
+
+function withSiteLogContext(siteID, renderFn) {
+  const previousSiteID = state.siteID;
+  const previousContext = { ...(state.viewContext || {}) };
+  state.siteID = siteID || previousSiteID || "";
+  state.viewContext = { ...previousContext, site_id: siteID || previousContext.site_id || "" };
+  try {
+    return renderFn();
+  } finally {
+    state.siteID = previousSiteID;
+    state.viewContext = previousContext;
+  }
+}
+
+function siteLogLaneRows(siteID, evidence = siteLogEvidence(siteID), topPaths = siteTopPaths(siteID)) {
+  const accessErrors = evidence.reduce((sum, item) => sum + Number(item.errors || 0) + Number(item.status_4xx || 0) + Number(item.status_5xx || 0), 0);
+  const accessRequests = evidence.reduce((sum, item) => sum + Number(item.requests || 0), 0);
+  const latestAccess = latestLogEvidenceTime(evidence, topPaths);
+  const rows = [{
+    logType: "nginx-access",
+    label: "Access",
+    status: state.logType === "nginx-access" ? "active" : evidence.length ? "available" : "empty",
+    count: evidence.length,
+    requests: accessRequests,
+    errors: accessErrors,
+    canFilterErrors: accessErrors > 0,
+    latest: latestAccess,
+    meta: [
+      `${formatNumber(evidence.length)} rows`,
+      accessRequests ? `${formatNumber(accessRequests)} requests` : "",
+      accessErrors ? `${formatNumber(accessErrors)} errors` : "",
+      topPaths[0]?.path || "",
+    ].filter(Boolean).join(" - "),
+    active: state.logType === "nginx-access",
+  }];
+  correlatedLogTypeDefs(false).forEach(([logType, label]) => {
+    const summary = siteLogSegmentSummary(logType, siteID);
+    rows.push({
+      logType,
+      label,
+      status: state.logType === logType ? "active" : summary.count ? summary.pending ? "pending" : "indexed" : "empty",
+      count: summary.count,
+      requests: summary.lines,
+      errors: 0,
+      canFilterErrors: false,
+      latest: summary.latest,
+      meta: [
+        summary.count ? `${formatNumber(summary.count)} segments` : "no segments",
+        summary.lines ? `${formatNumber(summary.lines)} lines` : "",
+        summary.indexed ? `${formatNumber(summary.indexed)} indexed` : "",
+        summary.pending ? `${formatNumber(summary.pending)} pending` : "",
+      ].filter(Boolean).join(" - "),
+      active: state.logType === logType,
+      pending: summary.pending,
+    });
+  });
+  return rows.map((row) => ({
+    ...row,
+    contextLabel: siteID || logLaneContextLabel({ site_id: siteID }),
+  }));
+}
+
+function siteLogSegments(logType, siteID) {
+  return unsupportedLogSegments(logType)
+    .filter((segment) => !segment.site_id || segment.site_id === siteID);
+}
+
+function siteLogSegmentSummary(logType, siteID) {
+  const segments = siteLogSegments(logType, siteID);
+  const latest = segments[0]?.bucket_start || segments[0]?.max_ts || segments[0]?.bucket_end || "";
+  const indexed = segments.filter((item) => item.indexed || item.status === "indexed").length;
+  return {
+    count: segments.length,
+    lines: segments.reduce((sum, item) => sum + Number(item.line_count || 0), 0),
+    indexed,
+    pending: Math.max(0, segments.length - indexed),
+    latest,
+  };
+}
+
+function siteLogLaneBoard(rows = []) {
+  return `<div class="log-lane-list site-log-lane-list">${rows.map(logLaneRow).join("") || `<div class="empty">No log lanes are configured.</div>`}</div>`;
+}
+
+function siteLogPlanBoard(rows = []) {
+  return `<div class="logs-command-list site-log-plan">${rows.map(logInvestigationPlanRow).join("") || `<div class="empty">No investigation steps available for this site.</div>`}</div>`;
+}
+
+function siteLogFacetBoard(evidence, topPaths) {
+  return `<div class="facet-list site-log-facets">${logFacetSections(evidence, topPaths).join("")}</div>`;
+}
+
+function siteLogEvidenceTable(rows = []) {
+  return `
+    <div class="table-wrap site-log-evidence-wrap">
+      <table class="logs-table site-log-evidence-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Evidence</th>
+            <th>Site</th>
+            <th>Source</th>
+            <th>Target</th>
+            <th>Signal</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>${rows.map(logEvidenceTableRow).join("") || emptyRow(7, "No matching access-log evidence for this site.")}</tbody>
+      </table>
     </div>
   `;
 }
