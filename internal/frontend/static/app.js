@@ -2013,6 +2013,20 @@ function filteredLogEvidence() {
     errors: Number(item.status_4xx || 0) + Number(item.status_5xx || 0),
     p95_request_time_ms: item.p95_request_time_ms || 0,
   }));
+  (analysis.user_agents || []).forEach((item) => rows.push({
+    kind: "User-agent class",
+    ts: item.last_seen,
+    site_id: item.site_id || "",
+    env: item.env || "",
+    path: item.top_path || "/",
+    status: "",
+    requests: Number(item.requests || 0),
+    errors: Number(item.status_4xx || 0) + Number(item.status_5xx || 0),
+    user_agent: item.sample || "",
+    known_actor: item.family || "",
+    actor_type: item.actor_type || "",
+    risk_score: item.risk_score || 0,
+  }));
   return rows
     .filter(logMatchesContext)
     .sort((a, b) => new Date(b.ts || 0) - new Date(a.ts || 0));
@@ -2084,7 +2098,7 @@ function logMatchesContext(item) {
     if (item.ip && ips.size && !ips.has(item.ip)) return false;
     if (!item.ip && ips.size) return false;
   }
-  if (context.user_agent && !String(item.user_agent || "").includes(context.user_agent)) return false;
+  if (context.user_agent && !userAgentMatches(item.user_agent || "", context.user_agent)) return false;
   return true;
 }
 
@@ -2699,6 +2713,26 @@ function entityFacts(entity, detail = {}) {
       ["Last seen", formatTime(actor.lastSeen)],
     ];
   }
+  if (entity.kind === "user-agent") {
+    const row = (state.data.analysis?.user_agents || []).find((item) => userAgentMatches(item.sample || item.family || "", entity.value)) || {};
+    const evidence = entityEvidence(entity);
+    const rowErrors = Number(row.status_4xx || 0) + Number(row.status_5xx || 0);
+    const evidenceErrors = evidence.reduce((sum, item) => sum + Number(item.errors || 0), 0);
+    const errors = row.requests ? rowErrors : evidenceErrors;
+    const ips = new Set(evidence.map((item) => item.ip).filter(Boolean));
+    const sites = new Set(evidence.map((item) => item.site_id).filter(Boolean));
+    return [
+      ["Family", row.family || "-"],
+      ["Actor type", formatCategory(row.actor_type || "-")],
+      ["Requests", formatNumber(row.requests || evidence.length)],
+      ["Errors", formatNumber(errors)],
+      ["Source IPs", formatNumber(row.unique_ips || ips.size)],
+      ["Sites", formatNumber(sites.size)],
+      ["Risk", row.risk_score || "-"],
+      ["Current site", state.siteID || state.viewContext.site_id || "All sites"],
+      ["Window", activeFilterLabel()],
+    ];
+  }
   return [
     ["Value", entity.value],
     ["Window", activeFilterLabel()],
@@ -2710,6 +2744,7 @@ function entitySignals(entity) {
     if (entity.kind === "ip") return item.ip === entity.value;
     if (entity.kind === "path") return item.path && pathMatches(item.path, entity.value);
     if (entity.kind === "actor") return item.actor === entity.value || item.summary?.includes(entity.value) || item.title?.includes(entity.value);
+    if (entity.kind === "user-agent") return item.summary?.includes(entity.value) || item.title?.includes(entity.value);
     return false;
   });
 }
@@ -2722,8 +2757,17 @@ function entityEvidence(entity) {
     const ips = contextActorIPs({ known_actor: entity.value, actor_type: state.viewContext.actor_type || "" });
     return rows.filter((item) => item.known_actor === entity.value || (item.ip && ips.has(item.ip)));
   }
-  if (entity.kind === "user-agent") return rows.filter((item) => String(item.user_agent || "").includes(entity.value));
+  if (entity.kind === "user-agent") return rows.filter((item) => userAgentMatches(item.user_agent || item.sample || "", entity.value));
   return rows;
+}
+
+function userAgentMatches(sample, value) {
+  const needle = String(value || "").trim();
+  const haystack = String(sample || "").trim();
+  if (!needle || needle === "-") return false;
+  if (needle === "(empty)") return haystack === "";
+  if (!haystack) return false;
+  return haystack.includes(needle) || needle.includes(haystack);
 }
 
 function entityPaths(entity, detail = {}) {
@@ -2972,12 +3016,15 @@ function entityPathRow(item) {
 
 function entityUserAgentRow(item) {
   const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  const value = item.sample || item.family || "(empty)";
+  const siteID = state.siteID || state.viewContext.site_id || "";
   return `
     <div class="signal-row">
       <div>
         <strong>${escapeHTML(item.family || "User agent")}</strong>
-        <span>${escapeHTML(item.sample || "(empty)")}</span>
-        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", user_agent: item.sample || "", site_id: state.siteID || state.viewContext.site_id || "", status_class: errors ? "errors" : "", origin: "entity" })}'>Open logs</button>
+        <span>${escapeHTML(value)}</span>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "user-agent", value, site_id: siteID, origin: "entity" })}'>Open user-agent</button>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", user_agent: value, site_id: siteID, status_class: errors ? "errors" : "", origin: "entity" })}'>Open logs</button>
       </div>
       <div class="signal-numbers"><span>${formatNumber(errors)} errors</span><b>${formatNumber(item.requests || 0)}</b></div>
     </div>
@@ -3239,17 +3286,28 @@ function renderSourceIPs() {
 function renderUserAgents() {
   const items = state.data.analysis?.user_agents || [];
   renderPager("#userAgentPager", "userAgents", items);
-  const rows = paginateWithIndex("userAgents", items).map(({ item, index }) => `
-    <tr>
-      <td><strong>${escapeHTML(item.family || "unknown")}</strong><br><span>${escapeHTML(item.actor_type || "")}</span><br><button class="ghost mini inline-action" type="button" data-detail-kind="userAgent" data-detail-index="${index}">Details</button></td>
-      <td class="clip">${escapeHTML(item.sample || "(empty)")}</td>
-      <td>${formatNumber(item.requests || 0)}</td>
-      <td>${formatNumber(item.unique_ips || 0)}</td>
-      <td>${formatNumber((item.status_4xx || 0) + (item.status_5xx || 0))}</td>
-      <td>${escapeHTML(item.risk_score || 0)}</td>
-    </tr>
-  `);
-  qs("#userAgentsTable").innerHTML = rows.join("") || emptyRow(6, "No user agents found.");
+  const rows = paginateWithIndex("userAgents", items).map(({ item, index }) => {
+    const value = item.sample || item.family || "(empty)";
+    const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+    const actions = [
+      `<button class="ghost mini inline-action" type="button" data-detail-kind="userAgent" data-detail-index="${index}">Details</button>`,
+      `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "user-agent", value, site_id: item.site_id || state.siteID || "", origin: "investigate" })}'>Open user-agent</button>`,
+      `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", user_agent: value, site_id: item.site_id || state.siteID || "", status_class: errors ? "errors" : "", origin: "investigate" })}'>Open logs</button>`,
+      item.actor_type && item.actor_type !== "browser" && item.actor_type !== "unknown" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: item.family || actorLabelFromType(item.actor_type), actor_type: item.actor_type || "", site_id: item.site_id || state.siteID || "", origin: "investigate" })}'>Open actor</button>` : "",
+    ].filter(Boolean).join("");
+    return `
+      <tr>
+        <td><strong>${escapeHTML(item.family || "unknown")}</strong><br><span>${escapeHTML(item.actor_type || "")}</span></td>
+        <td class="clip">${escapeHTML(value)}</td>
+        <td>${formatNumber(item.requests || 0)}</td>
+        <td>${formatNumber(item.unique_ips || 0)}</td>
+        <td>${formatNumber(errors)}</td>
+        <td>${escapeHTML(item.risk_score || 0)}</td>
+        <td class="row-actions">${actions}</td>
+      </tr>
+    `;
+  });
+  qs("#userAgentsTable").innerHTML = rows.join("") || emptyRow(7, "No user agents found.");
 }
 
 function renderAdminProbes() {
@@ -5091,6 +5149,14 @@ async function handlePivot(pivot) {
     if (needsRefresh) await refreshWithValidation();
     else renderInvestigate();
     showActorDetail(pivot);
+    return;
+  }
+  if (pivot.kind === "user-agent") {
+    state.signalKey = "";
+    state.entity = { kind: "user-agent", value: pivot.value || pivot.user_agent || "" };
+    showRoute("investigate", true);
+    if (needsRefresh) await refreshWithValidation();
+    else renderInvestigate();
     return;
   }
   if (pivot.kind === "path") {
