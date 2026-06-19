@@ -7424,21 +7424,46 @@ function renderSites() {
   renderSiteQueueSummary(allSites, sites);
   renderPager("#sitesPager", "sites", sites);
   const selectedID = currentSiteIDForView(sites, allSites);
-  const rows = paginate("sites", sites).map((site) => `
+  const rows = paginate("sites", sites).map(siteListRow);
+  qs("#sitesTable").innerHTML = rows.join("") || emptyRow(6, "No enabled sites configured.");
+  renderSiteDetail(allSites.find((site) => site.id === selectedID) || sites[0] || allSites[0] || null);
+}
+
+function siteListRow(site) {
+  const siteID = site.id || "";
+  const topIP = siteTopSourceIPs(siteID)[0] || {};
+  const topPath = siteTopPaths(siteID)[0] || {};
+  const topActor = siteTopActor(siteID) || {};
+  const signalFilter = site.securitySignals ? "security" : "all";
+  const actions = [
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: siteID, origin: "sites_queue" })}'>Open</button>`,
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, status_class: site.status5xx || site.status4xx ? "errors" : "", origin: "sites_queue" })}'>Logs</button>`,
+    site.signalCount ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal_filter", signal_filter: signalFilter, site_id: siteID, origin: "sites_queue" })}'>Signals</button>` : "",
+    topIP.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: topIP.ip, site_id: siteID, origin: "sites_queue" })}'>Top IP</button>` : "",
+    topPath.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: topPath.path, site_id: siteID, origin: "sites_queue" })}'>Top path</button>` : "",
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "report", report_tab: state.reportTab || "daily", site_id: siteID, origin: "sites_queue" })}'>Reports</button>`,
+  ].filter(Boolean).join("");
+  const reason = siteQueueReason(site, { topIP, topPath, topActor });
+  return `
     <tr>
-      <td><strong>${escapeHTML(site.name || site.id)}</strong><br><span>${escapeHTML(site.id)}${site.envs?.length ? ` / ${escapeHTML(site.envs.join(", "))}` : ""}</span></td>
+      <td><strong>${escapeHTML(site.name || site.id)}</strong><br><span>${escapeHTML(site.id)}${site.envs?.length ? ` / ${escapeHTML(site.envs.join(", "))}` : ""}</span><br><span>${escapeHTML(reason)}</span></td>
       <td><span class="severity severity-${escapeHTML(site.severity)}">${escapeHTML(site.status)}</span><br><span>${escapeHTML(site.lastSeen ? `last ${shortDateTime(site.lastSeen)}` : "no indexed events")}</span></td>
       <td>${formatNumber(site.requests || 0)}</td>
       <td>${formatPercent(site.status5xxRate || 0)}<br><span>${formatNumber(site.status5xx || 0)} responses</span></td>
       <td>${formatNumber(site.signalCount || 0)}<br><span>${formatNumber(site.securitySignals || 0)} security</span></td>
-      <td class="row-actions">
-        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: site.id, origin: "sites" })}'>Open</button>
-        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: site.id, origin: "sites" })}'>Logs</button>
-      </td>
+      <td class="row-actions">${actions}</td>
     </tr>
-  `);
-  qs("#sitesTable").innerHTML = rows.join("") || emptyRow(6, "No enabled sites configured.");
-  renderSiteDetail(allSites.find((site) => site.id === selectedID) || sites[0] || allSites[0] || null);
+  `;
+}
+
+function siteQueueReason(site, { topIP = {}, topPath = {}, topActor = {} } = {}) {
+  return [
+    site.status5xx ? `${formatNumber(site.status5xx)} 5xx` : "",
+    site.securitySignals ? `${formatNumber(site.securitySignals)} security signals` : "",
+    topIP.ip ? `top IP ${topIP.ip}` : "",
+    topPath.path ? `path ${topPath.path}` : "",
+    topActor.label ? `actor ${topActor.label}` : "",
+  ].filter(Boolean).join(" / ") || "No active hotspot in this scope";
 }
 
 function syncSiteQueueControls() {
