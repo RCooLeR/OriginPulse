@@ -2,6 +2,54 @@ package ipintel
 
 import "testing"
 
+func TestNormalizeManualAction(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{name: "verified", input: " Verified ", want: "verified"},
+		{name: "suspicious", input: "suspicious", want: "suspicious"},
+		{name: "clear", input: "clear", want: ""},
+		{name: "empty", input: "", want: ""},
+		{name: "invalid", input: "trusted", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeManualAction(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("normalizeManualAction(%q) error = nil, want error", tt.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("normalizeManualAction(%q) error = %v", tt.input, err)
+			}
+			if got != tt.want {
+				t.Fatalf("normalizeManualAction(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeManualLabel(t *testing.T) {
+	got := normalizeManualLabel("  Operator   marked   suspicious  ")
+	if got != "Operator marked suspicious" {
+		t.Fatalf("normalizeManualLabel() = %q, want compacted label", got)
+	}
+
+	long := ""
+	for len(long) < 200 {
+		long += "x"
+	}
+	if got := normalizeManualLabel(long); len(got) != 160 {
+		t.Fatalf("normalizeManualLabel(long) len = %d, want 160", len(got))
+	}
+}
+
 func TestClassifyReverseDNSServiceFingerprints(t *testing.T) {
 	tests := []struct {
 		name       string

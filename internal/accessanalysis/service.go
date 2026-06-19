@@ -104,6 +104,8 @@ type SourceIPSummary struct {
 	VerifiedActor    bool      `json:"verified_actor"`
 	VerifiedSource   bool      `json:"verified_source"`
 	IsTorExit        bool      `json:"is_tor_exit"`
+	ManualLabel      string    `json:"manual_label,omitempty"`
+	ManualAction     string    `json:"manual_action,omitempty"`
 }
 
 type UserAgentSummary struct {
@@ -317,11 +319,13 @@ SELECT host(e.client_ip),
        coalesce(ii.risk_score, -1),
        coalesce(ii.forward_confirmed, false),
        coalesce(ii.verified_actor, false),
-       coalesce(ii.is_tor_exit, false)
+       coalesce(ii.is_tor_exit, false),
+       coalesce(ii.manual_label, ''),
+       coalesce(ii.manual_action, '')
 FROM access_events e
 LEFT JOIN ip_intel ii ON ii.ip = e.client_ip
 WHERE e.ts >= $1 AND e.ts < $2 AND ($3 = '' OR e.site_id = $3) AND e.client_ip IS NOT NULL
-GROUP BY e.client_ip, ii.reverse_dns, ii.known_actor, ii.actor_type, ii.risk_score, ii.forward_confirmed, ii.verified_actor, ii.is_tor_exit
+GROUP BY e.client_ip, ii.reverse_dns, ii.known_actor, ii.actor_type, ii.risk_score, ii.forward_confirmed, ii.verified_actor, ii.is_tor_exit, ii.manual_label, ii.manual_action
 ORDER BY count(*) DESC
 LIMIT $4`, report.Since, report.Until, report.SiteID, limit)
 	if err != nil {
@@ -347,6 +351,8 @@ LIMIT $4`, report.Since, report.Until, report.SiteID, limit)
 			&item.ForwardConfirmed,
 			&item.VerifiedActor,
 			&item.IsTorExit,
+			&item.ManualLabel,
+			&item.ManualAction,
 		); err != nil {
 			return err
 		}

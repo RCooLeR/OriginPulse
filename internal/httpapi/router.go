@@ -120,6 +120,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/analysis/access-log", api.accessLogAnalysis)
 			r.Get("/investigate/traffic", api.investigateTraffic)
 			r.Get("/investigate/ip/{ip}", api.ipDetails)
+			r.Patch("/investigate/ip/{ip}/manual-intel", api.updateIPManualIntel)
 			r.Get("/alerts", api.openAlerts)
 			r.Post("/alerts/evaluate", api.evaluateAlerts)
 			r.Get("/reports/recent", api.recentReports)
@@ -305,6 +306,60 @@ func (api API) ipDetails(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_ip", "IP address is invalid")
 			return
 		}
+		writeError(w, http.StatusInternalServerError, "ip_details_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+func (api API) updateIPManualIntel(w http.ResponseWriter, r *http.Request) {
+	if api.ipIntel == nil {
+		writeError(w, http.StatusServiceUnavailable, "ip_intel_disabled", "IP intelligence is not configured")
+		return
+	}
+
+	req := struct {
+		ManualLabel  string `json:"manual_label"`
+		ManualAction string `json:"manual_action"`
+	}{}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
+		return
+	}
+
+	ip := chi.URLParam(r, "ip")
+	if err := api.ipIntel.ApplyManualIntel(r.Context(), ipintel.ManualIntelOptions{
+		IP:           ip,
+		ManualLabel:  req.ManualLabel,
+		ManualAction: req.ManualAction,
+	}); err != nil {
+		switch {
+		case errors.Is(err, ipintel.ErrInvalidIP):
+			writeError(w, http.StatusBadRequest, "invalid_ip", "IP address is invalid")
+		case errors.Is(err, ipintel.ErrInvalidManualAction):
+			writeError(w, http.StatusBadRequest, "invalid_manual_action", "manual action must be verified, suspicious, watch, ignored, or clear")
+		case errors.Is(err, ipintel.ErrDatabaseDisabled):
+			writeError(w, http.StatusServiceUnavailable, "database_disabled", "database is required for manual IP labels")
+		default:
+			writeError(w, http.StatusInternalServerError, "manual_ip_intel_failed", err.Error())
+		}
+		return
+	}
+
+	from, to, err := parseTimeFilters(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_time_window", err.Error())
+		return
+	}
+	detail, err := api.ipIntel.Details(r.Context(), ipintel.DetailOptions{
+		IP:     ip,
+		Range:  r.URL.Query().Get("range"),
+		Limit:  parseLimit(r, 8, 25),
+		SiteID: r.URL.Query().Get("site_id"),
+		From:   from,
+		To:     to,
+	})
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "ip_details_failed", err.Error())
 		return
 	}

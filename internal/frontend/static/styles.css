@@ -257,6 +257,25 @@ h2 {
   margin-top: 7px;
 }
 
+.manual-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  vertical-align: top;
+}
+
+.manual-actions .inline-action {
+  margin-top: 7px;
+}
+
+.panel-tools .manual-actions {
+  align-items: center;
+}
+
+.panel-tools .manual-actions .inline-action {
+  margin-top: 0;
+}
+
 .busy {
   cursor: progress;
 }

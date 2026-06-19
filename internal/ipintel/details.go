@@ -18,7 +18,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-var ErrInvalidIP = errors.New("invalid IP address")
+var (
+	ErrInvalidIP           = errors.New("invalid IP address")
+	ErrDatabaseDisabled    = errors.New("database is disabled")
+	ErrInvalidManualAction = errors.New("invalid manual IP intel action")
+)
 
 type DetailOptions struct {
 	IP     string
@@ -27,6 +31,12 @@ type DetailOptions struct {
 	SiteID string
 	From   time.Time
 	To     time.Time
+}
+
+type ManualIntelOptions struct {
+	IP           string
+	ManualLabel  string
+	ManualAction string
 }
 
 type Detail struct {
@@ -142,6 +152,82 @@ type StoredIntel struct {
 	ManualAction     string    `json:"manual_action,omitempty"`
 	RiskScore        int       `json:"risk_score,omitempty"`
 	RefreshedAt      time.Time `json:"refreshed_at,omitempty"`
+}
+
+func (s *Service) ApplyManualIntel(ctx context.Context, opts ManualIntelOptions) error {
+	addr, err := netip.ParseAddr(strings.TrimSpace(opts.IP))
+	if err != nil {
+		return ErrInvalidIP
+	}
+	if !s.Enabled() {
+		return ErrDatabaseDisabled
+	}
+	action, err := normalizeManualAction(opts.ManualAction)
+	if err != nil {
+		return err
+	}
+	label := normalizeManualLabel(opts.ManualLabel)
+	if action == "" {
+		label = ""
+	}
+
+	pool, err := s.db.Pool()
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	sourceJSON, err := json.Marshal(map[string]any{
+		"manual_intel_updated_at": now,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = pool.Exec(ctx, `
+INSERT INTO ip_intel (ip, manual_label, manual_action, verified_actor, risk_score, source, refreshed_at)
+VALUES ($1::inet, $2, $3, $4, $5, $6::jsonb, $7)
+ON CONFLICT (ip) DO UPDATE SET
+  manual_label = EXCLUDED.manual_label,
+  manual_action = EXCLUDED.manual_action,
+  verified_actor = CASE WHEN $8 = 'verified' THEN true ELSE ip_intel.verified_actor END,
+  risk_score = CASE WHEN $8 = 'suspicious' THEN greatest(coalesce(ip_intel.risk_score, 0), 80) ELSE ip_intel.risk_score END,
+  source = ip_intel.source || EXCLUDED.source,
+  refreshed_at = coalesce(ip_intel.refreshed_at, EXCLUDED.refreshed_at)`,
+		addr.String(),
+		emptyToNil(label),
+		emptyToNil(action),
+		action == "verified",
+		manualRiskScore(action),
+		string(sourceJSON),
+		now,
+		action,
+	)
+	return err
+}
+
+func normalizeManualAction(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "clear":
+		return "", nil
+	case "verified", "suspicious", "watch", "ignored":
+		return strings.ToLower(strings.TrimSpace(value)), nil
+	default:
+		return "", ErrInvalidManualAction
+	}
+}
+
+func normalizeManualLabel(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) > 160 {
+		return value[:160]
+	}
+	return value
+}
+
+func manualRiskScore(action string) any {
+	if action == "suspicious" {
+		return 80
+	}
+	return nil
 }
 
 type DNSDetails struct {

@@ -274,6 +274,12 @@ function wireEvents() {
       return;
     }
 
+    const manualIntelButton = event.target.closest("[data-ip-intel-action]");
+    if (manualIntelButton) {
+      await handleManualIntelAction(manualIntelButton);
+      return;
+    }
+
     const pageButton = event.target.closest("[data-page-key]");
     if (pageButton) {
       const key = pageButton.dataset.pageKey;
@@ -1869,9 +1875,11 @@ function entityKey(entity) {
 function entityActions(entity) {
   const siteID = state.viewContext.site_id || state.siteID || "";
   const logPivot = entityLogPivot(entity, siteID);
+  const detail = state.entityDetails[entityKey(entity)] || {};
   return `
     <button class="ghost small" type="button" data-pivot='${encodePivot(logPivot)}'>Open matching logs</button>
     ${entity.kind === "ip" ? `<button class="ghost small" type="button" data-pivot='${encodePivot({ kind: "ip", value: entity.value, site_id: siteID, origin: "entity" })}'>Refresh IP lookup</button>` : ""}
+    ${entity.kind === "ip" ? ipManualButtons(entity.value, detail.stored_intel || {}, siteID, "small") : ""}
     <button class="ghost small" type="button" data-route-target="investigate">All entities</button>
   `;
 }
@@ -1882,6 +1890,48 @@ function entityLogPivot(entity, siteID = "") {
   if (entity.kind === "actor") return { kind: "log_filter", known_actor: entity.value, actor_type: state.viewContext.actor_type || "", site_id: siteID, origin: "entity" };
   if (entity.kind === "user-agent") return { kind: "log_filter", user_agent: entity.value, site_id: siteID, origin: "entity" };
   return { kind: "log_filter", site_id: siteID, origin: "entity" };
+}
+
+function ipManualButtons(ip, item = {}, siteID = "", size = "mini") {
+  if (!ip) return "";
+  const action = String(item.manual_action || "").toLowerCase();
+  const alreadyVerified = Boolean(item.verified_source || item.verified_actor || item.forward_confirmed);
+  const buttonClass = `ghost ${size} inline-action`;
+  const buttons = [];
+  if (action !== "verified" && !alreadyVerified) {
+    buttons.push(manualActionButton(ip, "verified", "Mark verified", siteID, buttonClass));
+  }
+  if (action !== "suspicious") {
+    buttons.push(manualActionButton(ip, "suspicious", "Mark suspicious", siteID, buttonClass));
+  }
+  if (action && action !== "clear") {
+    buttons.push(manualActionButton(ip, "clear", "Clear label", siteID, buttonClass));
+  }
+  return `<span class="manual-actions">${buttons.join("")}</span>`;
+}
+
+function manualActionButton(ip, action, label, siteID, className) {
+  return `<button class="${className}" type="button" data-ip-intel-ip="${escapeHTML(ip)}" data-ip-intel-action="${escapeHTML(action)}" data-ip-intel-label="${escapeHTML(manualActionDefaultLabel(action))}" data-ip-intel-site="${escapeHTML(siteID || "")}">${escapeHTML(label)}</button>`;
+}
+
+function manualActionDefaultLabel(action) {
+  switch (action) {
+  case "verified":
+    return "Operator verified source";
+  case "suspicious":
+    return "Operator marked suspicious";
+  case "watch":
+    return "Operator watch";
+  case "ignored":
+    return "Operator ignored";
+  default:
+    return "";
+  }
+}
+
+function formatManualAction(action) {
+  action = String(action || "").trim();
+  return action ? formatCategory(action) : "-";
 }
 
 function entityBody(entity) {
@@ -1923,6 +1973,8 @@ function entityFacts(entity, detail = {}) {
       ["Errors", formatNumber(errors)],
       ["Error rate", formatPercent(ratio(errors, traffic.requests || local.requests || 0))],
       ["Known actor", stored.known_actor || local.known_actor || "-"],
+      ["Manual action", formatManualAction(stored.manual_action || local.manual_action)],
+      ["Manual label", stored.manual_label || local.manual_label || "-"],
       ["ASN", (detail.asn?.asn || stored.asn) ? `AS${detail.asn?.asn || stored.asn}` : "-"],
       ["Last seen", formatTime(traffic.last_seen || local.last_seen)],
     ];
@@ -2192,6 +2244,9 @@ function actorVerificationState(actor = {}) {
 }
 
 function actorSourceNeedsReview(item = {}) {
+  const manualAction = String(item.manual_action || "").toLowerCase();
+  if (manualAction === "verified" || manualAction === "ignored") return false;
+  if (manualAction === "suspicious" || manualAction === "watch") return true;
   if (item.verified_source) return false;
   const type = String(item.actor_type || "").toLowerCase();
   const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
@@ -2233,7 +2288,7 @@ function actorVerificationPanel(entity) {
 
 function actorSourceRow(item) {
   const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
-  const status = item.verified_source ? "verified" : actorSourceNeedsReview(item) ? "review" : "unverified";
+  const status = actorSourceStatus(item);
   const siteID = item.site_id || state.siteID || state.viewContext.site_id || "";
   return `
     <div class="signal-row">
@@ -2246,13 +2301,22 @@ function actorSourceRow(item) {
           siteID || "",
           `${formatNumber(item.requests || 0)} requests`,
           errors ? `${formatNumber(errors)} errors` : "",
+          item.manual_label || "",
         ].filter(Boolean).join(" - "))}</span>
         <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: siteID, origin: "actor" })}'>Open IP</button>
         <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ip: item.ip, known_actor: item.known_actor || "", actor_type: item.actor_type || "", site_id: siteID, status_class: errors ? "errors" : "", origin: "actor" })}'>Open logs</button>
+        ${ipManualButtons(item.ip, item, siteID, "mini")}
       </div>
       <div class="signal-numbers"><span>${escapeHTML(status)}</span><b>${escapeHTML(item.risk_score || 0)}</b></div>
     </div>
   `;
+}
+
+function actorSourceStatus(item = {}) {
+  const manualAction = String(item.manual_action || "").toLowerCase();
+  if (manualAction) return manualAction;
+  if (item.verified_source) return "verified";
+  return actorSourceNeedsReview(item) ? "review" : "unverified";
 }
 
 function contextActorIPs(context = state.viewContext || {}) {
@@ -2302,11 +2366,12 @@ function renderSourceIPs() {
   renderPager("#sourceIPPagers", "sourceIPs", items);
   const rows = paginateWithIndex("sourceIPs", items).map(({ item, index }) => {
     const actor = [item.actor_type, item.known_actor].filter(Boolean).join(" / ") || "-";
-    const source = item.verified_source ? "verified" : item.reverse_dns ? "reverse DNS" : "unverified";
+    const source = item.manual_action ? `manual ${formatManualAction(item.manual_action).toLowerCase()}` : item.verified_source ? "verified" : item.reverse_dns ? "reverse DNS" : "unverified";
     const actions = [
       `<button class="ghost mini inline-action" type="button" data-detail-kind="sourceIP" data-detail-index="${index}">Details</button>`,
       `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: item.site_id, origin: "investigate" })}'>Open IP</button>`,
       `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ip: item.ip, site_id: item.site_id, origin: "investigate" })}'>Logs</button>`,
+      ipManualButtons(item.ip, item, item.site_id || state.siteID, "mini"),
     ].join("");
     return `
       <tr>
@@ -2763,9 +2828,9 @@ function siteRecentErrorRow(item) {
 function siteActorRow(item) {
   const isIP = item.kind === "Source IP";
   const label = isIP ? item.ip : item.family || item.known_actor || "User agent";
-  const verification = isIP ? (item.verified_source ? "verified" : actorSourceNeedsReview(item) ? "review" : "unverified") : "user-agent";
+  const verification = isIP ? actorSourceStatus(item) : "user-agent";
   const meta = isIP
-    ? [verification, item.reverse_dns, item.known_actor, item.actor_type, `${formatNumber((item.status_4xx || 0) + (item.status_5xx || 0))} errors`].filter(Boolean).join(" - ")
+    ? [verification, item.reverse_dns, item.known_actor, item.actor_type, item.manual_label, `${formatNumber((item.status_4xx || 0) + (item.status_5xx || 0))} errors`].filter(Boolean).join(" - ")
     : [item.actor_type, `${formatNumber(item.unique_ips || 0)} IPs`, `${formatNumber((item.status_4xx || 0) + (item.status_5xx || 0))} errors`].filter(Boolean).join(" - ");
   return `
     <div class="signal-row">
@@ -2775,6 +2840,7 @@ function siteActorRow(item) {
         ${isIP ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: state.siteID, origin: "site" })}'>Open IP</button>` : ""}
         ${isIP && (item.known_actor || item.actor_type) ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: item.known_actor || actorLabelFromType(item.actor_type), actor_type: item.actor_type || "", site_id: state.siteID, origin: "site" })}'>Open actor</button>` : ""}
         <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ip: isIP ? item.ip : "", user_agent: isIP ? "" : item.sample || "", site_id: state.siteID, origin: "site" })}'>Open logs</button>
+        ${isIP ? ipManualButtons(item.ip, item, state.siteID || item.site_id || "", "mini") : ""}
       </div>
       <div class="signal-numbers"><span>${escapeHTML(verification)}</span><b>${formatNumber(item.requests || 0)}</b></div>
     </div>
@@ -3735,6 +3801,51 @@ async function createUser(event) {
   });
 }
 
+async function handleManualIntelAction(button) {
+  const ip = button.dataset.ipIntelIp || "";
+  const action = button.dataset.ipIntelAction || "";
+  const siteID = button.dataset.ipIntelSite || state.viewContext.site_id || state.siteID || "";
+  if (!ip) return;
+  button.disabled = true;
+  try {
+    const manualAction = action === "clear" ? "" : action;
+    const detail = await fetchJSON(`/api/v1/investigate/ip/${encodeURIComponent(ip)}/manual-intel?${buildFilterQuery({ limit: 30, site_id: siteID })}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        manual_action: manualAction,
+        manual_label: manualAction ? button.dataset.ipIntelLabel || manualActionDefaultLabel(manualAction) : "",
+      }),
+    });
+    updateLocalIPManualIntel(ip, detail.stored_intel || {}, manualAction);
+    if (state.entity?.kind === "ip" && state.entity.value === ip) {
+      state.entityDetails[entityKey(state.entity)] = detail;
+    }
+    toast(manualAction ? `IP marked ${formatManualAction(manualAction).toLowerCase()}` : "IP manual label cleared");
+    render();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function updateLocalIPManualIntel(ip, stored = {}, fallbackAction = "") {
+  const action = stored.manual_action || fallbackAction || "";
+  const label = stored.manual_label || (action ? manualActionDefaultLabel(action) : "");
+  (state.data.analysis?.source_ips || []).forEach((item) => {
+    if (item.ip !== ip) return;
+    item.manual_action = action;
+    item.manual_label = label;
+    if (action === "verified") {
+      item.verified_actor = true;
+      item.verified_source = true;
+    }
+    if (action === "suspicious") {
+      item.risk_score = Math.max(Number(item.risk_score || 0), Number(stored.risk_score || 80));
+    }
+  });
+}
+
 async function enableBrowserPush() {
   if (!browserPushSupported()) {
     throw new Error("Browser push is not supported by this browser");
@@ -4232,6 +4343,8 @@ function detailFor(kind, index) {
         ["Known actor", item.known_actor || "-"],
         ["Actor type", item.actor_type || "-"],
         ["Verified source", item.verified_source ? "Yes" : "No"],
+        ["Manual action", formatManualAction(item.manual_action)],
+        ["Manual label", item.manual_label || "-"],
         ["Risk", item.risk_score === undefined ? "-" : item.risk_score],
         ["Last seen", formatTime(item.last_seen)],
       ],
@@ -4368,6 +4481,8 @@ function sourceIPDetailFor(item, detail) {
           ["Forward-confirmed", dns.forward_confirmed || stored.forward_confirmed || item.forward_confirmed ? "Yes" : "No"],
           ["Known actor", stored.known_actor || item.known_actor || "-"],
           ["Actor type", stored.actor_type || item.actor_type || "-"],
+          ["Manual action", formatManualAction(stored.manual_action || item.manual_action)],
+          ["Manual label", stored.manual_label || item.manual_label || "-"],
           ["Datacenter", stored.is_datacenter ? "Yes" : "No"],
           ["Tor exit", stored.is_tor_exit ? "Yes" : "No"],
         ],
