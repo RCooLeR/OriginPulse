@@ -1347,6 +1347,23 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+.site-command-board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: #ffffff;
+}
+
+.site-command-row {
+  border-bottom: 0;
+  border-right: 1px solid var(--line);
+}
+
+.site-command-row:last-child {
+  border-right: 0;
+}
+
 .site-tab-body {
   min-height: 280px;
 }
@@ -2051,7 +2068,15 @@ td code,
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .site-command-board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .entity-next-row:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .site-command-row:nth-child(2n) {
     border-right: 0;
   }
 
@@ -2277,12 +2302,25 @@ td code,
     grid-template-columns: 1fr;
   }
 
+  .site-command-board {
+    grid-template-columns: 1fr;
+  }
+
   .entity-next-row {
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
 
+  .site-command-row {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
   .entity-next-row:last-child {
+    border-bottom: 0;
+  }
+
+  .site-command-row:last-child {
     border-bottom: 0;
   }
 

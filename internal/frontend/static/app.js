@@ -530,6 +530,7 @@ function workspaceContextPairs(route = state.route) {
   if (context.path && !(state.entity?.kind === "path" && state.entity.value === context.path)) pairs.push(["Path", context.path]);
   if (context.known_actor && !(state.entity?.kind === "actor" && state.entity.value === context.known_actor)) pairs.push(["Actor", context.known_actor]);
   if (context.actor_type) pairs.push(["Actor type", formatCategory(context.actor_type)]);
+  if (context.env) pairs.push(["Env", context.env]);
   if (context.status_class === "errors") pairs.push(["Status", "Errors only"]);
   if (context.user_agent) pairs.push(["User agent", context.user_agent]);
   return pairs;
@@ -686,7 +687,7 @@ function syncContextFromURL() {
   const selectedReportID = params.get("report_id");
   if (selectedReportID) state.selectedReportIDs[state.reportTab] = selectedReportID;
   state.viewContext = {};
-  ["ip", "asn", "path", "known_actor", "actor_type", "status_class", "site_id", "user_agent", "evidence_kind"].forEach((key) => {
+  ["ip", "asn", "path", "known_actor", "actor_type", "status_class", "site_id", "env", "user_agent", "evidence_kind"].forEach((key) => {
     const value = params.get(key);
     if (value) state.viewContext[key] = value;
   });
@@ -1630,6 +1631,7 @@ function logContextPairs() {
   if (context.path) pairs.push(["Path", context.path]);
   if (context.known_actor) pairs.push(["Actor", context.known_actor]);
   if (context.actor_type) pairs.push(["Actor type", formatCategory(context.actor_type)]);
+  if (context.env) pairs.push(["Env", context.env]);
   if (context.status_class === "errors") pairs.push(["Status", "Errors only"]);
   if (context.user_agent) pairs.push(["User agent", context.user_agent]);
   if (context.evidence_kind) pairs.push(["Evidence", context.evidence_kind]);
@@ -1820,7 +1822,7 @@ function correlatedLogTypeDefs(includeAccess = true) {
 
 function logFilterPivotForContext(logType, context = state.viewContext || {}, origin = "correlation") {
   const pivot = { kind: "log_filter", log_type: logType, origin };
-  ["path", "ip", "asn", "known_actor", "actor_type", "status_class", "user_agent", "evidence_kind"].forEach((key) => {
+  ["path", "ip", "asn", "known_actor", "actor_type", "status_class", "env", "user_agent", "evidence_kind"].forEach((key) => {
     if (context[key]) pivot[key] = context[key];
   });
   const siteID = context.site_id || state.siteID || "";
@@ -2222,6 +2224,7 @@ function filteredTopPaths() {
 function logMatchesContext(item) {
   const context = state.viewContext || {};
   if (context.site_id && item.site_id !== context.site_id) return false;
+  if (context.env && item.env !== context.env) return false;
   if (context.ip && item.ip !== context.ip) return false;
   if (context.asn && normalizeASN(item.asn) !== normalizeASN(context.asn)) return false;
   if (context.path && !pathMatches(item.path, context.path)) return false;
@@ -4166,6 +4169,7 @@ function renderSiteDetail(site) {
     setText("#siteDetailMeta", "Add sites to start building a workspace.");
     setText("#siteTabSummary", "-");
     qs("#siteRiskStrip").innerHTML = "";
+    qs("#siteCommandStrip").innerHTML = "";
     qs("#siteTabBody").innerHTML = `<div class="empty">No enabled sites configured.</div>`;
     return;
   }
@@ -4173,6 +4177,7 @@ function renderSiteDetail(site) {
   const signals = siteSignalItems(site.id);
   const topIP = siteTopSourceIPs(site.id)[0];
   const topPath = siteTopPaths(site.id)[0];
+  const topActor = siteTopActor(site.id);
   setText("#siteDetailName", site.name || site.id);
   setText("#siteDetailMeta", `${site.id} / ${site.pantheon_site_id || "no Pantheon UUID"} / ${activeFilterLabel()}${focused ? "" : " / preview"}`);
   const status = qs("#siteDetailStatus");
@@ -4185,7 +4190,9 @@ function renderSiteDetail(site) {
     ["Active signals", formatNumber(signals.length)],
     ["Top source IP", topIP?.ip || "-"],
     ["Top path", topPath?.path || "-"],
+    ["Top actor", topActor?.label || "-"],
   ].map(statTile).join("");
+  qs("#siteCommandStrip").innerHTML = siteCommandStrip(site, { signals, topIP, topPath, topActor });
   qs("#siteFocusButton").textContent = focused ? "Focused" : "Focus site";
   qs("#siteFocusButton").disabled = focused;
   qsa("[data-site-tab]").forEach((button) => {
@@ -4194,6 +4201,138 @@ function renderSiteDetail(site) {
     button.setAttribute("aria-selected", active ? "true" : "false");
   });
   renderSiteTab(site);
+}
+
+function siteTopActor(siteID) {
+  const groups = new Map();
+  const add = (label, type, item = {}) => {
+    if (!label) return;
+    const key = `${type || "actor"}|${label}`;
+    const existing = groups.get(key) || {
+      label,
+      type: type || "actor",
+      requests: 0,
+      errors: 0,
+      risk: 0,
+      ips: new Set(),
+      verifiedIPs: 0,
+      reviewIPs: 0,
+      lastSeen: "",
+    };
+    existing.requests += Number(item.requests || 0);
+    existing.errors += Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+    existing.risk = Math.max(existing.risk, Number(item.risk_score || 0));
+    if (item.ip) existing.ips.add(item.ip);
+    if (item.verified_source) existing.verifiedIPs += 1;
+    if (actorSourceNeedsReview(item)) existing.reviewIPs += 1;
+    if (!existing.lastSeen || new Date(item.last_seen || 0) > new Date(existing.lastSeen || 0)) existing.lastSeen = item.last_seen || "";
+    groups.set(key, existing);
+  };
+  siteScopedRows(state.data.analysis?.source_ips || [], siteID).forEach((item) => {
+    add(item.known_actor || actorLabelFromType(item.actor_type), item.actor_type || "source", item);
+  });
+  siteScopedRows(state.data.analysis?.user_agents || [], siteID).forEach((item) => {
+    if (!item.actor_type || item.actor_type === "browser" || item.actor_type === "unknown") return;
+    add(item.family || actorLabelFromType(item.actor_type), item.actor_type, item);
+  });
+  return Array.from(groups.values())
+    .map((item) => ({ ...item, ipCount: item.ips.size }))
+    .sort((a, b) => Number(b.risk || 0) - Number(a.risk || 0) || Number(b.requests || 0) - Number(a.requests || 0))[0] || null;
+}
+
+function siteCommandStrip(site, { signals = [], topIP = null, topPath = null, topActor = null } = {}) {
+  const siteID = site.id || "";
+  const envs = (site.envs || []).filter(Boolean).slice(0, 3);
+  const topSignal = signals[0];
+  const report = siteReports(siteID)[0];
+  const errors = Number(site.status4xx || 0) + Number(site.status5xx || 0);
+  const rows = [
+    topSignal ? {
+      title: "First signal",
+      meta: [
+        formatCategory(topSignal.group || "signal"),
+        topSignal.ip ? `IP ${topSignal.ip}` : "",
+        topSignal.path || "",
+        topSignal.lastSeen ? formatTime(topSignal.lastSeen) : "",
+      ].filter(Boolean).join(" - "),
+      valueLabel: "risk",
+      value: topSignal.risk || severityRank(topSignal.severity) * 20 || 0,
+      actions: [
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: topSignal.key, site_id: siteID, origin: "site_header" })}'>Open signal</button>`,
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(signalLogPivot(topSignal, "site_header"))}'>Signal logs</button>`,
+      ].join(""),
+    } : {
+      title: "No active signal",
+      meta: "Open the site logs or reports for routine review.",
+      valueLabel: "status",
+      value: site.status || "healthy",
+      actions: `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, origin: "site_header" })}'>Open logs</button>`,
+    },
+    {
+      title: "Attack surface",
+      meta: [
+        topActor?.label || "No actor classified",
+        topIP?.ip ? `top IP ${topIP.ip}` : "",
+        topActor?.reviewIPs ? `${formatNumber(topActor.reviewIPs)} review` : "",
+      ].filter(Boolean).join(" - "),
+      valueLabel: topActor ? "risk" : "actors",
+      value: topActor ? topActor.risk || 0 : 0,
+      actions: [
+        topActor ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: topActor.label, actor_type: topActor.type || "", site_id: siteID, origin: "site_header" })}'>Open actor</button>` : "",
+        topIP?.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: topIP.ip, site_id: siteID, origin: "site_header" })}'>Open IP</button>` : "",
+        topIP?.asn ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "asn", value: formatASN(topIP.asn), site_id: siteID, origin: "site_header" })}'>Open ASN</button>` : "",
+      ].filter(Boolean).join(""),
+    },
+    {
+      title: "Evidence filters",
+      meta: [
+        `${formatNumber(site.requests || 0)} requests`,
+        errors ? `${formatNumber(errors)} errors` : "",
+        topPath?.path || "",
+      ].filter(Boolean).join(" - "),
+      valueLabel: "paths",
+      value: formatNumber(siteTopPaths(siteID).length),
+      actions: [
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, log_type: "nginx-access", status_class: errors ? "errors" : "", origin: "site_header" })}'>Access logs</button>`,
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, log_type: "nginx-error", status_class: errors ? "errors" : "", origin: "site_header" })}'>Nginx errors</button>`,
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, log_type: "php-error", status_class: errors ? "errors" : "", origin: "site_header" })}'>PHP errors</button>`,
+        ...envs.map((env) => `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, env, log_type: "nginx-access", status_class: errors ? "errors" : "", origin: "site_header" })}'>${escapeHTML(env)}</button>`),
+        topPath?.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: topPath.path || "/", site_id: siteID, origin: "site_header" })}'>Top path</button>` : "",
+      ].filter(Boolean).join(""),
+    },
+    {
+      title: "Time and report",
+      meta: report ? [reportListLabel(report), reportWindowLabel(report)].filter(Boolean).join(" - ") : activeFilterLabel(),
+      valueLabel: report?.model || "range",
+      value: report ? formatNumber(report.summary?.requests || 0) : state.range || "24h",
+      actions: [
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, range: "24h", origin: "site_header" })}'>24h</button>`,
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", site_id: siteID, range: "7d", origin: "site_header" })}'>7d</button>`,
+        report ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: siteID, origin: "site_header" }))}'>Open report</button>` : `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "report", report_tab: state.reportTab || "daily", site_id: siteID, origin: "site_header" })}'>Reports</button>`,
+      ].join(""),
+    },
+  ];
+  return `
+    <section class="site-command-board" aria-label="Site quick investigation commands">
+      ${rows.map(siteCommandRow).join("")}
+    </section>
+  `;
+}
+
+function siteCommandRow(item) {
+  return `
+    <div class="signal-row site-command-row">
+      <div>
+        <strong>${escapeHTML(item.title || "-")}</strong>
+        <span>${escapeHTML(item.meta || "")}</span>
+        <div class="signal-actions">${item.actions || ""}</div>
+      </div>
+      <div class="signal-numbers">
+        <span>${escapeHTML(item.valueLabel || "")}</span>
+        <b>${escapeHTML(item.value ?? "")}</b>
+      </div>
+    </div>
+  `;
 }
 
 function renderSiteTab(site) {
@@ -5854,7 +5993,7 @@ function isReportPivotOrigin(pivot) {
 
 function pivotContext(pivot) {
   const context = {};
-  ["ip", "asn", "path", "known_actor", "actor_type", "status_class", "site_id", "user_agent", "evidence_kind"].forEach((key) => {
+  ["ip", "asn", "path", "known_actor", "actor_type", "status_class", "site_id", "env", "user_agent", "evidence_kind"].forEach((key) => {
     if (pivot[key]) context[key] = pivot[key];
   });
   if (pivot.kind === "ip" && pivot.value) context.ip = pivot.value;
