@@ -9147,6 +9147,7 @@ function siteSecurityRow(item) {
     item.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: siteID, origin: "site_security" })}'>Open IP</button>` : "",
     path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: path, site_id: siteID, origin: "site_security" })}'>Open path</button>` : "",
     correlatedLogActions({ path, siteID, ip: item.ip || "", statusClass, origin: "site_security" }),
+    item.ip ? ipManualButtons(item.ip, item, siteID, "mini") : "",
   ].filter(Boolean).join("");
   return `
     <div class="signal-row">
