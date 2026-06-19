@@ -1824,6 +1824,7 @@ function entityBody(entity) {
         statusClass: state.viewContext.status_class || "",
         origin: "entity",
       }), "") : ""}
+      ${entity.kind === "actor" ? entitySection("Source IP verification", actorVerificationPanel(entity), "No source IPs are tied to this actor in the current scope.") : ""}
       ${entitySection("Sites touched", sites.map(entitySiteRow).join(""), "No site distribution available.")}
       ${entitySection("Paths", paths.map(entityPathRow).join(""), "No path distribution available.")}
       ${entitySection("User agents", agents.map(entityUserAgentRow).join(""), "No user-agent distribution available.")}
@@ -1867,9 +1868,12 @@ function entityFacts(entity, detail = {}) {
     const ips = contextActorIPs({ known_actor: entity.value, actor_type: state.viewContext.actor_type || actor.type });
     return [
       ["Type", formatCategory(actor.type || state.viewContext.actor_type || "-")],
+      ["Verification", actorVerificationState(actor)],
       ["Requests", formatNumber(actor.requests || 0)],
       ["Errors", formatNumber(actor.errors || 0)],
       ["Source IPs", formatNumber(actor.ips || ips.size)],
+      ["Verified IPs", formatNumber(actor.verifiedIPs || 0)],
+      ["Needs review", formatNumber(actor.reviewIPs || actor.unverifiedIPs || 0)],
       ["Risk", actor.risk || "-"],
       ["Last seen", formatTime(actor.lastSeen)],
     ];
@@ -2003,21 +2007,33 @@ function entityUserAgentRow(item) {
 
 function renderActors() {
   const actors = aggregateActors();
-  setText("#actorSummary", `${formatNumber(actors.length)} actors`);
-  qs("#actorsList").innerHTML = actors.map((actor) => `
+  const reviewCount = actors.reduce((sum, actor) => sum + Number(actor.reviewIPs || 0), 0);
+  setText("#actorSummary", `${formatNumber(actors.length)} actors / ${formatNumber(reviewCount)} to review`);
+  qs("#actorsList").innerHTML = actors.map(actorRow).join("") || `<div class="empty">No known actors have been classified in this scope.</div>`;
+}
+
+function actorRow(actor) {
+  const verification = actorVerificationState(actor);
+  return `
     <div class="signal-row">
       <div>
         <strong>${escapeHTML(actor.label)}</strong>
-        <span>${escapeHTML(actor.type)} - ${formatNumber(actor.ips)} IPs - ${formatNumber(actor.requests)} requests</span>
+        <span>${escapeHTML([
+          formatCategory(actor.type),
+          `${formatNumber(actor.ips)} IPs`,
+          `${formatNumber(actor.verifiedIPs || 0)} verified`,
+          `${formatNumber(actor.reviewIPs || actor.unverifiedIPs || 0)} review`,
+          `${formatNumber(actor.requests)} requests`,
+        ].join(" - "))}</span>
         <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: actor.label, actor_type: actor.type, origin: "investigate" })}'>Open actor</button>
-        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", known_actor: actor.label, origin: "investigate" })}'>Open logs</button>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", known_actor: actor.label, actor_type: actor.type, origin: "investigate" })}'>Open logs</button>
       </div>
       <div class="signal-numbers">
-        <span>risk</span>
+        <span>${escapeHTML(verification)}</span>
         <b>${escapeHTML(actor.risk)}</b>
       </div>
     </div>
-  `).join("") || `<div class="empty">No known actors have been classified in this scope.</div>`;
+  `;
 }
 
 function aggregateActors() {
@@ -2034,12 +2050,18 @@ function aggregateActors() {
       risk: 0,
       ips: new Set(),
       ipCount: 0,
+      verifiedIPs: 0,
+      unverifiedIPs: 0,
+      reviewIPs: 0,
       lastSeen: "",
     };
     existing.requests += Number(item.requests || 0);
     existing.errors += Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
     existing.risk = Math.max(existing.risk, Number(item.risk_score || 0));
     if (item.ip) existing.ips.add(item.ip);
+    if (item.verified_source) existing.verifiedIPs += 1;
+    else existing.unverifiedIPs += 1;
+    if (actorSourceNeedsReview(item)) existing.reviewIPs += 1;
     if (new Date(item.last_seen || 0) > new Date(existing.lastSeen || 0)) existing.lastSeen = item.last_seen;
     groups.set(key, existing);
   });
@@ -2055,6 +2077,9 @@ function aggregateActors() {
       risk: 0,
       ips: new Set(),
       ipCount: 0,
+      verifiedIPs: 0,
+      unverifiedIPs: 0,
+      reviewIPs: 0,
       lastSeen: "",
     };
     existing.requests += Number(item.requests || 0);
@@ -2074,6 +2099,81 @@ function actorLabelFromType(type) {
   const normalized = String(type || "").toLowerCase();
   if (!normalized || normalized === "unknown" || normalized === "browser") return "";
   return formatCategory(normalized);
+}
+
+function actorVerificationState(actor = {}) {
+  const verified = Number(actor.verifiedIPs || 0);
+  const unverified = Number(actor.unverifiedIPs || 0);
+  const review = Number(actor.reviewIPs || 0);
+  if (review > 0) return "needs review";
+  if (verified > 0 && unverified > 0) return "mixed";
+  if (verified > 0) return "verified";
+  if (unverified > 0) return "unverified";
+  return actor.ipCount ? "ua-only" : "no IP proof";
+}
+
+function actorSourceNeedsReview(item = {}) {
+  if (item.verified_source) return false;
+  const type = String(item.actor_type || "").toLowerCase();
+  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  const risk = Number(item.risk_score || 0);
+  return Boolean(item.known_actor || ["crawler", "service", "monitor", "scanner", "tool", "tor", "datacenter"].includes(type) || risk >= 50 || errors > 0);
+}
+
+function actorSourceRows(label, type = "") {
+  const normalizedLabel = String(label || "").toLowerCase();
+  const normalizedType = String(type || "").toLowerCase();
+  return (state.data.analysis?.source_ips || [])
+    .filter((item) => {
+      const actor = String(item.known_actor || "").toLowerCase();
+      const actorType = String(item.actor_type || "").toLowerCase();
+      const typeLabel = actorLabelFromType(actorType).toLowerCase();
+      if (normalizedLabel && actor !== normalizedLabel && typeLabel !== normalizedLabel) return false;
+      if (normalizedType && actorType !== normalizedType) return false;
+      return true;
+    })
+    .sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0) || Number(b.requests || 0) - Number(a.requests || 0));
+}
+
+function actorVerificationPanel(entity) {
+  const actor = aggregateActors().find((item) => item.label === entity.value) || {};
+  const rows = actorSourceRows(entity.value, state.viewContext.actor_type || actor.type);
+  if (!rows.length) return "";
+  const verified = rows.filter((item) => item.verified_source).length;
+  const review = rows.filter(actorSourceNeedsReview).length;
+  const summary = `
+    <div class="verification-summary">
+      ${statTile(["Verification", actorVerificationState({ ...actor, verifiedIPs: verified, unverifiedIPs: rows.length - verified, reviewIPs: review })])}
+      ${statTile(["Verified IPs", formatNumber(verified)])}
+      ${statTile(["Needs review", formatNumber(review)])}
+      ${statTile(["Total actor IPs", formatNumber(rows.length)])}
+    </div>
+  `;
+  return `${summary}${rows.slice(0, 16).map(actorSourceRow).join("")}`;
+}
+
+function actorSourceRow(item) {
+  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  const status = item.verified_source ? "verified" : actorSourceNeedsReview(item) ? "review" : "unverified";
+  const siteID = item.site_id || state.siteID || state.viewContext.site_id || "";
+  return `
+    <div class="signal-row">
+      <div>
+        <strong>${escapeHTML(item.ip || "-")}</strong>
+        <span>${escapeHTML([
+          status,
+          item.reverse_dns || "",
+          item.known_actor || actorLabelFromType(item.actor_type),
+          siteID || "",
+          `${formatNumber(item.requests || 0)} requests`,
+          errors ? `${formatNumber(errors)} errors` : "",
+        ].filter(Boolean).join(" - "))}</span>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: siteID, origin: "actor" })}'>Open IP</button>
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ip: item.ip, known_actor: item.known_actor || "", actor_type: item.actor_type || "", site_id: siteID, status_class: errors ? "errors" : "", origin: "actor" })}'>Open logs</button>
+      </div>
+      <div class="signal-numbers"><span>${escapeHTML(status)}</span><b>${escapeHTML(item.risk_score || 0)}</b></div>
+    </div>
+  `;
 }
 
 function contextActorIPs(context = state.viewContext || {}) {
@@ -2584,8 +2684,9 @@ function siteRecentErrorRow(item) {
 function siteActorRow(item) {
   const isIP = item.kind === "Source IP";
   const label = isIP ? item.ip : item.family || item.known_actor || "User agent";
+  const verification = isIP ? (item.verified_source ? "verified" : actorSourceNeedsReview(item) ? "review" : "unverified") : "user-agent";
   const meta = isIP
-    ? [item.reverse_dns, item.known_actor, item.actor_type, `${formatNumber((item.status_4xx || 0) + (item.status_5xx || 0))} errors`].filter(Boolean).join(" - ")
+    ? [verification, item.reverse_dns, item.known_actor, item.actor_type, `${formatNumber((item.status_4xx || 0) + (item.status_5xx || 0))} errors`].filter(Boolean).join(" - ")
     : [item.actor_type, `${formatNumber(item.unique_ips || 0)} IPs`, `${formatNumber((item.status_4xx || 0) + (item.status_5xx || 0))} errors`].filter(Boolean).join(" - ");
   return `
     <div class="signal-row">
@@ -2593,9 +2694,10 @@ function siteActorRow(item) {
         <strong>${escapeHTML(label)}</strong>
         <span>${escapeHTML(meta)}</span>
         ${isIP ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: item.ip, site_id: state.siteID, origin: "site" })}'>Open IP</button>` : ""}
+        ${isIP && (item.known_actor || item.actor_type) ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: item.known_actor || actorLabelFromType(item.actor_type), actor_type: item.actor_type || "", site_id: state.siteID, origin: "site" })}'>Open actor</button>` : ""}
         <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ip: isIP ? item.ip : "", user_agent: isIP ? "" : item.sample || "", site_id: state.siteID, origin: "site" })}'>Open logs</button>
       </div>
-      <div class="signal-numbers"><span>requests</span><b>${formatNumber(item.requests || 0)}</b></div>
+      <div class="signal-numbers"><span>${escapeHTML(verification)}</span><b>${formatNumber(item.requests || 0)}</b></div>
     </div>
   `;
 }

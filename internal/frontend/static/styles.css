@@ -780,6 +780,13 @@ h2 {
   line-height: 1.4;
 }
 
+.verification-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px 10px 0;
+}
+
 .signal-raw {
   max-height: 300px;
   margin: 10px;
