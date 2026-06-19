@@ -3743,6 +3743,7 @@ function entityBody(entity) {
   return `
     <div class="field-grid entity-facts">${facts.map(statTile).join("")}</div>
     ${entityNextSteps(entity, { detail, signals, evidence, paths, sites, agents, sourceIPs })}
+    ${entityImpactMatrix(entity, { evidence, paths, sites, agents })}
     <section class="entity-detail-grid">
       ${entitySection("Investigation timeline", entityTimeline(timeline), "No timeline events in this scope.", "entity-section-wide")}
       ${entitySection("Related signals", signals.map(signalRow).join(""), "No related signals in this scope.")}
@@ -3756,6 +3757,126 @@ function entityBody(entity) {
       ${entity.lookup_errors?.length || detail.lookup_errors?.length ? entitySection("Lookup notes", `<div class="empty">${escapeHTML((entity.lookup_errors || detail.lookup_errors || []).join("\\n"))}</div>`, "") : ""}
     </section>
   `;
+}
+
+function entityImpactMatrix(entity, context = {}) {
+  const rows = entityImpactRows(entity, context).slice(0, 12);
+  const title = entity.kind === "path" ? "Affected sources" : "Affected URLs";
+  const summary = rows.length ? `${formatNumber(rows.length)} rows` : "no rows";
+  return `
+    <section class="entity-impact-panel" aria-label="Entity impact matrix">
+      <div class="entity-next-title">
+        <span>${escapeHTML(title)}</span>
+        <strong>${escapeHTML(summary)}</strong>
+      </div>
+      <div class="table-wrap entity-impact-wrap">
+        <table class="entity-impact-table">
+          <thead>
+            <tr>
+              <th>Site</th>
+              <th>${entity.kind === "path" ? "Source" : "Path"}</th>
+              <th>Requests</th>
+              <th>Errors</th>
+              <th>Latest</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => entityImpactRow(entity, row)).join("") || emptyRow(6, "No affected site/path rows in this scope.")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function entityImpactRows(entity, context = {}) {
+  const evidence = context.evidence || [];
+  const paths = context.paths || [];
+  const rows = new Map();
+  const add = (item = {}) => {
+    const siteID = item.site_id || state.viewContext.site_id || state.siteID || "";
+    const path = item.path || (entity.kind === "path" ? entity.value : "/");
+    const source = item.ip || item.client_ip || "";
+    const sourceKey = entity.kind === "path" ? source || item.user_agent || "" : path;
+    const key = [siteID, item.env || "", sourceKey || "-", entity.kind === "path" ? path : ""].join("|");
+    const existing = rows.get(key) || {
+      site_id: siteID,
+      env: item.env || "",
+      path,
+      ip: source,
+      user_agent: item.user_agent || item.sample || "",
+      requests: 0,
+      errors: 0,
+      status_4xx: 0,
+      status_5xx: 0,
+      bytes_sent: 0,
+      p95_request_time_ms: 0,
+      latest: "",
+    };
+    const requests = Number(item.requests || item.events || 0) || 1;
+    const status = Number(item.status || 0);
+    const status4xx = Number(item.status_4xx || 0) + (status >= 400 && status < 500 ? 1 : 0);
+    const status5xx = Number(item.status_5xx || 0) + (status >= 500 ? 1 : 0);
+    const errors = Number(item.errors || 0) + status4xx + status5xx;
+    existing.requests += requests;
+    existing.errors += errors;
+    existing.status_4xx += status4xx;
+    existing.status_5xx += status5xx;
+    existing.bytes_sent += Number(item.bytes_sent || 0);
+    existing.p95_request_time_ms = Math.max(existing.p95_request_time_ms || 0, Number(item.p95_request_time_ms || 0));
+    if (!existing.ip && source) existing.ip = source;
+    if (!existing.user_agent && (item.user_agent || item.sample)) existing.user_agent = item.user_agent || item.sample;
+    const latest = item.ts || item.last_seen || item.timestamp || item.max_ts || "";
+    if (latest && (!existing.latest || new Date(latest) > new Date(existing.latest || 0))) existing.latest = latest;
+    rows.set(key, existing);
+  };
+  evidence.forEach(add);
+  if (!rows.size) paths.forEach(add);
+  return Array.from(rows.values()).sort((a, b) => {
+    return Number(b.errors || 0) - Number(a.errors || 0)
+      || Number(b.requests || 0) - Number(a.requests || 0)
+      || new Date(b.latest || 0) - new Date(a.latest || 0);
+  });
+}
+
+function entityImpactRow(entity, row) {
+  const siteID = row.site_id || state.viewContext.site_id || state.siteID || "";
+  const errors = Number(row.errors || 0);
+  const path = row.path || (entity.kind === "path" ? entity.value : "/");
+  const sourceLabel = row.ip || shortLabel(row.user_agent || "", 72) || "-";
+  const mainLabel = entity.kind === "path" ? sourceLabel : path;
+  const mainMeta = entity.kind === "path"
+    ? [path, row.user_agent && row.ip ? shortLabel(row.user_agent, 72) : ""].filter(Boolean).join(" / ")
+    : [row.ip ? `IP ${row.ip}` : "", row.user_agent ? shortLabel(row.user_agent, 72) : "", row.p95_request_time_ms ? `p95 ${formatMs(row.p95_request_time_ms)}` : ""].filter(Boolean).join(" / ");
+  const logContext = {
+    path,
+    ip: row.ip || (entity.kind === "ip" ? entity.value : ""),
+    site_id: siteID,
+  };
+  const actions = [
+    siteID && siteID !== "unknown" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "site", value: siteID, origin: "entity_impact" })}'>Site</button>` : "",
+    path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: path, site_id: siteID, origin: "entity_impact" })}'>Path</button>` : "",
+    row.ip && entity.kind !== "ip" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: row.ip, site_id: siteID, origin: "entity_impact" })}'>IP</button>` : "",
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ...logContext, log_type: "nginx-access", origin: "entity_impact" })}'>Access</button>`,
+    errors ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ...logContext, status_class: "errors", log_type: "nginx-access", origin: "entity_impact" })}'>Errors</button>` : "",
+  ].filter(Boolean).join("");
+  return `
+    <tr>
+      <td><strong>${escapeHTML(siteLabel(siteID) || siteID || "All sites")}</strong><br><span>${escapeHTML([siteID, row.env].filter(Boolean).join(" / ") || "current scope")}</span></td>
+      <td class="clip"><strong>${escapeHTML(mainLabel || "-")}</strong><br><span>${escapeHTML(mainMeta || "matching evidence")}</span></td>
+      <td>${formatNumber(row.requests || 0)}<br><span>${row.bytes_sent ? formatBytes(row.bytes_sent) : ""}</span></td>
+      <td>${formatNumber(errors)}<br><span>${escapeHTML(entityImpactStatusLabel(row))}</span></td>
+      <td>${formatTime(row.latest)}</td>
+      <td class="row-actions">${actions}</td>
+    </tr>
+  `;
+}
+
+function entityImpactStatusLabel(row) {
+  const status = formatStatusBuckets(row);
+  if (status !== "no status") return status;
+  return Number(row.errors || 0) ? `${formatNumber(row.errors || 0)} errors` : "no status";
 }
 
 function entityNextSteps(entity, context = {}) {
