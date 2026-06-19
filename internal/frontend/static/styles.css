@@ -1342,6 +1342,118 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+.log-segment-board {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.log-segment-board-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.log-segment-board-head span,
+.log-segment-board-head small,
+.log-segment-chip small {
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.log-segment-board-head span {
+  display: block;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.log-segment-board-head strong {
+  display: block;
+  min-width: 0;
+  margin-top: 2px;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.log-segment-board-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.log-segment-card {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.log-segment-card > strong {
+  font-size: 0.78rem;
+}
+
+.log-segment-facts {
+  display: grid;
+  gap: 6px;
+}
+
+.log-segment-facts div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+
+.log-segment-facts span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.log-segment-facts b {
+  min-width: 0;
+  font-size: 0.75rem;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.log-segment-strip {
+  display: grid;
+  gap: 7px;
+}
+
+.log-segment-chip {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.log-segment-chip strong,
+.log-segment-chip small {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.log-segment-chip strong {
+  font-size: 0.78rem;
+}
+
 .logs-lanes-panel {
   grid-area: lanes;
 }
@@ -1420,6 +1532,12 @@ h2 {
   color: var(--amber);
   border-color: rgba(169, 98, 22, 0.3);
   background: rgba(169, 98, 22, 0.08);
+}
+
+.lane-state-failed {
+  color: var(--red);
+  border-color: rgba(185, 69, 61, 0.3);
+  background: rgba(185, 69, 61, 0.08);
 }
 
 .lane-state-empty {
@@ -3045,6 +3163,10 @@ td code,
   color: var(--red);
 }
 
+.status-combined {
+  color: var(--ink);
+}
+
 .status-skipped,
 .status-pending {
   color: var(--amber);
@@ -3729,6 +3851,10 @@ td code,
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .log-segment-board-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .report-path-board {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -3872,6 +3998,17 @@ td code,
 
   .report-path-step:last-child {
     border-bottom: 0;
+  }
+
+  .log-segment-board-head,
+  .log-segment-board-grid,
+  .log-segment-chip {
+    grid-template-columns: 1fr;
+  }
+
+  .log-segment-board-head .signal-actions,
+  .log-segment-chip .inline-action {
+    justify-self: start;
   }
 
   .span-2 {

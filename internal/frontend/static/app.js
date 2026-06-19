@@ -2325,7 +2325,12 @@ function renderUnsupportedLogExplorer() {
     ["Correlated access rows", formatNumber(correlatedEvidence.length)],
   ].map(statTile).join("");
   renderLogsScopePath(correlatedEvidence, correlatedPaths, { segments });
-  renderLogTypeProfile({ evidence: correlatedEvidence, topPaths: correlatedPaths, segments });
+  renderLogTypeProfile({
+    evidence: correlatedEvidence,
+    topPaths: correlatedPaths,
+    segments,
+    extraHTML: unsupportedLogSegmentBoard(segments, correlatedEvidence, correlatedPaths),
+  });
   setText("#logsTimelineSummary", segmentTimeline.length ? `${formatNumber(segmentTimeline.length)} segment buckets` : "no segments");
   setText("#logsEvidenceEyebrow", "Segment evidence");
   setText("#logsEvidenceTitle", `${formatLogType(state.logType)} combined segments`);
@@ -2385,7 +2390,7 @@ function renderLogLaneOverview(evidence = filteredLogEvidence(), topPaths = filt
   container.innerHTML = rows.map(logLaneRow).join("") || `<div class="empty">No log lanes are configured.</div>`;
 }
 
-function renderLogTypeProfile({ evidence = [], topPaths = [], segments = [] } = {}) {
+function renderLogTypeProfile({ evidence = [], topPaths = [], segments = [], extraHTML = "" } = {}) {
   const container = qs("#logsTypeProfile");
   if (!container) return;
   const profile = logTypeProfile(state.logType, { evidence, topPaths, segments });
@@ -2403,6 +2408,7 @@ function renderLogTypeProfile({ evidence = [], topPaths = [], segments = [] } = 
       </div>
       <div class="signal-actions">${profile.actions}</div>
     </section>
+    ${extraHTML || ""}
   `;
 }
 
@@ -3000,31 +3006,140 @@ function unsupportedLogCorrelationFacet(evidence) {
   `;
 }
 
+function unsupportedLogSegmentBoard(segments = [], evidence = [], topPaths = []) {
+  const logType = state.logType || "nginx-error";
+  const current = segments[0];
+  const def = logTypeDefinition(logType);
+  const indexed = segments.filter((item) => item.indexed || item.status === "indexed").length;
+  const pending = Math.max(0, segments.length - indexed);
+  const lines = segments.reduce((sum, item) => sum + Number(item.line_count || 0), 0);
+  const context = state.viewContext || {};
+  const siteID = context.site_id || state.siteID || "";
+  const topPath = context.path ? { path: context.path, site_id: siteID } : topPaths[0] || {};
+  const topIP = context.ip || evidence[0]?.ip || "";
+  const lanePivot = logFilterPivotForContext(logType, context, "logs_segment_board");
+  const accessPivot = logFilterPivotForContext("nginx-access", context, "logs_segment_board");
+  const boardActions = [
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(lanePivot)}'>Open lane</button>`,
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(accessPivot)}'>Access rows</button>`,
+    topPath.path ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "path", value: topPath.path, site_id: topPath.site_id || siteID, origin: "logs_segment_board" })}'>Top path</button>` : "",
+    topIP ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: topIP, site_id: siteID, origin: "logs_segment_board" })}'>Top IP</button>` : "",
+    pending ? `<button class="ghost mini inline-action" type="button" data-route-target="system">System</button>` : "",
+  ].filter(Boolean).join("");
+  return `
+    <section class="log-segment-board" aria-label="${escapeHTML(formatLogType(logType))} segment investigation board">
+      <div class="log-segment-board-head">
+        <div>
+          <span>Segment investigation</span>
+          <strong>${escapeHTML(current ? segmentTitle(current) : `${formatLogType(logType)} lane`)}</strong>
+          <small>${escapeHTML(current ? segmentWindowLabel(current) : "No combined segments in the recent window")}</small>
+        </div>
+        <div class="signal-actions">${boardActions}</div>
+      </div>
+      <div class="log-segment-board-grid">
+        ${segmentBoardCard("Coverage", [
+          ["Segments", formatNumber(segments.length)],
+          ["Lines", formatNumber(lines)],
+          ["Latest bucket", formatTime(current?.bucket_start || current?.min_ts || current?.bucket_end)],
+        ])}
+        ${segmentBoardCard("Index state", [
+          ["Indexed", formatNumber(indexed)],
+          ["Parser pending", formatNumber(pending)],
+          ["Current", current ? segmentStatusLabel(current) : "no segment"],
+        ])}
+        ${segmentBoardCard("Parsed fields", def.fields.map((field) => [field, "planned"]))}
+        ${segmentBoardCard("Correlate", [
+          ["Access rows", formatNumber(evidence.length)],
+          ["Paths", formatNumber(topPaths.length)],
+          ["Entity", topIP ? `IP ${topIP}` : topPath.path || "scope"],
+        ])}
+      </div>
+      <div class="log-segment-strip">
+        ${segments.slice(0, 4).map(unsupportedLogSegmentChip).join("") || `<div class="empty">Segment metadata will appear here after the combiner writes this log type.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function segmentBoardCard(title, rows = []) {
+  return `
+    <div class="log-segment-card">
+      <strong>${escapeHTML(title)}</strong>
+      <div class="log-segment-facts">
+        ${rows.slice(0, 6).map(([label, value]) => `
+          <div>
+            <span>${escapeHTML(label)}</span>
+            <b>${escapeHTML(value || "-")}</b>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function unsupportedLogSegmentChip(segment) {
+  const status = segmentStatusLabel(segment);
+  const lanePivot = logFilterPivotForContext(segment.log_type || state.logType, state.viewContext || {}, "logs_segment_chip");
+  return `
+    <div class="log-segment-chip">
+      <span class="lane-state lane-state-${escapeHTML(segmentStateClass(segment))}">${escapeHTML(status)}</span>
+      <div>
+        <strong>${escapeHTML(segmentTitle(segment))}</strong>
+        <small>${escapeHTML([segmentWindowLabel(segment), `${formatNumber(segment.line_count || 0)} lines`, shortHash(segment.sha256 || segment.id || "")].filter(Boolean).join(" / "))}</small>
+      </div>
+      <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(lanePivot)}'>Lane</button>
+    </div>
+  `;
+}
+
 function logSegmentTableRow(segment) {
-  const status = segment.indexed || segment.status === "indexed" ? "indexed" : segment.status || "combined";
+  const status = segmentStatusLabel(segment);
   const start = segment.min_ts || segment.bucket_start;
   const end = segment.max_ts || segment.bucket_end;
-  const accessPivot = {
-    kind: "log_filter",
-    log_type: "nginx-access",
-    origin: "logs",
-    ...state.viewContext,
-  };
-  if (state.siteID || state.viewContext.site_id) accessPivot.site_id = state.viewContext.site_id || state.siteID;
+  const context = state.viewContext || {};
+  const siteID = context.site_id || state.siteID || "";
+  const lanePivot = logFilterPivotForContext(segment.log_type || state.logType, context, "logs_segment_row");
+  const accessPivot = logFilterPivotForContext("nginx-access", context, "logs_segment_row");
+  const pathPivot = context.path ? { kind: "path", value: context.path, site_id: siteID, origin: "logs_segment_row" } : null;
+  const pending = !(segment.indexed || segment.status === "indexed");
   return `
     <tr>
       <td><strong>${formatTime(segment.bucket_start || start)}</strong><br><span>${formatTime(segment.bucket_end || end)}</span></td>
       <td><span class="status-${escapeHTML(status)}">${escapeHTML(status)}</span><br><span>${escapeHTML(formatLogType(segment.log_type))}</span></td>
-      <td>${escapeHTML(state.siteID || state.viewContext.site_id || "all sites")}<br><span>combined scope</span></td>
+      <td>${escapeHTML(siteID || "all sites")}<br><span>combined scope</span></td>
       <td><strong>${formatNumber(segment.line_count || 0)} lines</strong><br><span>${escapeHTML(shortHash(segment.sha256 || segment.id || ""))}</span></td>
       <td class="clip">${escapeHTML(segment.path || "-")}</td>
       <td>${escapeHTML([start ? `min ${formatTime(start)}` : "", end ? `max ${formatTime(end)}` : ""].filter(Boolean).join(" / ") || "parser pending")}</td>
       <td class="row-actions">
+        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(lanePivot)}'>Lane</button>
         <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(accessPivot)}'>Access rows</button>
-        <button class="ghost mini inline-action" type="button" data-route-target="system">System</button>
+        ${pathPivot ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(pathPivot)}'>Path</button>` : ""}
+        ${pending ? `<button class="ghost mini inline-action" type="button" data-route-target="system">System</button>` : ""}
       </td>
     </tr>
   `;
+}
+
+function segmentTitle(segment = {}) {
+  return `${formatLogType(segment.log_type || state.logType)} ${formatTime(segment.bucket_start || segment.min_ts || segment.bucket_end)}`;
+}
+
+function segmentStatusLabel(segment = {}) {
+  return segment.indexed || segment.status === "indexed" ? "indexed" : segment.status || "combined";
+}
+
+function segmentStateClass(segment = {}) {
+  if (segment.indexed || segment.status === "indexed") return "indexed";
+  if (segment.status === "failed") return "failed";
+  return segment.status ? "pending" : "pending";
+}
+
+function segmentWindowLabel(segment = {}) {
+  const start = segment.min_ts || segment.bucket_start;
+  const end = segment.max_ts || segment.bucket_end;
+  if (!start && !end) return "parser timestamp pending";
+  if (!start || !end || start === end) return formatTime(start || end);
+  return `${formatTime(start)} to ${formatTime(end)}`;
 }
 
 function shortHash(value) {
