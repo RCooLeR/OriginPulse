@@ -1214,6 +1214,76 @@ h2 {
   align-items: start;
 }
 
+.investigation-queue {
+  display: grid;
+}
+
+.investigation-case-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 0.16fr);
+  gap: 12px;
+  align-items: start;
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.investigation-case-row:last-child {
+  border-bottom: 0;
+}
+
+.investigation-case-main {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.investigation-case-main strong,
+.investigation-case-main span,
+.investigation-case-main small,
+.investigation-case-numbers small {
+  min-width: 0;
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.investigation-case-main strong {
+  font-size: 0.95rem;
+}
+
+.investigation-case-main span,
+.investigation-case-main small,
+.investigation-case-numbers small {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.investigation-case-main .signal-actions {
+  margin-top: 7px;
+}
+
+.investigation-case-numbers {
+  min-width: 0;
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+  text-align: right;
+}
+
+.investigation-case-numbers span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.investigation-case-numbers b {
+  color: var(--ink);
+  font-size: 1.12rem;
+}
+
 .entity-page {
   display: grid;
 }
@@ -2231,6 +2301,15 @@ td code,
 
   .entity-next-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .investigation-case-row {
+    grid-template-columns: 1fr;
+  }
+
+  .investigation-case-numbers {
+    justify-items: start;
+    text-align: left;
   }
 
   .site-command-board {
