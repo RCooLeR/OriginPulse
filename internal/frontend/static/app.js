@@ -262,6 +262,12 @@ function wireEvents() {
       return;
     }
 
+    const contextActionButton = event.target.closest("[data-context-action]");
+    if (contextActionButton) {
+      await handleWorkspaceContextAction(contextActionButton.dataset.contextAction || "");
+      return;
+    }
+
     const siteActionButton = event.target.closest("[data-site-action]");
     if (siteActionButton) {
       await handleSiteAction(siteActionButton.dataset.siteAction || "focus");
@@ -425,6 +431,7 @@ async function refreshWithValidation() {
 function render() {
   renderUserBadge();
   renderFilters();
+  renderWorkspaceContext();
   renderDashboard();
   renderLogs();
   renderSignals();
@@ -454,6 +461,136 @@ function renderFilters() {
   qs("#rangeSelect").value = state.range;
   syncWindowInputs();
   setText("#activeFilterSummary", activeFilterLabel());
+}
+
+function renderWorkspaceContext() {
+  const bar = qs("#workspaceContextBar");
+  if (!bar) return;
+  const route = normalizeRoute(state.route);
+  const activeContext = workspaceContextPairs(route);
+  const hasDrilldownContext = workspaceHasDrilldownContext();
+  setText("#workspaceContextTitle", `${routes[route].title} workspace`);
+  setText("#workspaceContextSubtitle", workspaceContextSubtitle(route));
+  qs("#workspaceContextChips").innerHTML = activeContext.map(contextChip).join("");
+  qs("#workspaceContextActions").innerHTML = workspaceContextActions(route, hasDrilldownContext);
+  bar.classList.toggle("has-drilldown", hasDrilldownContext);
+}
+
+function workspaceContextSubtitle(route = state.route) {
+  const parts = [activeFilterLabel()];
+  if (route === "logs") parts.push(formatLogType(state.logType));
+  if (route === "signals" && state.signalFilter !== "all") parts.push(`${formatCategory(state.signalFilter)} signals`);
+  if (state.signalKey) parts.push("signal detail");
+  if (state.entity?.kind && state.entity.value) parts.push(`${formatCategory(state.entity.kind)} detail`);
+  const context = state.viewContext || {};
+  if (context.status_class === "errors") parts.push("errors only");
+  return parts.filter(Boolean).join(" / ");
+}
+
+function workspaceContextPairs(route = state.route) {
+  const pairs = [
+    ["Route", routes[route]?.title || "Overview"],
+    ["Scope", activeFilterLabel()],
+  ];
+  if (route === "logs") pairs.push(["Log type", formatLogType(state.logType)]);
+  if (route === "signals") pairs.push(["Signal tab", formatCategory(state.signalFilter || "all")]);
+  if (route === "reports") pairs.push(["Report tab", formatCategory(state.reportTab || "daily")]);
+  if (state.signalKey) pairs.push(["Signal", shortLabel(state.signalKey, 42)]);
+  if (state.entity?.kind && state.entity.value) pairs.push([formatCategory(state.entity.kind), state.entity.value]);
+  const context = state.viewContext || {};
+  if (context.ip && !(state.entity?.kind === "ip" && state.entity.value === context.ip)) pairs.push(["IP", context.ip]);
+  if (context.path && !(state.entity?.kind === "path" && state.entity.value === context.path)) pairs.push(["Path", context.path]);
+  if (context.known_actor && !(state.entity?.kind === "actor" && state.entity.value === context.known_actor)) pairs.push(["Actor", context.known_actor]);
+  if (context.actor_type) pairs.push(["Actor type", formatCategory(context.actor_type)]);
+  if (context.status_class === "errors") pairs.push(["Status", "Errors only"]);
+  if (context.user_agent) pairs.push(["User agent", context.user_agent]);
+  return pairs;
+}
+
+function contextChip([label, value]) {
+  return `<span class="context-chip"><b>${escapeHTML(label)}</b>${escapeHTML(value || "-")}</span>`;
+}
+
+function workspaceHasDrilldownContext() {
+  const context = state.viewContext || {};
+  return Boolean(
+    state.siteID
+    || state.signalKey
+    || state.entity?.value
+    || Object.values(context).some(Boolean)
+    || state.logType !== "nginx-access"
+    || state.signalFilter !== "all"
+  );
+}
+
+function workspaceContextActions(route = state.route, hasDrilldownContext = workspaceHasDrilldownContext()) {
+  const actions = [];
+  if (route !== "logs") {
+    actions.push(`<button class="ghost mini" type="button" data-pivot='${encodePivot(currentLogPivot("workspace"))}'>Open logs</button>`);
+  }
+  if (route !== "signals") {
+    actions.push(`<button class="ghost mini" type="button" data-context-action="open-signals">Signals</button>`);
+  }
+  if (route !== "reports") {
+    actions.push(`<button class="ghost mini" type="button" data-pivot='${encodePivot(currentReportPivot("workspace"))}'>Reports</button>`);
+  }
+  actions.push(`<button class="ghost mini" type="button" data-context-action="copy-link">Copy link</button>`);
+  if (hasDrilldownContext) {
+    actions.push(`<button class="ghost mini" type="button" data-context-action="clear">Clear context</button>`);
+  }
+  return actions.join("");
+}
+
+function currentLogPivot(origin = state.route) {
+  const pivot = {
+    kind: "log_filter",
+    log_type: state.logType || "nginx-access",
+    origin,
+    ...state.viewContext,
+  };
+  if (state.siteID || state.viewContext.site_id) pivot.site_id = state.viewContext.site_id || state.siteID;
+  return pivot;
+}
+
+function currentReportPivot(origin = state.route) {
+  return {
+    kind: "report",
+    report_tab: state.reportTab || "daily",
+    site_id: state.viewContext.site_id || state.siteID || "",
+    origin,
+  };
+}
+
+async function handleWorkspaceContextAction(action) {
+  if (action === "open-signals") {
+    state.entity = null;
+    state.signalKey = "";
+    showRoute("signals", true);
+    renderSignals();
+    renderWorkspaceContext();
+    return;
+  }
+  if (action === "clear") {
+    state.siteID = "";
+    state.viewContext = {};
+    state.entity = null;
+    state.signalKey = "";
+    state.signalFilter = "all";
+    state.logType = "nginx-access";
+    resetContextPages();
+    updateURL(false);
+    await refreshWithValidation();
+    return;
+  }
+  if (action === "copy-link") {
+    updateURL(false);
+    try {
+      await navigator.clipboard.writeText(location.href);
+      toast("Workspace link copied");
+    } catch {
+      toast("Copy failed; use the address bar link instead.", true);
+    }
+  }
 }
 
 function buildFilterQuery(extra = {}) {
@@ -1163,9 +1300,7 @@ function accessLogStats(totals, evidence, topPaths) {
 }
 
 function logContextChips() {
-  return logContextPairs().map(([label, value]) => `
-    <span class="context-chip"><b>${escapeHTML(label)}</b>${escapeHTML(value)}</span>
-  `);
+  return logContextPairs().map(contextChip);
 }
 
 function logContextPairs() {
@@ -4032,6 +4167,7 @@ function showRoute(route, push) {
   qsa("[data-route]").forEach((link) => link.classList.toggle("active", link.dataset.route === route));
   setText("#pageTitle", routes[route].title);
   updateURL(Boolean(push));
+  renderWorkspaceContext();
   requestAnimationFrame(() => renderCharts());
 }
 
