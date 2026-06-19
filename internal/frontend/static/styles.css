@@ -883,6 +883,7 @@ h2 {
   grid-template-columns: minmax(320px, 0.36fr) minmax(0, 1fr);
   grid-template-areas:
     "summary evidence"
+    "plan evidence"
     "timeline evidence"
     "facets evidence"
     "correlation evidence"
@@ -894,6 +895,18 @@ h2 {
 
 .logs-summary-panel {
   grid-area: summary;
+}
+
+.logs-command-panel {
+  grid-area: plan;
+}
+
+.logs-command-list {
+  display: grid;
+}
+
+.logs-command-row:last-child {
+  border-bottom: 0;
 }
 
 .logs-timeline-panel {
@@ -2245,6 +2258,7 @@ td code,
   }
 
   .logs-summary-panel,
+  .logs-command-panel,
   .logs-timeline-panel,
   .logs-facets-panel,
   .logs-correlation-panel,

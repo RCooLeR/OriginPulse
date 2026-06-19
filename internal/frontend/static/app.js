@@ -1485,6 +1485,7 @@ function renderLogs() {
   setText("#logsTimelineSummary", `${formatNumber(timeline.length)} buckets`);
   renderPager("#logsPager", "logEvidence", evidence);
   setText("#logsEvidenceCount", `${formatNumber(pageItems.length)} of ${formatNumber(evidence.length)} rows`);
+  renderLogsInvestigationPlan(evidence, topPaths);
   qs("#logsEvidenceTable").innerHTML = pageItems.map(logEvidenceTableRow).join("") || emptyRow(7, "No matching access-log evidence in this scope.");
   qs("#logsFacetsList").innerHTML = logFacetSections(evidence, topPaths).join("");
   setText("#logsFacetSummary", `${formatNumber(logFacetCount(evidence, topPaths))} values`);
@@ -1521,6 +1522,7 @@ function renderUnsupportedLogExplorer() {
   setText("#logsEvidenceTitle", `${formatLogType(state.logType)} combined segments`);
   renderPager("#logsPager", "logEvidence", segments);
   setText("#logsEvidenceCount", segments.length ? `${formatNumber(pageItems.length)} of ${formatNumber(segments.length)} segments` : "no segments");
+  renderLogsInvestigationPlan(correlatedEvidence, correlatedPaths, { segments });
   qs("#logsEvidenceTable").innerHTML = pageItems.map(logSegmentTableRow).join("") || emptyRow(7, `${formatLogType(state.logType)} has no combined segments in the recent segment window.`);
   qs("#logsFacetsList").innerHTML = `
     <section class="facet-section">
@@ -1562,6 +1564,223 @@ function renderUnsupportedLogExplorer() {
   const relatedRows = unsupportedLogRelatedEvidenceRows(correlatedEvidence, correlatedPaths, segments);
   setText("#logsRelatedCount", `${formatNumber(relatedRows.length)} links`);
   qs("#logsRelatedList").innerHTML = relatedRows.slice(0, 10).map(logRelatedEvidenceRow).join("") || `<div class="empty">No related access evidence or signals match this ${escapeHTML(formatLogType(state.logType))} scope.</div>`;
+}
+
+function renderLogsInvestigationPlan(evidence = [], topPaths = [], options = {}) {
+  const rows = logInvestigationPlanRows(evidence, topPaths, options);
+  setText("#logsPlanSummary", rows.length ? `${formatNumber(rows.length)} steps` : "no steps");
+  const container = qs("#logsInvestigationPlan");
+  if (!container) return;
+  container.innerHTML = rows.map(logInvestigationPlanRow).join("") || `<div class="empty">No investigation steps available for this scope.</div>`;
+}
+
+function logInvestigationPlanRows(evidence = [], topPaths = [], options = {}) {
+  const context = state.viewContext || {};
+  const currentSegments = options.segments || (state.logType === "nginx-access" ? [] : unsupportedLogSegments(state.logType));
+  const isAccess = state.logType === "nginx-access";
+  const siteID = context.site_id || state.siteID || "";
+  const errors = evidence.reduce((sum, item) => sum + Number(item.errors || 0) + Number(item.status_4xx || 0) + Number(item.status_5xx || 0), 0);
+  const requests = evidence.reduce((sum, item) => sum + Number(item.requests || 0), 0);
+  const segmentLines = currentSegments.reduce((sum, item) => sum + Number(item.line_count || 0), 0);
+  const pendingSegments = currentSegments.filter((item) => !(item.indexed || item.status === "indexed")).length;
+  const primaryEntity = logPrimaryEntity(evidence, topPaths);
+  const topSignal = relatedSignalsForLogContext(evidence, topPaths)[0];
+  const report = reportContextsForLogContext(evidence, topPaths)[0];
+  const rows = [
+    isAccess ? {
+      title: "Review matching access evidence",
+      meta: [
+        logContextLabel(),
+        `${formatNumber(evidence.length)} rows`,
+        `${formatNumber(requests)} requests`,
+        errors ? `${formatNumber(errors)} errors` : "",
+      ].filter(Boolean).join(" - "),
+      valueLabel: "rows",
+      value: formatNumber(evidence.length),
+      actions: [
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(logFilterPivotForContext("nginx-access", context, "logs_plan"))}'>Open access</button>`,
+        errors && context.status_class !== "errors" ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ ...logFilterPivotForContext("nginx-access", context, "logs_plan"), status_class: "errors" })}'>Errors only</button>` : "",
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", log_type: "nginx-access", origin: "logs_plan" })}'>All access</button>`,
+      ].filter(Boolean).join(""),
+    } : {
+      title: `Review ${formatLogType(state.logType)} segments`,
+      meta: [
+        logContextLabel(),
+        `${formatNumber(segmentLines)} combined lines`,
+        pendingSegments ? `${formatNumber(pendingSegments)} pending index` : "indexed",
+        `${formatNumber(evidence.length)} correlated access rows`,
+      ].filter(Boolean).join(" - "),
+      valueLabel: "segments",
+      value: formatNumber(currentSegments.length),
+      actions: [
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(logFilterPivotForContext(state.logType, context, "logs_plan"))}'>Open ${escapeHTML(formatLogType(state.logType))}</button>`,
+        `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(logFilterPivotForContext("nginx-access", context, "logs_plan"))}'>Access rows</button>`,
+        pendingSegments ? `<button class="ghost mini inline-action" type="button" data-route-target="system">Index status</button>` : "",
+      ].filter(Boolean).join(""),
+    },
+    primaryEntity ? {
+      title: "Inspect primary entity",
+      meta: primaryEntity.meta,
+      valueLabel: primaryEntity.valueLabel,
+      value: primaryEntity.metricValue,
+      actions: logPrimaryEntityActions(primaryEntity),
+    } : null,
+    {
+      title: "Correlate log lanes",
+      meta: logCorrelationPlanMeta(context, topPaths, evidence),
+      valueLabel: "lanes",
+      value: formatNumber(correlatedLogTypeDefs(true).length),
+      actions: correlatedLogActions({
+        path: context.path || topPaths[0]?.path || "",
+        ip: context.ip || evidence[0]?.ip || "",
+        siteID,
+        statusClass: context.status_class || (errors ? "errors" : ""),
+        origin: "logs_plan",
+      }),
+    },
+    {
+      title: "Open signal and report context",
+      meta: [
+        topSignal ? topSignal.title : "No matching signal selected",
+        report ? reportListLabel(report) : "No matching report selected",
+      ].filter(Boolean).join(" - "),
+      valueLabel: topSignal ? "risk" : report ? "report" : "context",
+      value: topSignal ? topSignal.risk || severityRank(topSignal.severity) * 20 || 0 : report ? formatNumber(report.summary?.requests || 0) : "open",
+      actions: [
+        topSignal ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "signal", key: topSignal.key, site_id: topSignal.siteID || siteID, origin: "logs_plan" })}'>Open signal</button>` : `<button class="ghost mini inline-action" type="button" data-route-target="signals">Signals</button>`,
+        report ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(reportPivot(report, { kind: "report", value: reportKey(report), report_tab: reportTabForReport(report), site_id: report.site_id || siteID, origin: "logs_plan" }))}'>Open report</button>` : `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "report", report_tab: state.reportTab || "daily", site_id: siteID, origin: "logs_plan" })}'>Reports</button>`,
+      ].join(""),
+    },
+  ];
+  return rows.filter(Boolean);
+}
+
+function logInvestigationPlanRow(item) {
+  return `
+    <div class="signal-row logs-command-row">
+      <div>
+        <strong>${escapeHTML(item.title || "-")}</strong>
+        <span>${escapeHTML(item.meta || "")}</span>
+        <div class="signal-actions">${item.actions || ""}</div>
+      </div>
+      <div class="signal-numbers">
+        <span>${escapeHTML(item.valueLabel || "")}</span>
+        <b>${escapeHTML(item.value ?? "")}</b>
+      </div>
+    </div>
+  `;
+}
+
+function logPrimaryEntity(evidence = [], topPaths = []) {
+  const context = state.viewContext || {};
+  const siteID = context.site_id || state.siteID || "";
+  if (context.ip) return logPrimaryEntityFromParts("ip", context.ip, siteID, evidence, topPaths);
+  if (context.asn) return logPrimaryEntityFromParts("asn", formatASN(context.asn) || context.asn, siteID, evidence, topPaths);
+  if (context.path) return logPrimaryEntityFromParts("path", context.path, siteID, evidence, topPaths);
+  if (context.known_actor) return logPrimaryEntityFromParts("actor", context.known_actor, siteID, evidence, topPaths, { actor_type: context.actor_type || "" });
+  if (context.user_agent) return logPrimaryEntityFromParts("user-agent", context.user_agent, siteID, evidence, topPaths);
+  const topIP = countFacet(evidence, (item) => item.ip, (item) => item.requests)[0];
+  if (topIP?.label) return logPrimaryEntityFromParts("ip", topIP.label, topIP.site_id || siteID, evidence, topPaths, { requests: topIP.value, errors: topIP.errors });
+  if (topPaths[0]?.path) return logPrimaryEntityFromParts("path", topPaths[0].path || "/", topPaths[0].site_id || siteID, evidence, topPaths, { requests: topPaths[0].requests, errors: Number(topPaths[0].status_4xx || 0) + Number(topPaths[0].status_5xx || 0) });
+  if (siteID) return logPrimaryEntityFromParts("site", siteID, siteID, evidence, topPaths);
+  return null;
+}
+
+function logPrimaryEntityFromParts(kind, value, siteID, evidence = [], topPaths = [], extra = {}) {
+  const source = kind === "ip" ? sourceIPContextForIP(value) : {};
+  const rows = kind === "path" ? topPaths.filter((item) => pathMatches(item.path, value)) : evidence.filter((item) => logEvidenceMatchesEntity(item, kind, value, extra));
+  const requests = extra.requests ?? rows.reduce((sum, item) => sum + Number(item.requests || 0), 0);
+  const errors = extra.errors ?? rows.reduce((sum, item) => sum + Number(item.errors || 0) + Number(item.status_4xx || 0) + Number(item.status_5xx || 0), 0);
+  return {
+    kind,
+    value,
+    siteID,
+    actor_type: extra.actor_type || source.actor_type || "",
+    meta: [
+      logEntityLabel(kind, value),
+      source.known_actor || actorLabelFromType(source.actor_type) || "",
+      source.asn ? formatASN(source.asn) : "",
+      source.asn_org || source.network || "",
+      requests ? `${formatNumber(requests)} requests` : "",
+      errors ? `${formatNumber(errors)} errors` : "",
+    ].filter(Boolean).join(" - "),
+    valueLabel: kind === "ip" ? "risk" : kind === "path" ? "errors" : "rows",
+    metricValue: kind === "ip" ? source.risk_score || 0 : kind === "path" ? formatNumber(errors) : formatNumber(rows.length || 1),
+  };
+}
+
+function logEvidenceMatchesEntity(item, kind, value, extra = {}) {
+  if (kind === "ip") return item.ip === value;
+  if (kind === "asn") return normalizeASN(item.asn) === normalizeASN(value);
+  if (kind === "path") return pathMatches(item.path, value);
+  if (kind === "actor") return item.known_actor === value || (extra.actor_type && item.actor_type === extra.actor_type);
+  if (kind === "user-agent") return userAgentMatches(item.user_agent || "", value);
+  if (kind === "site") return item.site_id === value;
+  return false;
+}
+
+function logPrimaryEntityActions(entity) {
+  const logPivot = logPrimaryEntityLogPivot(entity);
+  const entityPivot = {
+    kind: entity.kind,
+    value: entity.value,
+    site_id: entity.siteID || "",
+    origin: "logs_plan",
+  };
+  if (entity.kind === "site") {
+    entityPivot.kind = "site";
+  }
+  if (entity.kind === "actor" && entity.actor_type) entityPivot.actor_type = entity.actor_type;
+  return [
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(entityPivot)}'>Open ${escapeHTML(logEntityActionLabel(entity.kind))}</button>`,
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot(logPivot)}'>Matching logs</button>`,
+  ].join("");
+}
+
+function logPrimaryEntityLogPivot(entity) {
+  const pivot = { kind: "log_filter", log_type: state.logType || "nginx-access", site_id: entity.siteID || "", origin: "logs_plan" };
+  if (entity.kind === "ip") pivot.ip = entity.value;
+  if (entity.kind === "asn") pivot.asn = formatASN(entity.value) || entity.value;
+  if (entity.kind === "path") pivot.path = entity.value;
+  if (entity.kind === "actor") {
+    pivot.known_actor = entity.value;
+    if (entity.actor_type) pivot.actor_type = entity.actor_type;
+  }
+  if (entity.kind === "user-agent") pivot.user_agent = entity.value;
+  return pivot;
+}
+
+function logEntityLabel(kind, value) {
+  if (kind === "ip") return `IP ${value}`;
+  if (kind === "asn") return formatASN(value) || value;
+  if (kind === "path") return `Path ${value}`;
+  if (kind === "actor") return `Actor ${value}`;
+  if (kind === "user-agent") return `User agent ${shortLabel(value, 72)}`;
+  if (kind === "site") return `Site ${value}`;
+  return value;
+}
+
+function logEntityActionLabel(kind) {
+  return {
+    ip: "IP",
+    asn: "ASN",
+    path: "path",
+    actor: "actor",
+    "user-agent": "user agent",
+    site: "site",
+  }[kind] || "entity";
+}
+
+function logCorrelationPlanMeta(context = state.viewContext || {}, topPaths = [], evidence = []) {
+  const summaries = correlatedLogTypeDefs(false).map(([logType]) => segmentSummaryForLogType(logType));
+  const segments = summaries.reduce((sum, item) => sum + Number(item.count || 0), 0);
+  const pending = summaries.reduce((sum, item) => sum + Number(item.pending || 0), 0);
+  return [
+    context.path || topPaths[0]?.path || "",
+    context.ip ? `IP ${context.ip}` : evidence[0]?.ip ? `IP ${evidence[0].ip}` : "",
+    segments ? `${formatNumber(segments)} related segments` : "segment lanes ready",
+    pending ? `${formatNumber(pending)} pending index` : "",
+  ].filter(Boolean).join(" - ");
 }
 
 function unsupportedLogSegments(logType = state.logType) {
