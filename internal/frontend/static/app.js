@@ -6699,19 +6699,44 @@ function renderActors() {
 
 function actorRow(actor) {
   const verification = actorVerificationState(actor);
+  const siteID = state.viewContext.site_id || state.siteID || "";
+  const topSource = actorPrimarySource(actor);
+  const topSourceSiteID = topSource.site_id || siteID;
+  const topSourceStatus = topSource.ip ? actorSourceStatus(topSource) : "";
+  const topSourceErrors = actorSourceErrors(topSource);
+  const actorErrors = Number(actor.errors || 0);
+  const meta = [
+    formatCategory(actor.type),
+    `${formatNumber(actor.ips)} IPs`,
+    actor.siteCount ? `${formatNumber(actor.siteCount)} sites` : "",
+    `${formatNumber(actor.verifiedIPs || 0)} verified`,
+    `${formatNumber(actor.reviewIPs || actor.unverifiedIPs || 0)} review`,
+    `${formatNumber(actor.requests)} requests`,
+    actorErrors ? `${formatNumber(actorErrors)} errors` : "",
+  ].filter(Boolean).join(" - ");
+  const sourceMeta = topSource.ip ? [
+    `Top source ${topSource.ip}`,
+    topSourceStatus,
+    topSource.asn ? formatASN(topSource.asn) : "",
+    topSource.asn_org || topSource.network || "",
+    topSourceErrors ? `${formatNumber(topSourceErrors)} errors` : "",
+    topSource.last_seen ? `last ${formatTime(topSource.last_seen)}` : "",
+  ].filter(Boolean).join(" - ") : "No source IP evidence in the current scope";
+  const actions = [
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: actor.label, actor_type: actor.type, site_id: siteID, origin: "investigate" })}'>Open actor</button>`,
+    `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", known_actor: actor.label, actor_type: actor.type, site_id: siteID, origin: "investigate" })}'>Actor logs</button>`,
+    topSource.ip ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "ip", value: topSource.ip, site_id: topSourceSiteID, origin: "investigate_actor" })}'>Open top IP</button>` : "",
+    topSource.asn ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "asn", value: formatASN(topSource.asn), site_id: topSourceSiteID, origin: "investigate_actor" })}'>Open ASN</button>` : "",
+    topSource.ip && topSourceErrors ? `<button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", ip: topSource.ip, known_actor: actor.label, actor_type: actor.type, site_id: topSourceSiteID, status_class: "errors", origin: "investigate_actor" })}'>Error rows</button>` : "",
+    topSource.ip ? ipManualButtons(topSource.ip, topSource, topSourceSiteID, "mini") : "",
+  ].filter(Boolean).join("");
   return `
-    <div class="signal-row">
+    <div class="signal-row actor-service-row">
       <div>
         <strong>${escapeHTML(actor.label)}</strong>
-        <span>${escapeHTML([
-          formatCategory(actor.type),
-          `${formatNumber(actor.ips)} IPs`,
-          `${formatNumber(actor.verifiedIPs || 0)} verified`,
-          `${formatNumber(actor.reviewIPs || actor.unverifiedIPs || 0)} review`,
-          `${formatNumber(actor.requests)} requests`,
-        ].join(" - "))}</span>
-        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "actor", value: actor.label, actor_type: actor.type, origin: "investigate" })}'>Open actor</button>
-        <button class="ghost mini inline-action" type="button" data-pivot='${encodePivot({ kind: "log_filter", known_actor: actor.label, actor_type: actor.type, origin: "investigate" })}'>Open logs</button>
+        <span>${escapeHTML(meta)}</span>
+        <small>${escapeHTML(sourceMeta)}</small>
+        <div class="signal-actions">${actions}</div>
       </div>
       <div class="signal-numbers">
         <span>${escapeHTML(verification)}</span>
@@ -6719,6 +6744,11 @@ function actorRow(actor) {
       </div>
     </div>
   `;
+}
+
+function actorPrimarySource(actor = {}) {
+  const rows = actorSourceRows(actor.label, actor.type);
+  return actorVerificationRows(rows)[0] || rows[0] || {};
 }
 
 function aggregateActors() {
@@ -6738,12 +6768,14 @@ function aggregateActors() {
       verifiedIPs: 0,
       unverifiedIPs: 0,
       reviewIPs: 0,
+      sites: new Set(),
       lastSeen: "",
     };
     existing.requests += Number(item.requests || 0);
     existing.errors += Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
     existing.risk = Math.max(existing.risk, Number(item.risk_score || 0));
     if (item.ip) existing.ips.add(item.ip);
+    if (item.site_id) existing.sites.add(item.site_id);
     if (item.verified_source) existing.verifiedIPs += 1;
     else existing.unverifiedIPs += 1;
     if (actorSourceNeedsReview(item)) existing.reviewIPs += 1;
@@ -6765,6 +6797,7 @@ function aggregateActors() {
       verifiedIPs: 0,
       unverifiedIPs: 0,
       reviewIPs: 0,
+      sites: new Set(),
       lastSeen: "",
     };
     existing.requests += Number(item.requests || 0);
@@ -6775,7 +6808,7 @@ function aggregateActors() {
     groups.set(key, existing);
   });
   return Array.from(groups.values())
-    .map((item) => ({ ...item, ips: Math.max(item.ips.size, item.ipCount || 0) }))
+    .map((item) => ({ ...item, ips: Math.max(item.ips.size, item.ipCount || 0), siteCount: item.sites.size }))
     .sort((a, b) => (b.risk - a.risk) || (b.requests - a.requests))
     .slice(0, 14);
 }

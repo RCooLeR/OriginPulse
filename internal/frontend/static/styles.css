@@ -3231,6 +3231,25 @@ td code,
   font-size: 0.78rem;
 }
 
+.actor-service-row {
+  min-height: 92px;
+}
+
+.actor-service-row small {
+  min-width: 0;
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.actor-service-row .manual-actions .inline-action,
+.actor-service-row .signal-actions .inline-action {
+  margin-top: 0;
+}
+
 .signal-numbers {
   display: grid;
   gap: 3px;
