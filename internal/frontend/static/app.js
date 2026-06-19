@@ -8197,8 +8197,12 @@ function renderSiteTab(site) {
   setText("#siteTabTitle", `${title} / ${site.name || site.id}`);
   const body = qs("#siteTabBody");
   if (state.siteTab === "security") {
-    const injection = siteScopedRows(state.data.analysis?.injection_probes || [], id)
+    const injectionAll = siteScopedRows(state.data.analysis?.injection_probes || [], id)
       .map((item) => ({ ...item, kind: "Injection probe" }))
+      .sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0));
+    const sensitiveFiles = siteSensitiveFileRows(id, injectionAll);
+    const injection = injectionAll
+      .filter((item) => !securityProbeIsSensitiveFile(item))
       .sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0));
     const admin = siteScopedRows(state.data.analysis?.admin_probes || [], id)
       .map((item) => ({ ...item, kind: "Admin probe" }))
@@ -8208,9 +8212,10 @@ function renderSiteTab(site) {
       .sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0));
     const unknownSources = siteUnknownSourceRows(id);
     const crawlerClaims = siteCrawlerClaimRows(id);
-    const probes = [...injection, ...admin, ...tor, ...unknownSources, ...crawlerClaims].sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0));
+    const probes = [...injection, ...sensitiveFiles, ...admin, ...tor, ...unknownSources, ...crawlerClaims].sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0));
     const securityTimeline = siteActivityEvents(id).filter((event) => event.group === "security").slice(0, 12);
     const visibleFindings = Math.min(12, injection.length)
+      + Math.min(12, sensitiveFiles.length)
       + Math.min(12, admin.length)
       + Math.min(12, tor.length)
       + Math.min(12, unknownSources.length)
@@ -8221,6 +8226,7 @@ function renderSiteTab(site) {
         ${siteSubsection("Probe pressure", siteTrendPanel(site, "security"), "No timestamped probe evidence in this scope.", "span-2")}
         ${siteSubsection("Security timeline", entityTimeline(securityTimeline), "No timestamped security events in this scope.", "span-2")}
         ${siteSubsection("Injection probes", siteRowsMarkup(injection.slice(0, 12), siteSecurityRow, "No injection probes for this site."))}
+        ${siteSubsection("Sensitive file probes", siteRowsMarkup(sensitiveFiles.slice(0, 12), siteSecurityRow, "No sensitive file probes for this site."))}
         ${siteSubsection("Admin/login probes", siteRowsMarkup(admin.slice(0, 12), siteSecurityRow, "No admin probes for this site."))}
         ${siteSubsection("Unknown high-volume IPs", siteRowsMarkup(unknownSources.slice(0, 12), siteActorRow, "No unknown high-volume source IPs for this site."))}
         ${siteSubsection("Tor/datacenter sources", siteRowsMarkup(tor.slice(0, 12), siteSecurityRow, "No Tor source rows for this site."))}
@@ -9045,6 +9051,32 @@ function siteActorsToVerify(siteID) {
 
 function siteActorVerificationRows(siteID) {
   return actorVerificationRows(siteScopedRows(state.data.analysis?.source_ips || [], siteID));
+}
+
+function siteSensitiveFileRows(siteID, rows = null) {
+  const sourceRows = rows || siteScopedRows(state.data.analysis?.injection_probes || [], siteID)
+    .map((item) => ({ ...item, kind: "Injection probe" }));
+  return sourceRows
+    .filter(securityProbeIsSensitiveFile)
+    .map((item) => ({ ...item, kind: "Sensitive file probe" }))
+    .sort((a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0)
+      || Number(b.requests || 0) - Number(a.requests || 0));
+}
+
+function securityProbeIsSensitiveFile(item = {}) {
+  const category = normalizeEvidenceKind(item.category || "");
+  const reason = normalizeEvidenceKind(item.match_reason || "");
+  const path = String(item.path || "").toLowerCase();
+  const query = String(item.sample_query || item.query || "").toLowerCase();
+  const target = `${path}?${query}`;
+  return category === "secretfile"
+    || reason === "secretfile"
+    || target.includes("/.env")
+    || target.includes("wp-config.php")
+    || target.includes("composer.json")
+    || target.includes("composer.lock")
+    || target.includes("id_rsa")
+    || target.includes("/.git/");
 }
 
 function siteUnknownSourceRows(siteID) {
