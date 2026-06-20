@@ -47,6 +47,8 @@ const state = {
   loading: false,
   securityAnalysisLoading: false,
   securityAnalysisKey: "",
+  estateDataLoading: false,
+  estateDataKey: "",
   localReports: [],
   detailCache: {},
   pages: {
@@ -222,22 +224,17 @@ async function refreshAll() {
   if (state.loading) return;
   state.loading = true;
   state.fetchErrors = [];
+  state.estateDataKey = "";
   document.body.classList.add("busy");
   try {
     const filter = buildFilterQuery();
     const analysisFilter = buildFilterQuery({ limit: analysisHistoryLimit });
-    const estateAnalysisFilter = buildFilterQuery({ limit: analysisHistoryLimit }, { includeSite: false });
-    const estateTrafficFilter = buildFilterQuery({ limit: analysisHistoryLimit }, { includeSite: false });
+    const estateKey = buildFilterQuery({ limit: analysisHistoryLimit }, { includeSite: false });
     const analysisRequest = safeFetch(`/api/v1/analysis/access-log?${analysisFilter}`, {}, 30000);
-    const estateAnalysisRequest = analysisFilter === estateAnalysisFilter
-      ? analysisRequest
-      : safeFetch(`/api/v1/analysis/access-log?${estateAnalysisFilter}`, {}, 30000);
-    const [overview, analysis, estateAnalysis, traffic, estateTraffic, sites, alerts, reports, jobs, credentials, geoip, collectorHealth, retention, storage, archives, archiveImports, archiveCoverage, notifications, webPush, users, segments] = await Promise.all([
+    const [overview, analysis, traffic, sites, alerts, reports, jobs, credentials, geoip, collectorHealth, retention, storage, archives, archiveImports, archiveCoverage, notifications, webPush, users, segments] = await Promise.all([
       safeFetch(`/api/v1/dashboard/overview?${filter}`, {}),
       analysisRequest,
-      estateAnalysisRequest,
       safeFetch(`/api/v1/investigate/traffic?${buildFilterQuery({ limit: analysisHistoryLimit })}`, {}),
-      safeFetch(`/api/v1/investigate/traffic?${estateTrafficFilter}`, {}),
       safeFetch("/api/v1/sites", { sites: [] }),
       safeFetch(`/api/v1/alerts?limit=${alertHistoryLimit}`, { alerts: [] }),
       safeFetch(`/api/v1/reports/recent?${reportCatalogQuery(1)}`, { reports: [], total: 0, limit: reportCatalogPageSize, offset: 0, report_types: [] }),
@@ -258,9 +255,9 @@ async function refreshAll() {
     state.data = {
       overview,
       analysis,
-      estateAnalysis,
       traffic,
-      estateTraffic,
+      estateAnalysis: state.siteID ? {} : analysis,
+      estateTraffic: state.siteID ? {} : traffic,
       sites: sites.sites || [],
       alerts: alerts.alerts || [],
       reports: reports.reports || [],
@@ -284,6 +281,7 @@ async function refreshAll() {
       segments: segments.segments || [],
       segmentCatalog: segmentCatalogMeta(segments),
     };
+    if (!state.siteID) state.estateDataKey = estateKey;
     render();
     void ensureRouteData();
   } catch (error) {
@@ -299,8 +297,38 @@ async function refreshAll() {
 }
 
 async function ensureRouteData() {
+  if (state.route === "sites") {
+    await refreshEstateData();
+  }
   if (state.route === "security" || state.route === "mysql") {
     await refreshSecurityAnalysis(state.route);
+  }
+}
+
+async function refreshEstateData() {
+  const key = buildFilterQuery({ limit: analysisHistoryLimit }, { includeSite: false });
+  if (state.estateDataKey === key || state.estateDataLoading) return;
+  state.estateDataLoading = true;
+  render();
+  try {
+    const [analysis, traffic] = await Promise.all([
+      safeFetch(`/api/v1/analysis/access-log?${key}`, {}, 120000),
+      safeFetch(`/api/v1/investigate/traffic?${key}`, {}, 120000),
+    ]);
+    if (key === buildFilterQuery({ limit: analysisHistoryLimit }, { includeSite: false })) {
+      state.data.estateAnalysis = analysis || {};
+      state.data.estateTraffic = traffic || {};
+      state.estateDataKey = key;
+    }
+  } catch (error) {
+    if (error instanceof AuthError) {
+      showLogin();
+      return;
+    }
+    toast(`Sites estate analysis failed: ${error.message}`, true);
+  } finally {
+    state.estateDataLoading = false;
+    render();
   }
 }
 
@@ -490,19 +518,21 @@ function renderOverview() {
 
 function renderSites() {
   const rows = siteRows({ estate: true });
+  const estateTotals = (state.data.estateAnalysis?.totals?.requests ? state.data.estateAnalysis : state.data.analysis)?.totals || {};
+  const estateStatus = state.estateDataLoading ? `${iconHTML("fa-spinner fa-spin")} Loading estate data` : "Table View";
   return `
     ${metricGrid([
       metric("Total Projects", state.data.sites.length || state.data.overview.sites_enabled, "fa-diagram-project", "cyan"),
       metric("Healthy Sites", rows.filter((site) => site.health === "healthy").length, "fa-circle-check", "green"),
       metric("Warning Sites", rows.filter((site) => site.health === "warning").length, "fa-triangle-exclamation", "amber"),
       metric("Critical Sites", rows.filter((site) => site.health === "critical").length, "fa-circle-exclamation", "red"),
-      metric("Requests", state.data.analysis?.totals?.requests, "fa-arrow-trend-up", "purple"),
+      metric("Requests", estateTotals.requests, "fa-arrow-trend-up", "purple"),
       metric("Alerts", state.data.alerts.length, "fa-bell", "red"),
     ])}
     <article class="panel">
       <div class="panel-head">
         <div><h2>Projects / Sites</h2><p>Operational health and traffic across configured projects.</p></div>
-        <span class="pill">Table View</span>
+        <span class="pill">${estateStatus}</span>
       </div>
       ${sitesTable(rows)}
     </article>
