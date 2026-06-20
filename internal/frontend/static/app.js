@@ -79,6 +79,7 @@ const state = {
     users: [],
     segments: [],
   },
+  fetchErrors: [],
 };
 
 class AuthError extends Error {}
@@ -101,12 +102,13 @@ async function fetchJSON(path, options = {}) {
   return response.json();
 }
 
-async function safeFetch(path, fallback, timeoutMs = 15000) {
+async function safeFetch(path, fallback, timeoutMs = 30000) {
   try {
     return await fetchJSON(path, { timeoutMs });
   } catch (error) {
     if (error instanceof AuthError) throw error;
     console.warn(path, error);
+    state.fetchErrors.push({ path, message: error.message || "Request failed" });
     return fallback;
   }
 }
@@ -203,6 +205,7 @@ function wireEvents() {
 async function refreshAll() {
   if (state.loading) return;
   state.loading = true;
+  state.fetchErrors = [];
   document.body.classList.add("busy");
   try {
     const filter = buildFilterQuery();
@@ -4204,10 +4207,14 @@ function readinessBanner() {
   const overview = state.data.overview || {};
   const analytics = overview.analytics || {};
   const coverage = state.data.archiveCoverage || {};
+  const fetchErrors = state.fetchErrors || [];
   const hasRequests = Number(analytics.requests || state.data.analysis?.totals?.requests || 0) > 0;
   const messages = [];
   const actions = [`<button class="button small" type="button" data-action="refresh">${iconHTML("fa-rotate-right")}Refresh</button>`];
-  if (!overview.database_configured) {
+  if (fetchErrors.length) {
+    const first = fetchErrors[0];
+    messages.push(`${formatNumber(fetchErrors.length)} dashboard request(s) failed while loading ${activeRangeLabel()}. First failure: ${first.message}.`);
+  } else if (!overview.database_configured) {
     messages.push("DATABASE_URL is not set, so indexed analytics, persisted reports, users, alerts, and browser-push subscriptions are unavailable.");
   } else if (coverage.requires_archive_import) {
     const oldWindow = [shortTime(coverage.import_window_start), shortTime(coverage.import_window_end)].filter(Boolean).join(" to ");
