@@ -1,6 +1,10 @@
 package accessanalysis
 
-import "testing"
+import (
+	"testing"
+
+	"originpulse/internal/useragent"
+)
 
 func TestClassifyUserAgent(t *testing.T) {
 	tests := []struct {
@@ -14,7 +18,7 @@ func TestClassifyUserAgent(t *testing.T) {
 		{
 			name:       "browser",
 			userAgent:  "Mozilla/5.0 AppleWebKit/537.36 Chrome/125.0 Safari/537.36",
-			family:     "browser",
+			family:     "Chrome",
 			actorType:  "browser",
 			knownActor: "",
 		},
@@ -42,7 +46,7 @@ func TestClassifyUserAgent(t *testing.T) {
 		{
 			name:       "scripted",
 			userAgent:  "python-requests/2.32",
-			family:     "python",
+			family:     "python-requests",
 			actorType:  "tool",
 			knownActor: "",
 		},
@@ -57,7 +61,7 @@ func TestClassifyUserAgent(t *testing.T) {
 			name:       "high volume unknown",
 			userAgent:  "MysteryClient/1.0",
 			requests:   12000,
-			family:     "unknown-high-volume",
+			family:     "mysteryclient",
 			actorType:  "unknown",
 			knownActor: "",
 		},
@@ -65,13 +69,13 @@ func TestClassifyUserAgent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			family, actorType, knownActor, risk := classifyUserAgent(tt.userAgent, tt.requests)
-			if family != tt.family || actorType != tt.actorType || knownActor != tt.knownActor {
-				t.Fatalf("classifyUserAgent() = (%q, %q, %q, %d), want (%q, %q, %q, risk)",
-					family, actorType, knownActor, risk, tt.family, tt.actorType, tt.knownActor)
+			analysis := useragent.Analyze(tt.userAgent, tt.requests)
+			if analysis.Family != tt.family || analysis.ActorType != tt.actorType || analysis.KnownActor != tt.knownActor {
+				t.Fatalf("Analyze() = (%q, %q, %q, %d), want (%q, %q, %q, risk)",
+					analysis.Family, analysis.ActorType, analysis.KnownActor, analysis.RiskScore, tt.family, tt.actorType, tt.knownActor)
 			}
-			if risk <= 0 {
-				t.Fatalf("risk = %d, want positive", risk)
+			if analysis.RiskScore <= 0 {
+				t.Fatalf("risk = %d, want positive", analysis.RiskScore)
 			}
 		})
 	}

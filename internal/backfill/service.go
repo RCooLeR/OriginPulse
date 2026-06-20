@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"originpulse/internal/db"
+	"originpulse/internal/useragent"
 )
 
 const backfillLockKey int64 = 7720004
@@ -36,6 +37,7 @@ type Result struct {
 	PathLatencyRows       int64     `json:"path_latency_rows"`
 	ErrorEvents           int64     `json:"error_events"`
 	SlowRequestEvents     int64     `json:"slow_request_events"`
+	UserAgentsEnriched    int64     `json:"user_agents_enriched"`
 	SecurityProbeRollups  int64     `json:"security_probe_rollups"`
 	SecurityProbeRebuilt  bool      `json:"security_probe_rebuilt"`
 	StoppedAtMaxBatches   bool      `json:"stopped_at_max_batches"`
@@ -78,6 +80,11 @@ func (s *Service) Run(ctx context.Context, opts Options) (Result, error) {
 			result.SecurityProbeRollups = securityRows
 			result.SecurityProbeRebuilt = true
 		}
+		enriched, err := enrichMissingUserAgents(ctx, pool, opts.BatchSize)
+		if err != nil {
+			return err
+		}
+		result.UserAgentsEnriched = enriched
 		for {
 			if opts.MaxBatches > 0 && result.Batches >= opts.MaxBatches {
 				result.StoppedAtMaxBatches = true
@@ -104,6 +111,11 @@ func (s *Service) Run(ctx context.Context, opts Options) (Result, error) {
 			result.SlowRequestEvents += batch.SlowRequestEvents
 			mergeRange(&result, batch)
 		}
+		enriched, err = enrichMissingUserAgents(ctx, pool, opts.BatchSize)
+		if err != nil {
+			return err
+		}
+		result.UserAgentsEnriched += enriched
 		remaining, err := countRemaining(ctx, pool)
 		if err != nil {
 			return err
@@ -112,6 +124,101 @@ func (s *Service) Run(ctx context.Context, opts Options) (Result, error) {
 		return nil
 	})
 	return result, err
+}
+
+func enrichMissingUserAgents(ctx context.Context, pool *pgxpool.Pool, batchSize int) (int64, error) {
+	if batchSize <= 0 {
+		batchSize = 5000
+	}
+	rows, err := pool.Query(ctx, `
+SELECT id, user_agent, request_count
+FROM dim_user_agents
+WHERE coalesce(actor_type, '') = ''
+   OR coalesce(device_family, '') = ''
+   OR (actor_type = 'browser' AND coalesce(browser_family, '') = '')
+ORDER BY last_seen_at DESC
+LIMIT $1`, batchSize)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	updates := make([][]any, 0, batchSize)
+	for rows.Next() {
+		var id int64
+		var sample string
+		var requests int64
+		if err := rows.Scan(&id, &sample, &requests); err != nil {
+			return 0, err
+		}
+		analysis := useragent.Analyze(sample, requests)
+		updates = append(updates, []any{
+			id,
+			analysis.BrowserFamily,
+			analysis.BrowserVersion,
+			analysis.OSFamily,
+			analysis.OSVersion,
+			analysis.DeviceFamily,
+			analysis.ActorType,
+			analysis.KnownActor,
+			analysis.IsBot,
+			analysis.IsTool,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(updates) == 0 {
+		return 0, nil
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = tx.Rollback(context.Background())
+	}()
+	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE backfill_user_agent_enrichment (
+  id bigint NOT NULL,
+  browser_family text,
+  browser_version text,
+  os_family text,
+  os_version text,
+  device_family text,
+  actor_type text,
+  known_actor text,
+  is_bot boolean NOT NULL,
+  is_tool boolean NOT NULL
+) ON COMMIT DROP`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"backfill_user_agent_enrichment"}, []string{
+		"id", "browser_family", "browser_version", "os_family", "os_version", "device_family",
+		"actor_type", "known_actor", "is_bot", "is_tool",
+	}, pgx.CopyFromRows(updates)); err != nil {
+		return 0, err
+	}
+	tag, err := tx.Exec(ctx, `
+UPDATE dim_user_agents d
+SET browser_family = nullif(e.browser_family, ''),
+    browser_version = nullif(e.browser_version, ''),
+    os_family = nullif(e.os_family, ''),
+    os_version = nullif(e.os_version, ''),
+    device_family = nullif(e.device_family, ''),
+    actor_type = nullif(e.actor_type, ''),
+    known_actor = nullif(e.known_actor, ''),
+    is_bot = e.is_bot,
+    is_tool = e.is_tool
+FROM backfill_user_agent_enrichment e
+WHERE d.id = e.id`)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (s *Service) runBatch(ctx context.Context, pool *pgxpool.Pool, opts Options) (Result, error) {

@@ -11,7 +11,7 @@ import (
 
 	"originpulse/internal/db"
 	"originpulse/internal/rollups"
-	"originpulse/internal/servicefingerprints"
+	"originpulse/internal/useragent"
 )
 
 type Options struct {
@@ -1017,7 +1017,8 @@ LIMIT $4`, report.Since, report.Until, report.SiteID, limit)
 		); err != nil {
 			return err
 		}
-		item.Family, item.ActorType, item.KnownActor, item.RiskScore = classifyUserAgent(item.Sample, item.Requests)
+		analysis := useragent.Analyze(item.Sample, item.Requests)
+		item.Family, item.ActorType, item.KnownActor, item.RiskScore = analysis.Family, analysis.ActorType, analysis.KnownActor, analysis.RiskScore
 		item.VerifiedSource = item.VerifiedIPs > 0 && item.VerifiedRequests > 0
 		item.Status4xxRate = ratio(item.Status4xx, item.Requests)
 		item.Status5xxRate = ratio(item.Status5xx, item.Requests)
@@ -1150,7 +1151,8 @@ ORDER BY t.requests DESC`, report.Since, report.Until, report.SiteID, limit, ful
 		); err != nil {
 			return err
 		}
-		item.Family, item.ActorType, item.KnownActor, item.RiskScore = classifyUserAgent(item.Sample, item.Requests)
+		analysis := useragent.Analyze(item.Sample, item.Requests)
+		item.Family, item.ActorType, item.KnownActor, item.RiskScore = analysis.Family, analysis.ActorType, analysis.KnownActor, analysis.RiskScore
 		item.VerifiedSource = item.VerifiedIPs > 0 && item.VerifiedRequests > 0
 		item.Status4xxRate = ratio(item.Status4xx, item.Requests)
 		item.Status5xxRate = ratio(item.Status5xx, item.Requests)
@@ -1746,44 +1748,6 @@ func slowPathIssues(paths []SlowPathSummary) []Issue {
 		})
 	}
 	return issues
-}
-
-func classifyUserAgent(value string, requests int64) (string, string, string, int) {
-	ua := strings.ToLower(strings.TrimSpace(value))
-	if ua == "" {
-		return "empty", "missing", "", 55
-	}
-
-	if match, ok := servicefingerprints.MatchUserAgent(ua); ok {
-		return match.Family, match.ActorType, match.KnownActor, match.RiskScore
-	}
-
-	switch {
-	case strings.Contains(ua, "pingdom") || strings.Contains(ua, "uptime") || strings.Contains(ua, "statuscake") || strings.Contains(ua, "datadog") || strings.Contains(ua, "newrelic"):
-		return "monitor", "monitor", "", 20
-	case strings.Contains(ua, "curl"):
-		return "curl", "tool", "", 65
-	case strings.Contains(ua, "wget"):
-		return "wget", "tool", "", 65
-	case strings.Contains(ua, "python-requests") || strings.Contains(ua, "aiohttp"):
-		return "python", "tool", "", 70
-	case strings.Contains(ua, "go-http-client"):
-		return "go-http-client", "tool", "", 65
-	case strings.Contains(ua, "java/") || strings.Contains(ua, "okhttp") || strings.Contains(ua, "apache-httpclient"):
-		return "java-client", "tool", "", 60
-	case strings.Contains(ua, "mozilla/") && (strings.Contains(ua, "chrome/") || strings.Contains(ua, "safari/") || strings.Contains(ua, "firefox/") || strings.Contains(ua, "edg/")):
-		return "browser", "browser", "", 15
-	case strings.Contains(ua, "bot") || strings.Contains(ua, "spider") || strings.Contains(ua, "crawler"):
-		return "generic-crawler", "crawler", "", 50
-	default:
-		if requests >= 10000 {
-			return "unknown-high-volume", "unknown", "", 60
-		}
-		if requests >= 1000 {
-			return "unknown-volume", "unknown", "", 45
-		}
-		return "unknown", "unknown", "", 30
-	}
 }
 
 func sortIssues(issues []Issue) {

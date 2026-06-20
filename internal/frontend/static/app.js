@@ -2171,16 +2171,14 @@ function renderAlertDetail(item) {
 function renderAlertRuleDetail(item) {
   const alerts = item.alerts || [];
   const requests = uniqueBy(alerts.flatMap(alertRelatedRequests), (row) => `${row.ts || ""}:${row.client_ip || ""}:${row.path || ""}:${row.status || ""}`);
-  const ips = alertRuleRelatedIPs(alerts, requests);
   const alertPage = drawerPage("alertRuleAlerts", alerts, 7);
-  const ipPage = drawerPage("alertRuleIPs", ips, 6);
   const requestPage = drawerPage("alertRuleRequests", requests, 6);
   return `
     ${miniMetrics([
       ["Open Alerts", formatNumber(item.count || alerts.length), "fa-bell"],
       ["Critical", formatNumber(item.critical || alerts.filter((row) => normalizeSeverity(row.severity) === "critical").length), "fa-circle-exclamation"],
       ["High", formatNumber(item.high || alerts.filter((row) => normalizeSeverity(row.severity) === "high").length), "fa-triangle-exclamation"],
-      ["Affected IPs", formatNumber(ips.length), "fa-network-wired"],
+      ["Related Requests", formatNumber(requests.length), "fa-rectangle-list"],
     ])}
     <section class="detail-grid two">
       <article class="detail-card">
@@ -2202,23 +2200,11 @@ function renderAlertRuleDetail(item) {
         ])}
       </article>
     </section>
-    <section class="detail-grid two">
-      <article class="detail-card">
-        <div class="detail-card-head"><h3>Alerts</h3><span>${formatNumber(alertPage.total)} rows</span></div>
-        <div class="list">${alertPage.rows.map(alertRow).join("") || empty("No alerts found.")}</div>
-        ${drawerPager("alertRuleAlerts", alertPage)}
-      </article>
-      <article class="detail-card">
-        <div class="detail-card-head"><h3>Affected IPs</h3><span>${formatNumber(ipPage.total)} rows</span></div>
-        <div class="list">${ipPage.rows.map((row) => `
-          <div class="list-row">
-            <div><strong>${ipLink(row.ip)}</strong><span>${formatNumber(row.requests)} events / ${formatNumber(row.errors)} errors</span></div>
-            <b>${shortTime(row.last_seen)}</b>
-          </div>
-        `).join("") || empty("No affected IPs in loaded evidence.")}</div>
-        ${drawerPager("alertRuleIPs", ipPage)}
-      </article>
-    </section>
+    <article class="detail-card">
+      <div class="detail-card-head"><h3>Alerts</h3><span>${formatNumber(alertPage.total)} rows</span></div>
+      <div class="list">${alertPage.rows.map(alertRow).join("") || empty("No alerts found.")}</div>
+      ${drawerPager("alertRuleAlerts", alertPage)}
+    </article>
     <article class="detail-card">
       <div class="detail-card-head"><h3>Related Requests</h3><span>${formatNumber(requestPage.total)} rows</span></div>
       ${securityRequestRows(requestPage.rows)}
@@ -2261,11 +2247,6 @@ function alertRelatedIPs(item, requests) {
   const rows = [...requests];
   if (item.actor_type === "ip" && item.actor_value) rows.push({ client_ip: item.actor_value, status: Number(item.details?.status_5xx || 0) ? 500 : 400, ts: item.last_seen_at });
   return groupedRequestIPs(rows);
-}
-
-function alertRuleRelatedIPs(alerts, requests) {
-  const rows = alerts.filter((item) => item.actor_type === "ip" && item.actor_value).map((item) => ({ client_ip: item.actor_value, status: Number(item.details?.status_5xx || 0) ? 500 : 400, ts: item.last_seen_at }));
-  return groupedRequestIPs(requests.concat(rows));
 }
 
 function groupedRequestIPs(rows) {
@@ -3311,10 +3292,8 @@ function renderSiteDetail(item, scoped = {}) {
 function renderSecuritySignalDetail(item) {
   const relatedIPs = securityRelatedIPs(item);
   const relatedRequests = securityRelatedRequests(item);
-  const peerSignals = securitySignalRows().filter((row) => row.kind === item.kind && (row.ip === item.ip || row.path === item.path || row.site_id === item.site_id));
   const ipPage = drawerPage("securitySignalIPs", relatedIPs, 6);
   const requestPage = drawerPage("securitySignalRequests", relatedRequests, 6);
-  const signalPage = drawerPage("securitySignalPeers", peerSignals, 6);
   return `
     ${miniMetrics([
       ["Requests", formatNumber(item.requests), "fa-arrow-trend-up"],
@@ -3360,14 +3339,6 @@ function renderSecuritySignalDetail(item) {
       <div class="detail-card-head"><h3>Related Requests</h3><span>${formatNumber(requestPage.total)} rows</span></div>
       ${securityRequestRows(requestPage.rows)}
       ${drawerPager("securitySignalRequests", requestPage)}
-    </article>
-    <article class="detail-card">
-      <div class="detail-card-head"><h3>Peer Signals</h3><span>${formatNumber(signalPage.total)} rows</span></div>
-      <div class="list">${signalPage.rows.map((row) => {
-        const key = cacheDetail("security-signal", row, `${row.kind}:${row.ip || ""}:${row.path || ""}:${row.site_id || ""}`);
-        return `<div class="list-row"><div><strong>${escapeHTML(row.title || row.kind || "Signal")}</strong><span>${linkifyIPs([row.site_id, row.env, row.ip, row.path, `${formatNumber(row.requests)} requests`].filter(Boolean).join(" / "))}</span></div><button class="button small" type="button" data-detail="security-signal" data-value="${escapeAttr(key)}">Open</button></div>`;
-      }).join("") || empty("No peer signals found.")}</div>
-      ${drawerPager("securitySignalPeers", signalPage)}
     </article>
   `;
 }

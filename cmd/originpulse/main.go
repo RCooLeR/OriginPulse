@@ -652,6 +652,7 @@ func run() int {
 		fmt.Printf("path_latency_rows: %d\n", result.PathLatencyRows)
 		fmt.Printf("error_events: %d\n", result.ErrorEvents)
 		fmt.Printf("slow_request_events: %d\n", result.SlowRequestEvents)
+		fmt.Printf("user_agents_enriched: %d\n", result.UserAgentsEnriched)
 		fmt.Printf("security_probe_rollups: %d\n", result.SecurityProbeRollups)
 		fmt.Printf("security_probe_rebuilt: %t\n", result.SecurityProbeRebuilt)
 		fmt.Printf("stopped_at_max_batches: %t\n", result.StoppedAtMaxBatches)
