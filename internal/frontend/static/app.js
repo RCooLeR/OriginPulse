@@ -21,6 +21,7 @@ const routes = [
 
 const routeById = Object.fromEntries(routes.map((route) => [route.id, route]));
 const pathToRoute = Object.fromEntries(routes.map((route) => [route.path, route.id]));
+const reportCatalogLimit = 500;
 
 const state = {
   route: pathToRoute[location.pathname] || "overview",
@@ -216,7 +217,7 @@ async function refreshAll() {
       safeFetch(`/api/v1/investigate/traffic?${estateTrafficFilter}`, {}),
       safeFetch("/api/v1/sites", { sites: [] }),
       safeFetch("/api/v1/alerts?limit=100", { alerts: [] }),
-      safeFetch(`/api/v1/reports/recent?${buildFilterQuery({ limit: 25 })}`, { reports: [] }),
+      safeFetch(`/api/v1/reports/recent?${buildFilterQuery({ limit: reportCatalogLimit })}`, { reports: [] }),
       safeFetch("/api/v1/system/jobs", { jobs: [] }),
       safeFetch("/api/v1/system/credentials", {}),
       safeFetch("/api/v1/system/collector-health", {}),
@@ -2961,7 +2962,7 @@ async function handleAction(button) {
     return runButton(button, "Report generated", async () => {
       const report = await fetchJSON("/api/v1/reports/generate", { method: "POST", body: JSON.stringify({ range: state.range, site_id: state.siteID }) });
       state.localReports = [report, ...state.localReports].slice(0, 10);
-      const recent = await safeFetch(`/api/v1/reports/recent?${buildFilterQuery({ limit: 25 })}`, { reports: [] });
+      const recent = await safeFetch(`/api/v1/reports/recent?${buildFilterQuery({ limit: reportCatalogLimit })}`, { reports: [] });
       state.data.reports = recent.reports || [];
       render();
     });

@@ -27,6 +27,8 @@ import (
 
 var ErrNotFound = errors.New("report not found")
 
+const RecentMaxLimit = 500
+
 type Options struct {
 	Range      string `json:"range"`
 	ReportType string `json:"report_type"`
@@ -177,9 +179,7 @@ func (s *Service) Recent(ctx context.Context, limit int, siteID string) ([]Repor
 	if s.db == nil || !s.db.Enabled() {
 		return []Report{}, nil
 	}
-	if limit <= 0 || limit > 100 {
-		limit = 10
-	}
+	limit = normalizeRecentLimit(limit)
 	siteID = strings.TrimSpace(siteID)
 	pool, err := s.db.Pool()
 	if err != nil {
@@ -232,6 +232,16 @@ LIMIT $1`, limit, siteID)
 		reports = append(reports, item)
 	}
 	return reports, rows.Err()
+}
+
+func normalizeRecentLimit(limit int) int {
+	if limit <= 0 {
+		return 25
+	}
+	if limit > RecentMaxLimit {
+		return RecentMaxLimit
+	}
+	return limit
 }
 
 func (s *Service) Get(ctx context.Context, id string) (Report, error) {

@@ -596,7 +596,7 @@ func (api API) recentReports(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	recentReports, err := api.reports.Recent(r.Context(), parseLimit(r, 25, 100), r.URL.Query().Get("site_id"))
+	recentReports, err := api.reports.Recent(r.Context(), parseLimit(r, 100, reports.RecentMaxLimit), r.URL.Query().Get("site_id"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "reports_failed", err.Error())
 		return
