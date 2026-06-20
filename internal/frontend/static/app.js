@@ -3677,9 +3677,33 @@ function renderPrintableReport(item) {
       ].map(([label, value]) => `<tr><th>${escapeHTML(label)}</th><td>${escapeHTML(value)}</td></tr>`).join("")}
     </tbody></table>
     <h2>Charts</h2>
-    ${(item.charts || []).map((chart) => `<h3>${escapeHTML(chart.title || chart.key || "Chart")}</h3><p>${escapeHTML(chart.kind || "chart")} / ${escapeHTML(chart.unit || "count")} / ${formatNumber((chart.data || []).length)} points</p>`).join("") || "<p>No chart data stored with this report.</p>"}
+    ${(item.charts || []).map(printableChart).join("") || "<p>No chart data stored with this report.</p>"}
     <h2>Drilldowns</h2>
-    ${(item.drilldowns || []).map((drill) => `<h3>${escapeHTML(drill.title || drill.key || "Drilldown")}</h3><ul>${(drill.items || []).slice(0, 20).map((row) => `<li><strong>${escapeHTML(reportDrilldownTitle(row))}</strong> ${escapeHTML(reportDrilldownMeta(row))} ${escapeHTML(reportDrilldownValue(row))}</li>`).join("")}</ul>`).join("") || "<p>No drilldowns stored with this report.</p>"}
+    ${(item.drilldowns || []).map(printableDrilldown).join("") || "<p>No drilldowns stored with this report.</p>"}
+  `;
+}
+
+function printableChart(chart) {
+  const rows = chart.data || [];
+  return `
+    <h3>${escapeHTML(chart.title || chart.key || "Chart")}</h3>
+    <p>${escapeHTML(chart.kind || "chart")} / ${escapeHTML(chart.unit || "count")} / ${formatNumber(rows.length)} points</p>
+    ${rows.length ? `<table><thead><tr><th>Label</th><th>Value</th><th>Secondary</th><th>Meta</th></tr></thead><tbody>${rows.map((point) => `
+      <tr>
+        <td>${escapeHTML(point.label || shortTime(point.timestamp) || "-")}</td>
+        <td>${escapeHTML(formatNumber(point.value))}</td>
+        <td>${point.secondary !== undefined ? escapeHTML(formatNumber(point.secondary)) : "-"}</td>
+        <td>${escapeHTML(point.meta || "")}</td>
+      </tr>
+    `).join("")}</tbody></table>` : "<p>No chart points.</p>"}
+  `;
+}
+
+function printableDrilldown(drill) {
+  const rows = drill.items || [];
+  return `
+    <h3>${escapeHTML(drill.title || drill.key || "Drilldown")}</h3>
+    ${rows.length ? `<ul>${rows.map((row) => `<li><strong>${escapeHTML(reportDrilldownTitle(row))}</strong> ${escapeHTML(reportDrilldownMeta(row))} ${escapeHTML(reportDrilldownValue(row))}</li>`).join("")}</ul>` : "<p>No drilldown rows.</p>"}
   `;
 }
 
@@ -3707,12 +3731,32 @@ function reportToMarkdown(item) {
     "",
     "## Charts",
     "",
-    ...(item.charts || []).flatMap((chart) => [`### ${chart.title || chart.key || "Chart"}`, `${chart.kind || "chart"} / ${chart.unit || "count"} / ${(chart.data || []).length} points`, ""]),
+    ...(item.charts || []).flatMap(markdownChart),
     "## Drilldowns",
     "",
-    ...(item.drilldowns || []).flatMap((drill) => [`### ${drill.title || drill.key || "Drilldown"}`, ...(drill.items || []).slice(0, 20).map((row) => `- ${reportDrilldownTitle(row)}: ${[reportDrilldownMeta(row), reportDrilldownValue(row)].filter(Boolean).join(" / ")}`), ""]),
+    ...(item.drilldowns || []).flatMap(markdownDrilldown),
   ];
   return lines.join("\n");
+}
+
+function markdownChart(chart) {
+  const rows = chart.data || [];
+  return [
+    `### ${chart.title || chart.key || "Chart"}`,
+    `${chart.kind || "chart"} / ${chart.unit || "count"} / ${rows.length} points`,
+    "",
+    ...rows.map((point) => `- ${point.label || shortTime(point.timestamp) || "-"}: ${formatNumber(point.value)}${point.secondary !== undefined ? ` / ${formatNumber(point.secondary)}` : ""}${point.meta ? ` / ${point.meta}` : ""}`),
+    "",
+  ];
+}
+
+function markdownDrilldown(drill) {
+  const rows = drill.items || [];
+  return [
+    `### ${drill.title || drill.key || "Drilldown"}`,
+    ...rows.map((row) => `- ${reportDrilldownTitle(row)}: ${[reportDrilldownMeta(row), reportDrilldownValue(row)].filter(Boolean).join(" / ")}`),
+    "",
+  ];
 }
 
 function downloadText(filename, content, type = "text/plain") {
