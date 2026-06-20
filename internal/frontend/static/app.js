@@ -419,7 +419,9 @@ function renderOverview() {
   const a = state.data.analysis || {};
   const totals = a.totals || {};
   const overview = state.data.overview.analytics || {};
-  const issues = filtered(searchItems(a.issues || [], issueSearchText)).slice(0, 6);
+  const issues = filtered(searchItems(a.issues || [], issueSearchText));
+  const issuePage = paginate(issues, state.pages.overviewSignals, 6);
+  state.pages.overviewSignals = issuePage.page;
   const sites = siteRows().slice(0, 7);
   return `
     ${metricGrid([
@@ -451,9 +453,10 @@ function renderOverview() {
       <article class="panel">
         <div class="panel-head">
           <div><h2>Priority Signals</h2><p>Ranked findings from the selected range.</p></div>
-          <span class="pill">${issues.length} shown</span>
+          <span class="pill">${formatNumber(issues.length)} signals</span>
         </div>
-        <div class="list">${issues.length ? issues.map(issueRow).join("") : empty("No active signals in this range.")}</div>
+        <div class="list">${issuePage.rows.length ? issuePage.rows.map(issueRow).join("") : empty("No active signals in this range.")}</div>
+        ${pager("overviewSignals", issuePage)}
       </article>
       ${recentIncidentsPaginatedPanel()}
       ${overviewTopPathsPaginatedPanel()}
@@ -734,7 +737,9 @@ function mysqlSourceIPsPanel(rows) {
 }
 
 function renderSlow() {
-  const slow = filtered(searchItems(state.data.analysis.slow_paths || [], (item) => `${item.site_id} ${item.path}`)).slice(0, 16);
+  const slow = filtered(searchItems(state.data.analysis.slow_paths || [], (item) => `${item.site_id} ${item.path}`));
+  const page = paginate(slow, state.pages.slowPaths, 10);
+  state.pages.slowPaths = page.page;
   return `
     ${metricGrid([
       metric("Slow Requests", state.data.analysis?.totals?.slow_requests, "fa-stopwatch", "amber"),
@@ -743,8 +748,12 @@ function renderSlow() {
       metric("Avg Time", formatMs(state.data.analysis?.totals?.avg_request_time_ms), "fa-clock", "cyan"),
     ])}
     <article class="panel">
-      <div class="panel-head"><div><h2>Slow Paths</h2><p>Highest latency paths by p95 and request count.</p></div></div>
-      ${slowPathsTable(slow)}
+      <div class="panel-head">
+        <div><h2>Slow Paths</h2><p>Highest latency paths by p95 and request count.</p></div>
+        <span class="pill">${formatNumber(slow.length)} paths</span>
+      </div>
+      ${slowPathsTable(page.rows)}
+      ${pager("slowPaths", page)}
     </article>
   `;
 }
