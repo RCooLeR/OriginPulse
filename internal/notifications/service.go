@@ -563,7 +563,14 @@ INSERT INTO notification_deliveries (
 ) VALUES (
   $1::uuid, $2, $3, 'pending', $4, $5, $6::jsonb
 )
-ON CONFLICT (alert_id, channel, target) WHERE alert_id IS NOT NULL DO NOTHING
+ON CONFLICT (alert_id, channel, target) WHERE alert_id IS NOT NULL DO UPDATE SET
+  status = 'pending',
+  severity = EXCLUDED.severity,
+  title = EXCLUDED.title,
+  payload = EXCLUDED.payload,
+  error = NULL,
+  created_at = now()
+WHERE notification_deliveries.status = 'failed'
 RETURNING id::text,
           coalesce(alert_id::text, ''),
           channel,

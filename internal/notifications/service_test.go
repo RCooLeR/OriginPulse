@@ -7,11 +7,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"originpulse/internal/config"
+	"originpulse/internal/db"
 )
 
 func TestSendPushPostsJSONPayload(t *testing.T) {
@@ -202,6 +205,79 @@ func TestNormalizeRecentOffset(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInsertPendingRetriesFailedAlertDelivery(t *testing.T) {
+	ctx := context.Background()
+	store := testNotificationStore(t, ctx)
+	service := NewService(config.Default(), store)
+	pool, err := store.Pool()
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+
+	var alertID string
+	now := time.Now().UTC()
+	err = pool.QueryRow(ctx, `
+INSERT INTO alerts (rule_key, title, severity, status, score, summary, first_seen_at, last_seen_at)
+VALUES ($1, 'Retry delivery', 'critical', 'open', 90, 'retry test', $2, $2)
+RETURNING id::text`, "notification_retry_test_"+strconv.FormatInt(now.UnixNano(), 10), now).Scan(&alertID)
+	if err != nil {
+		t.Fatalf("insert alert: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM alerts WHERE id = $1::uuid`, alertID)
+	})
+
+	first, inserted, err := service.insertPending(ctx, &alertID, "push", "https://push.example.test/hook", "critical", "First attempt", map[string]any{"try": 1})
+	if err != nil || !inserted {
+		t.Fatalf("first insert = inserted:%v err:%v", inserted, err)
+	}
+	if err := service.finish(ctx, first.ID, "failed", "temporary outage"); err != nil {
+		t.Fatalf("finish failed: %v", err)
+	}
+
+	retry, inserted, err := service.insertPending(ctx, &alertID, "push", "https://push.example.test/hook", "critical", "Retry attempt", map[string]any{"try": 2})
+	if err != nil || !inserted {
+		t.Fatalf("retry insert = inserted:%v err:%v", inserted, err)
+	}
+	if retry.ID != first.ID {
+		t.Fatalf("retry ID = %q, want existing delivery %q", retry.ID, first.ID)
+	}
+	if retry.Status != "pending" || retry.Error != "" || retry.Attempts != 1 {
+		t.Fatalf("retry delivery = status:%q error:%q attempts:%d, want pending/no error/1 attempt", retry.Status, retry.Error, retry.Attempts)
+	}
+	if retry.Title != "Retry attempt" {
+		t.Fatalf("retry title = %q, want updated title", retry.Title)
+	}
+	if err := service.finish(ctx, retry.ID, "sent", ""); err != nil {
+		t.Fatalf("finish sent: %v", err)
+	}
+
+	_, inserted, err = service.insertPending(ctx, &alertID, "push", "https://push.example.test/hook", "critical", "Third attempt", map[string]any{"try": 3})
+	if err != nil {
+		t.Fatalf("third insert err: %v", err)
+	}
+	if inserted {
+		t.Fatal("sent delivery should remain deduped")
+	}
+}
+
+func testNotificationStore(t *testing.T, ctx context.Context) *db.Store {
+	t.Helper()
+	url := os.Getenv("ORIGINPULSE_TEST_DATABASE_URL")
+	if strings.TrimSpace(url) == "" {
+		t.Skip("ORIGINPULSE_TEST_DATABASE_URL is not set")
+	}
+	store, err := db.Open(ctx, config.DatabaseConfig{URL: url, MaxConns: 1})
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate test database: %v", err)
+	}
+	return store
 }
 
 func containsString(values []string, want string) bool {
