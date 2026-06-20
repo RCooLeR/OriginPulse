@@ -27,6 +27,8 @@ var (
 	ErrInvalidManualAction = errors.New("invalid manual IP intel action")
 )
 
+const DetailMaxLimit = 500
+
 type DetailOptions struct {
 	IP     string
 	Range  string
@@ -1348,8 +1350,8 @@ func normalizeDetailLimit(limit int) int {
 	if limit <= 0 {
 		return 8
 	}
-	if limit > 25 {
-		return 25
+	if limit > DetailMaxLimit {
+		return DetailMaxLimit
 	}
 	return limit
 }

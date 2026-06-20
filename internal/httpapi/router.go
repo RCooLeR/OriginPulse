@@ -335,7 +335,7 @@ func (api API) ipDetails(w http.ResponseWriter, r *http.Request) {
 	detail, err := api.ipIntel.Details(r.Context(), ipintel.DetailOptions{
 		IP:     chi.URLParam(r, "ip"),
 		Range:  r.URL.Query().Get("range"),
-		Limit:  parseLimit(r, 8, 25),
+		Limit:  parseLimit(r, 50, ipintel.DetailMaxLimit),
 		SiteID: r.URL.Query().Get("site_id"),
 		From:   from,
 		To:     to,
@@ -379,7 +379,7 @@ func (api API) userAgentDetails(w http.ResponseWriter, r *http.Request) {
 		ID:     id,
 		Sample: sample,
 		Range:  r.URL.Query().Get("range"),
-		Limit:  parseLimit(r, 8, 50),
+		Limit:  parseLimit(r, 50, investigation.DetailMaxLimit),
 		SiteID: r.URL.Query().Get("site_id"),
 		From:   from,
 		To:     to,
@@ -416,7 +416,7 @@ func (api API) securitySignalDetails(w http.ResponseWriter, r *http.Request) {
 		Method:   r.URL.Query().Get("method"),
 		Path:     r.URL.Query().Get("path"),
 		Range:    r.URL.Query().Get("range"),
-		Limit:    parseLimit(r, 8, 50),
+		Limit:    parseLimit(r, 50, investigation.DetailMaxLimit),
 		From:     from,
 		To:       to,
 	})

@@ -24,6 +24,7 @@ const pathToRoute = Object.fromEntries(routes.map((route) => [route.path, route.
 const reportCatalogLimit = 500;
 const pulseHistoryLimit = 500;
 const alertHistoryLimit = 500;
+const drawerHistoryLimit = 500;
 
 const state = {
   route: pathToRoute[location.pathname] || "overview",
@@ -3722,7 +3723,7 @@ async function openDrawer(kind, rawIndex, value) {
     const ip = value || item.ip || "";
     title = ip || "Source IP";
     try {
-      const detail = ip ? await fetchJSON(`/api/v1/investigate/ip/${encodeURIComponent(ip)}?${buildFilterQuery({ limit: 50 })}`) : item;
+      const detail = ip ? await fetchJSON(`/api/v1/investigate/ip/${encodeURIComponent(ip)}?${buildFilterQuery({ limit: drawerHistoryLimit })}`) : item;
       state.drawer = { kind, title, data: detail, summary: item, pages: {} };
       body = renderIPDetail(detail, item);
     } catch (error) {
@@ -3751,7 +3752,7 @@ async function openDrawer(kind, rawIndex, value) {
     const item = state.detailCache[value] || securitySignalRows()[index] || {};
     title = item.title || item.kind || "Security Signal";
     const params = new URLSearchParams(buildFilterQuery({
-      limit: 50,
+      limit: drawerHistoryLimit,
       kind: item.kind || "",
       category: item.category || "",
       rule_key: item.rule_key || "",
@@ -3794,7 +3795,7 @@ async function openDrawer(kind, rawIndex, value) {
     const item = state.detailCache[value] || findUserAgentByValue(value) || {};
     const sample = item.sample || item.user_agent || item.family || "User Agent";
     title = parseUserAgent({ ...item, sample }).label || item.family || userAgentFamily(sample) || "User Agent";
-    const params = new URLSearchParams(buildFilterQuery({ limit: 50 }));
+    const params = new URLSearchParams(buildFilterQuery({ limit: drawerHistoryLimit }));
     if (item.id) params.set("id", item.id);
     if (sample && sample !== "User Agent") params.set("sample", sample);
     try {

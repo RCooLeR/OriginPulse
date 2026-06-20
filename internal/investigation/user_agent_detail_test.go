@@ -27,3 +27,25 @@ func TestUserAgentDetailsDisabledDatabaseReturnsShell(t *testing.T) {
 		t.Fatalf("sample = %q, want curl/8.0.1", detail.UserAgent.Sample)
 	}
 }
+
+func TestNormalizeLimitAllowsDeeperDrawerPages(t *testing.T) {
+	tests := []struct {
+		name  string
+		limit int
+		want  int
+	}{
+		{name: "default", limit: 0, want: 10},
+		{name: "negative", limit: -1, want: 10},
+		{name: "keeps requested", limit: 250, want: 250},
+		{name: "max", limit: DetailMaxLimit, want: DetailMaxLimit},
+		{name: "clamped", limit: DetailMaxLimit + 1, want: DetailMaxLimit},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeLimit(tt.limit); got != tt.want {
+				t.Fatalf("normalizeLimit(%d) = %d, want %d", tt.limit, got, tt.want)
+			}
+		})
+	}
+}

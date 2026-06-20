@@ -20,6 +20,8 @@ type Options struct {
 	To     time.Time
 }
 
+const DetailMaxLimit = 500
+
 type Traffic struct {
 	Range           string           `json:"range"`
 	SiteID          string           `json:"site_id,omitempty"`
@@ -570,8 +572,8 @@ func normalizeLimit(limit int) int {
 	if limit <= 0 {
 		return 10
 	}
-	if limit > 100 {
-		return 100
+	if limit > DetailMaxLimit {
+		return DetailMaxLimit
 	}
 	return limit
 }
