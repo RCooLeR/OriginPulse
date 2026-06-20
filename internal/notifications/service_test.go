@@ -116,6 +116,34 @@ func TestChannelsReportConfiguredTargets(t *testing.T) {
 	}
 }
 
+func TestNotificationWarningsExplainMissingTargets(t *testing.T) {
+	warnings := notificationWarnings(true, []Channel{
+		{Name: "email", Enabled: true, Configured: false},
+		{Name: "push", Enabled: true, Configured: false},
+		{Name: "web_push", Enabled: true, Configured: true},
+	}, 0, 0)
+
+	for _, want := range []string{
+		"Email is enabled but SMTP host, sender, or recipients are missing.",
+		"Webhook push is enabled but no webhook URLs are configured.",
+		"Browser push is configured but no browsers are subscribed.",
+		"No delivery targets are configured.",
+	} {
+		if !containsString(warnings, want) {
+			t.Fatalf("warnings missing %q: %#v", want, warnings)
+		}
+	}
+}
+
+func TestNotificationWarningsReadyWhenTargetExists(t *testing.T) {
+	warnings := notificationWarnings(true, []Channel{
+		{Name: "email", Enabled: true, Configured: true, Targets: []string{"ops@example.test"}},
+	}, 1, -1)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+}
+
 func TestWebPushPayloadIsCompact(t *testing.T) {
 	payload := webPushPayload("Alert title", strings.Repeat("x", 500), map[string]any{
 		"alert": map[string]any{
@@ -132,6 +160,15 @@ func TestWebPushPayloadIsCompact(t *testing.T) {
 	if len(payload["body"].(string)) > 263 {
 		t.Fatalf("body was not truncated: %d", len(payload["body"].(string)))
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func startFakeSMTP(t *testing.T) (string, <-chan string, func()) {

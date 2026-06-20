@@ -20,13 +20,16 @@ import (
 )
 
 type Result struct {
-	Enabled   bool       `json:"enabled"`
-	Evaluated int        `json:"evaluated"`
-	Sent      int        `json:"sent"`
-	Skipped   int        `json:"skipped"`
-	Failed    int        `json:"failed"`
-	Channels  []Channel  `json:"channels"`
-	Items     []Delivery `json:"items"`
+	Enabled     bool       `json:"enabled"`
+	Evaluated   int        `json:"evaluated"`
+	Sent        int        `json:"sent"`
+	Skipped     int        `json:"skipped"`
+	Failed      int        `json:"failed"`
+	TargetCount int        `json:"target_count"`
+	Message     string     `json:"message,omitempty"`
+	Warnings    []string   `json:"warnings,omitempty"`
+	Channels    []Channel  `json:"channels"`
+	Items       []Delivery `json:"items"`
 }
 
 type Channel struct {
@@ -52,7 +55,10 @@ type Delivery struct {
 
 type Status struct {
 	Enabled     bool       `json:"enabled"`
+	Ready       bool       `json:"ready"`
 	MinSeverity string     `json:"min_severity"`
+	TargetCount int        `json:"target_count"`
+	Warnings    []string   `json:"warnings,omitempty"`
 	Channels    []Channel  `json:"channels"`
 	Recent      []Delivery `json:"recent"`
 }
@@ -120,7 +126,11 @@ func (s *Service) Status(ctx context.Context, limit int) (Status, error) {
 		return Status{}, err
 	}
 	channels := s.channels()
+	targetCount := channelTargetCount(channels)
+	activeWebPush := -1
 	if count, err := s.activeWebPushCount(ctx); err == nil {
+		activeWebPush = count
+		targetCount += count
 		for index := range channels {
 			if channels[index].Name == "web_push" && s.browserPushConfigured() {
 				channels[index].Targets = []string{fmt.Sprintf("%d active browser subscriptions", count)}
@@ -129,9 +139,13 @@ func (s *Service) Status(ctx context.Context, limit int) (Status, error) {
 	} else if !errors.Is(err, db.ErrUnavailable) {
 		return Status{}, err
 	}
+	warnings := notificationWarnings(s.cfg.Notifications.Enabled, channels, targetCount, activeWebPush)
 	return Status{
 		Enabled:     s.cfg.Notifications.Enabled,
+		Ready:       s.cfg.Notifications.Enabled && targetCount > 0,
 		MinSeverity: s.cfg.Notifications.MinSeverity,
+		TargetCount: targetCount,
+		Warnings:    warnings,
 		Channels:    channels,
 		Recent:      recent,
 	}, nil
@@ -144,6 +158,8 @@ func (s *Service) NotifyOpenAlerts(ctx context.Context, limit int) (Result, erro
 		Items:    []Delivery{},
 	}
 	if !s.cfg.Notifications.Enabled {
+		result.Message = "Notifications are disabled."
+		result.Warnings = notificationWarnings(result.Enabled, result.Channels, 0, -1)
 		return result, nil
 	}
 	if !s.Enabled() {
@@ -157,7 +173,10 @@ func (s *Service) NotifyOpenAlerts(ctx context.Context, limit int) (Result, erro
 	if err != nil {
 		return result, err
 	}
+	result.TargetCount = len(targets)
+	result.Warnings = notificationWarnings(result.Enabled, result.Channels, len(targets), -1)
 	if len(targets) == 0 {
+		result.Message = "No delivery targets are configured."
 		return result, nil
 	}
 
@@ -197,6 +216,7 @@ func (s *Service) NotifyOpenAlerts(ctx context.Context, limit int) (Result, erro
 			result.Items = append(result.Items, delivery)
 		}
 	}
+	result.Message = fmt.Sprintf("Evaluated %d alert(s), sent %d, skipped %d, failed %d.", result.Evaluated, result.Sent, result.Skipped, result.Failed)
 	return result, nil
 }
 
@@ -207,6 +227,8 @@ func (s *Service) Test(ctx context.Context) (Result, error) {
 		Items:    []Delivery{},
 	}
 	if !s.cfg.Notifications.Enabled {
+		result.Message = "Notifications are disabled."
+		result.Warnings = notificationWarnings(result.Enabled, result.Channels, 0, -1)
 		return result, nil
 	}
 	if !s.Enabled() {
@@ -221,6 +243,12 @@ func (s *Service) Test(ctx context.Context) (Result, error) {
 	targets, err := s.targets(ctx)
 	if err != nil {
 		return result, err
+	}
+	result.TargetCount = len(targets)
+	result.Warnings = notificationWarnings(result.Enabled, result.Channels, len(targets), -1)
+	if len(targets) == 0 {
+		result.Message = "No delivery targets are configured."
+		return result, nil
 	}
 	for _, target := range targets {
 		delivery, _, err := s.insertPending(ctx, nil, target.channel, target.value, "test", "OriginPulse test notification", payload)
@@ -247,6 +275,7 @@ func (s *Service) Test(ctx context.Context) (Result, error) {
 		delivery.Target = redactTarget(delivery.Channel, delivery.Target)
 		result.Items = append(result.Items, delivery)
 	}
+	result.Message = fmt.Sprintf("Sent %d test notification(s), failed %d.", result.Sent, result.Failed)
 	return result, nil
 }
 
@@ -679,6 +708,79 @@ func (s *Service) channels() []Channel {
 			Configured: s.cfg.Notifications.Push.Enabled && s.browserPushConfigured(),
 		},
 	}
+}
+
+func channelTargetCount(channels []Channel) int {
+	count := 0
+	for _, channel := range channels {
+		if channel.Name == "web_push" {
+			continue
+		}
+		if channel.Enabled && channel.Configured {
+			count += len(channel.Targets)
+		}
+	}
+	return count
+}
+
+func notificationWarnings(enabled bool, channels []Channel, targetCount int, activeWebPush int) []string {
+	warnings := []string{}
+	if !enabled {
+		return append(warnings, "Notifications are disabled.")
+	}
+
+	for _, channel := range channels {
+		if !channel.Enabled {
+			continue
+		}
+		if channel.Configured {
+			continue
+		}
+		switch channel.Name {
+		case "email":
+			warnings = append(warnings, "Email is enabled but SMTP host, sender, or recipients are missing.")
+		case "push":
+			warnings = append(warnings, "Webhook push is enabled but no webhook URLs are configured.")
+		case "web_push":
+			if targetCount == 0 {
+				warnings = append(warnings, "Browser push is enabled but VAPID public key, private key, or subject is missing.")
+			}
+		default:
+			warnings = append(warnings, fmt.Sprintf("%s is enabled but not configured.", formatChannelName(channel.Name)))
+		}
+	}
+	if activeWebPush == 0 {
+		warnings = append(warnings, "Browser push is configured but no browsers are subscribed.")
+	}
+	if targetCount == 0 {
+		warnings = append(warnings, "No delivery targets are configured.")
+	}
+	return dedupeStrings(warnings)
+}
+
+func formatChannelName(value string) string {
+	value = strings.ReplaceAll(value, "_", " ")
+	if value == "" {
+		return "channel"
+	}
+	return value
+}
+
+func dedupeStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	deduped := []string{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		deduped = append(deduped, value)
+	}
+	return deduped
 }
 
 func (s *Service) targets(ctx context.Context) ([]target, error) {

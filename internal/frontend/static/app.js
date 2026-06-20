@@ -1157,6 +1157,9 @@ function notificationsPanel() {
   const channels = status.channels || [];
   const recent = status.recent || [];
   const webPush = state.data.webPush || {};
+  const warnings = status.warnings || [];
+  const page = paginate(recent, state.pages.notificationsRecent, 5);
+  state.pages.notificationsRecent = page.page;
   return `
     <article class="panel">
       <div class="panel-head">
@@ -1169,16 +1172,24 @@ function notificationsPanel() {
       <div class="panel-body">
         ${facts([
           ["Enabled", yesNo(status.enabled)],
+          ["Ready", yesNo(status.ready)],
+          ["Targets", formatNumber(status.target_count || 0)],
           ["Minimum severity", status.min_severity || "-"],
           ["Browser push", webPush.configured ? `${webPush.active_subscriptions || 0} active` : "Not configured"],
         ])}
+        ${warnings.length ? `<div class="list compact-list">${warnings.map((warning) => `
+          <div class="list-row">
+            <div><strong>${iconHTML("fa-circle-info")} Attention</strong><span>${escapeHTML(warning)}</span></div>
+          </div>
+        `).join("")}</div>` : ""}
         <div class="toolbar inline-toolbar">
           <button class="button outline small" type="button" data-action="enable-web-push">${iconHTML("fa-bell")}Enable Browser Push</button>
           <button class="button outline small" type="button" data-action="disable-web-push">${iconHTML("fa-bell-slash")}Disable Browser Push</button>
         </div>
       </div>
       <div class="list">${channels.map(channelRow).join("") || empty("No notification channels configured.")}</div>
-      <div class="list">${recent.slice(0, 5).map(deliveryRow).join("") || empty("No recent deliveries.")}</div>
+      <div class="list">${page.rows.map(deliveryRow).join("") || empty("No recent deliveries.")}</div>
+      ${pager("notificationsRecent", page)}
     </article>
   `;
 }
@@ -1483,6 +1494,13 @@ function deliveryRow(item) {
       <span class="status ${status}">${escapeHTML(item.status || "pending")}</span>
     </div>
   `;
+}
+
+function notificationResultMessage(result, fallback) {
+  if (result?.message) return result.message;
+  const warnings = result?.warnings || [];
+  if (warnings.length) return warnings[0];
+  return `${fallback}: ${formatNumber(result?.sent || 0)} sent / ${formatNumber(result?.skipped || 0)} skipped / ${formatNumber(result?.failed || 0)} failed`;
 }
 
 function segmentsTable(rows) {
@@ -2814,8 +2832,9 @@ async function handleAction(button) {
   if (action === "run-archive") {
     if (!confirm("Create ready archive groups and remove archived hourly combined files?")) return;
     return runButton(button, "Archive complete", async () => {
-      await fetchJSON("/api/v1/system/archive-logs", { method: "POST", body: JSON.stringify({ max_groups: 25, remove_sources: true }) });
+      const result = await fetchJSON("/api/v1/system/archive-logs", { method: "POST", body: JSON.stringify({ max_groups: 25, remove_sources: true }) });
       await refreshAll();
+      return `${formatNumber(result.archives_written || 0)} archives written / ${formatNumber(result.files_archived || 0)} files archived`;
     });
   }
   if (action === "import-archive") {
@@ -2826,8 +2845,9 @@ async function handleAction(button) {
     const expiry = state.data.retention?.temporary_import_max_age || "the configured temporary import window";
     if (!confirm(`Temporarily import ${range} for investigation?\n\nImported events are marked as temporary and will expire after ${expiry}. Existing hot data is not replaced.`)) return;
     return runButton(button, "Archive import complete", async () => {
-      await fetchJSON("/api/v1/system/import-archive", { method: "POST", body: JSON.stringify({ archive_id: archiveID, reason: "manual UI import" }) });
+      const result = await fetchJSON("/api/v1/system/import-archive", { method: "POST", body: JSON.stringify({ archive_id: archiveID, reason: "manual UI import" }) });
       await refreshAll();
+      return `${formatNumber(result.events_inserted || 0)} archived events imported / ${formatNumber(result.events_conflicted || 0)} already present`;
     });
   }
   if (action === "import-range-archives") {
@@ -2844,8 +2864,8 @@ async function handleAction(button) {
         method: "POST",
         body: JSON.stringify({ archive_ids: archiveIDs, reason: `UI old-range import for ${state.range}` }),
       });
-      toast(`${formatNumber(result.totals?.events_inserted || 0)} archived events imported`);
       await refreshAll();
+      return `${formatNumber(result.totals?.events_inserted || 0)} archived events imported / ${formatNumber(result.totals?.events_conflicted || 0)} already present`;
     });
   }
   if (action === "query-guide") {
@@ -2882,14 +2902,16 @@ async function handleAction(button) {
   }
   if (action === "send-notifications") {
     return runButton(button, "Notification run complete", async () => {
-      await fetchJSON("/api/v1/notifications/send", { method: "POST", body: "{}" });
+      const result = await fetchJSON("/api/v1/notifications/send", { method: "POST", body: "{}" });
       await refreshAll();
+      return notificationResultMessage(result, "Notification run complete");
     });
   }
   if (action === "test-notifications") {
     return runButton(button, "Notification test complete", async () => {
-      await fetchJSON("/api/v1/notifications/test", { method: "POST", body: "{}" });
+      const result = await fetchJSON("/api/v1/notifications/test", { method: "POST", body: "{}" });
       await refreshAll();
+      return notificationResultMessage(result, "Notification test complete");
     });
   }
   if (action === "enable-web-push") {
@@ -2968,8 +2990,8 @@ async function runButton(button, success, fn) {
   button.disabled = true;
   button.innerHTML = `${iconHTML("fa-spinner fa-spin")}Working`;
   try {
-    await fn();
-    toast(success);
+    const message = await fn();
+    toast(typeof message === "string" && message ? message : success);
   } catch (error) {
     toast(error.message, true);
   } finally {
