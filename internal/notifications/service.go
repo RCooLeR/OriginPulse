@@ -108,6 +108,8 @@ type target struct {
 	subscription *webpush.Subscription
 }
 
+const RecentMaxLimit = 500
+
 func NewService(cfg config.Config, store *db.Store) *Service {
 	return &Service{
 		cfg:    cfg,
@@ -283,9 +285,7 @@ func (s *Service) Recent(ctx context.Context, limit int) ([]Delivery, error) {
 	if !s.Enabled() {
 		return []Delivery{}, nil
 	}
-	if limit <= 0 || limit > 100 {
-		limit = 25
-	}
+	limit = normalizeRecentLimit(limit)
 	pool, err := s.db.Pool()
 	if err != nil {
 		return nil, err
@@ -333,6 +333,16 @@ LIMIT $1`, limit)
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func normalizeRecentLimit(limit int) int {
+	if limit <= 0 {
+		return 25
+	}
+	if limit > RecentMaxLimit {
+		return RecentMaxLimit
+	}
+	return limit
 }
 
 func (s *Service) WebPushStatus(ctx context.Context) (WebPushStatus, error) {

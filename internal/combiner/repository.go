@@ -35,7 +35,10 @@ type Repository struct {
 	db *db.Store
 }
 
-const pipelineLockKey int64 = 7720002
+const (
+	pipelineLockKey        int64 = 7720002
+	RecentSegmentsMaxLimit       = 500
+)
 
 func NewRepository(store *db.Store) *Repository {
 	return &Repository{db: store}
@@ -134,9 +137,7 @@ func (r *Repository) RecentSegments(ctx context.Context, limit int) ([]SegmentMa
 	if !r.Enabled() {
 		return []SegmentManifest{}, nil
 	}
-	if limit <= 0 || limit > 100 {
-		limit = 25
-	}
+	limit = normalizeRecentSegmentsLimit(limit)
 
 	pool, err := r.db.Pool()
 	if err != nil {
@@ -176,6 +177,16 @@ LIMIT $1`, limit)
 		segments = append(segments, segment)
 	}
 	return segments, rows.Err()
+}
+
+func normalizeRecentSegmentsLimit(limit int) int {
+	if limit <= 0 {
+		return 25
+	}
+	if limit > RecentSegmentsMaxLimit {
+		return RecentSegmentsMaxLimit
+	}
+	return limit
 }
 
 func (r *Repository) PendingIndexSegments(ctx context.Context, limit int) ([]SegmentManifest, error) {

@@ -44,7 +44,10 @@ type RawFileRepository struct {
 	db *db.Store
 }
 
-const collectionLockKey int64 = 7720001
+const (
+	collectionLockKey     int64 = 7720001
+	RawFileRecentMaxLimit       = 500
+)
 
 func NewRawFileRepository(store *db.Store) *RawFileRepository {
 	return &RawFileRepository{db: store}
@@ -161,9 +164,7 @@ func (r *RawFileRepository) Recent(ctx context.Context, limit int) ([]RawFileSum
 	if !r.Enabled() {
 		return []RawFileSummary{}, nil
 	}
-	if limit <= 0 || limit > 100 {
-		limit = 25
-	}
+	limit = normalizeRawFileRecentLimit(limit)
 
 	pool, err := r.db.Pool()
 	if err != nil {
@@ -205,6 +206,16 @@ LIMIT $1`, limit)
 		files = append(files, file)
 	}
 	return files, rows.Err()
+}
+
+func normalizeRawFileRecentLimit(limit int) int {
+	if limit <= 0 {
+		return 25
+	}
+	if limit > RawFileRecentMaxLimit {
+		return RawFileRecentMaxLimit
+	}
+	return limit
 }
 
 func (r *RawFileRepository) upsert(ctx context.Context, file RawFile) error {

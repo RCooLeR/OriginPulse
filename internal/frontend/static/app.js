@@ -22,6 +22,7 @@ const routes = [
 const routeById = Object.fromEntries(routes.map((route) => [route.id, route]));
 const pathToRoute = Object.fromEntries(routes.map((route) => [route.path, route.id]));
 const reportCatalogLimit = 500;
+const pulseHistoryLimit = 500;
 
 const state = {
   route: pathToRoute[location.pathname] || "overview",
@@ -218,18 +219,18 @@ async function refreshAll() {
       safeFetch("/api/v1/sites", { sites: [] }),
       safeFetch("/api/v1/alerts?limit=100", { alerts: [] }),
       safeFetch(`/api/v1/reports/recent?${buildFilterQuery({ limit: reportCatalogLimit })}`, { reports: [] }),
-      safeFetch("/api/v1/system/jobs", { jobs: [] }),
+      safeFetch(`/api/v1/system/jobs?limit=${pulseHistoryLimit}`, { jobs: [] }),
       safeFetch("/api/v1/system/credentials", {}),
-      safeFetch("/api/v1/system/collector-health", {}),
+      safeFetch(`/api/v1/system/collector-health?limit=${pulseHistoryLimit}`, {}),
       safeFetch("/api/v1/system/retention", {}),
       safeFetch("/api/v1/system/storage", {}),
-      safeFetch("/api/v1/system/archives?limit=100", { archives: [] }),
-      safeFetch("/api/v1/system/archive-imports?limit=100", { imports: [] }),
+      safeFetch(`/api/v1/system/archives?limit=${pulseHistoryLimit}`, { archives: [] }),
+      safeFetch(`/api/v1/system/archive-imports?limit=${pulseHistoryLimit}`, { imports: [] }),
       safeFetch(`/api/v1/system/archive-coverage?${filter}`, { archives: [], active_temporary_imports: [] }),
-      safeFetch("/api/v1/notifications?limit=25", {}),
+      safeFetch(`/api/v1/notifications?limit=${pulseHistoryLimit}`, {}),
       safeFetch("/api/v1/notifications/web-push/public-key", {}),
       safeFetch("/api/v1/users", { users: [] }),
-      safeFetch("/api/v1/system/segments?limit=100", { segments: [] }),
+      safeFetch(`/api/v1/system/segments?limit=${pulseHistoryLimit}`, { segments: [] }),
     ]);
     state.data = {
       overview,

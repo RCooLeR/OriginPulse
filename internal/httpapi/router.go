@@ -695,7 +695,7 @@ func (api API) notificationStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, notifications.Status{})
 		return
 	}
-	status, err := api.notifications.Status(r.Context(), parseLimit(r, 25, 100))
+	status, err := api.notifications.Status(r.Context(), parseLimit(r, 100, notifications.RecentMaxLimit))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "notifications_failed", err.Error())
 		return
@@ -816,7 +816,7 @@ func (api API) credentials(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api API) recentJobs(w http.ResponseWriter, r *http.Request) {
-	limit := parseLimit(r, 25, 100)
+	limit := parseLimit(r, 100, 500)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"jobs": api.jobs.Recent(limit),
 	})
@@ -829,7 +829,7 @@ func (api API) collectorHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	recent, err := api.rawFiles.Recent(r.Context(), 25)
+	recent, err := api.rawFiles.Recent(r.Context(), parseLimit(r, 100, pantheon.RawFileRecentMaxLimit))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "collector_health_failed", err.Error())
 		return
@@ -885,7 +885,7 @@ func (api API) recentArchives(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"archives": []map[string]any{}})
 		return
 	}
-	limit := parseLimit(r, 50, 200)
+	limit := parseLimit(r, 100, 500)
 	pool, err := api.db.Pool()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "archives_failed", err.Error())
@@ -953,7 +953,7 @@ func (api API) recentArchiveImports(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"imports": []map[string]any{}})
 		return
 	}
-	limit := parseLimit(r, 50, 200)
+	limit := parseLimit(r, 100, 500)
 	pool, err := api.db.Pool()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "archive_imports_failed", err.Error())
@@ -1205,7 +1205,7 @@ func (api API) collectionPlan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api API) recentSegments(w http.ResponseWriter, r *http.Request) {
-	limit := parseLimit(r, 25, 100)
+	limit := parseLimit(r, 100, combiner.RecentSegmentsMaxLimit)
 	segments, err := api.segments.RecentSegments(r.Context(), limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "segments_failed", err.Error())
