@@ -1401,15 +1401,22 @@ function jobsTable(rows) {
 function issueRow(item, index = 0) {
   const sev = normalizeSeverity(item.severity);
   const summary = item.summary || item.actor_value || item.site_id || "No summary";
+  const actor = issueActorLink(item);
   return `
     <div class="list-row">
       <div>
         <strong>${escapeHTML(item.title || item.rule_key || "Signal")}</strong>
-        <span>${linkifyIPs(summary)}</span>
+        <span>${linkifyIPs(summary)}${actor !== "-" ? ` / ${actor}` : ""}</span>
       </div>
       <span class="severity ${sev}">${escapeHTML(sev)}</span>
     </div>
   `;
+}
+
+function issueActorLink(item) {
+  if (item.actor_type === "ip" && item.actor_value) return ipLink(item.actor_value);
+  if (isUserAgentActor(item.actor_type) && item.actor_value) return userAgentLink(item.actor_value);
+  return "-";
 }
 
 function alertRow(item, index = 0) {
@@ -3239,7 +3246,7 @@ function reportDrilldownCard(drill) {
       </div>
       <div class="list compact-list">${rows.slice(0, 8).map((row) => `
         <div class="list-row">
-          <div><strong>${linkifyIPs(reportDrilldownTitle(row))}</strong><span>${linkifyIPs(reportDrilldownMeta(row))}</span></div>
+          <div><strong>${reportDrilldownTitleHTML(row)}</strong><span>${reportDrilldownMetaHTML(row)}</span></div>
           <b>${escapeHTML(reportDrilldownValue(row))}</b>
         </div>
       `).join("") || empty("No drilldown rows.")}</div>
@@ -3251,8 +3258,22 @@ function reportDrilldownTitle(row) {
   return row.title || row.label || row.path || row.ip || row.site_id || row.key || row.kind || row.rule_key || "-";
 }
 
+function reportDrilldownTitleHTML(row) {
+  if (row.kind === "user_agent" && (row.meta || row.user_agent || row.label)) {
+    return userAgentLink({ family: row.label, sample: row.meta || row.user_agent || row.label }, row.label || row.meta || "User Agent");
+  }
+  return linkifyIPs(reportDrilldownTitle(row));
+}
+
 function reportDrilldownMeta(row) {
   return row.summary || row.meta || [row.site_id, row.env, row.method, row.status, row.match_reason, row.category].filter(Boolean).join(" / ");
+}
+
+function reportDrilldownMetaHTML(row) {
+  if (row.kind === "user_agent" && (row.meta || row.user_agent)) {
+    return escapeHTML(userAgentMetaLine({ family: row.label, sample: row.meta || row.user_agent, actor_type: row.category, known_actor: row.known_actor }));
+  }
+  return linkifyIPs(reportDrilldownMeta(row));
 }
 
 function reportDrilldownValue(row) {
