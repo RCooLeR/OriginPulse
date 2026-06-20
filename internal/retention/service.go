@@ -166,7 +166,8 @@ WHERE log_type = 'nginx-access'
 	if err := pool.QueryRow(ctx, `
 SELECT count(*)::int
 FROM access_events
-WHERE ts < $1`, result.HotEventCutoff).Scan(&result.AccessEventsMatched); err != nil {
+WHERE ts < $1
+  AND temporary_import_id IS NULL`, result.HotEventCutoff).Scan(&result.AccessEventsMatched); err != nil {
 		return err
 	}
 	if err := pool.QueryRow(ctx, `
