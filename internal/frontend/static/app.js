@@ -225,6 +225,7 @@ async function refreshAll() {
   state.loading = true;
   state.fetchErrors = [];
   state.estateDataKey = "";
+  state.securityAnalysisKey = "";
   document.body.classList.add("busy");
   try {
     const filter = buildFilterQuery();
