@@ -2513,7 +2513,7 @@ function renderUserAgentDetail(item) {
 function incidentRows() {
   const alerts = state.data.alerts.map(alertRow);
   const errors = (state.data.traffic.recent_errors || []).slice(0, 4).map((event) => `
-    <div class="list-row"><div><strong>${escapeHTML(event.status || "Error")} ${escapeHTML(event.path || "/")}</strong><span>${escapeHTML(event.site_id || "-")} / ${event.client_ip ? ipLink(event.client_ip) : "-"} / ${shortTime(event.ts)}</span></div><span class="severity ${Number(event.status) >= 500 ? "critical" : "high"}">${escapeHTML(event.status || "error")}</span></div>
+    <div class="list-row"><div><strong>${escapeHTML(event.status || "Error")} ${escapeHTML(event.path || "/")}</strong><span>${escapeHTML(event.site_id || "-")} / ${event.client_ip ? ipLink(event.client_ip) : "-"} / ${event.user_agent ? userAgentLink(event.user_agent, shortUserAgentSample(event.user_agent)) : "-"} / ${shortTime(event.ts)}</span></div><span class="severity ${Number(event.status) >= 500 ? "critical" : "high"}">${escapeHTML(event.status || "error")}</span></div>
   `);
   return alerts.concat(errors);
 }
