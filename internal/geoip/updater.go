@@ -84,6 +84,12 @@ func (u *Updater) EnsureAndLoad(ctx context.Context, mgr *Manager) error {
 	if err := u.ensureDatabase(ctx); err != nil {
 		return err
 	}
+	if err := mgr.Load(); err == nil {
+		return nil
+	} else if seedErr := u.copySeedDatabase(); seedErr != nil {
+		return err
+	}
+	log.Warn().Str("db_path", u.cfg.DBPath).Str("seed_path", u.cfg.SeedPath).Msg("geoip database load failed; restored bundled seed")
 	return mgr.Load()
 }
 

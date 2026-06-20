@@ -87,6 +87,38 @@ func TestUpdaterEnsureDatabaseCopiesSeedBeforeDownload(t *testing.T) {
 	}
 }
 
+func TestUpdaterEnsureAndLoadRestoresSeedAfterCorruptRuntimeDatabase(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "runtime", "GeoLite2-City.mmdb")
+	seedPath := filepath.Join(dir, "seed", "GeoLite2-City.mmdb")
+	if err := os.MkdirAll(filepath.Dir(seedPath), 0o755); err != nil {
+		t.Fatalf("mkdir seed dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir db dir: %v", err)
+	}
+	seedPayload := []byte("seed-mmdb")
+	if err := os.WriteFile(seedPath, seedPayload, 0o644); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	if err := os.WriteFile(dbPath, []byte("corrupt-runtime-mmdb"), 0o644); err != nil {
+		t.Fatalf("write runtime db: %v", err)
+	}
+
+	updater := NewUpdater(UpdaterConfig{DBPath: dbPath, SeedPath: seedPath, DownloadURL: "http://example.invalid/db.tar.gz", HTTPTimeout: time.Second})
+	err := updater.EnsureAndLoad(t.Context(), NewManager(dbPath))
+	if err == nil {
+		t.Fatal("EnsureAndLoad() unexpectedly loaded fake mmdb")
+	}
+	got, readErr := os.ReadFile(dbPath)
+	if readErr != nil {
+		t.Fatalf("read db: %v", readErr)
+	}
+	if string(got) != string(seedPayload) {
+		t.Fatalf("runtime db = %q, want restored seed %q", got, seedPayload)
+	}
+}
+
 func TestUpdaterStatusReportsSeedAndCredentials(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "runtime", "GeoLite2-City.mmdb")
