@@ -1703,7 +1703,7 @@ function facetBlock(title, rows) {
 }
 
 function compactRow(label, meta, value = "") {
-  return `<div class="list-row"><div><strong>${escapeHTML(label || "-")}</strong><span>${escapeHTML(meta || "")}</span></div><b>${escapeHTML(String(value ?? ""))}</b></div>`;
+  return `<div class="list-row"><div><strong>${linkifyIPs(label || "-")}</strong><span>${linkifyIPs(meta || "")}</span></div><b>${linkifyIPs(String(value ?? ""))}</b></div>`;
 }
 
 function ipLink(ip, label = ip) {
@@ -1742,18 +1742,36 @@ function userAgentMetaLine(agent, info = parseUserAgent(agent)) {
 }
 
 function linkifyIPs(value) {
-  const text = String(value ?? "");
+  const text = escapeHTML(String(value ?? ""));
   if (!text) return "";
+  return linkifyEscapedIPs(text);
+}
+
+function linkifyEscapedIPs(text) {
   const pattern = /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/g;
   let html = "";
   let last = 0;
   for (const match of text.matchAll(pattern)) {
-    html += escapeHTML(text.slice(last, match.index));
+    html += text.slice(last, match.index);
     html += ipLink(match[0]);
     last = match.index + match[0].length;
   }
-  html += escapeHTML(text.slice(last));
+  html += text.slice(last);
   return html;
+}
+
+function linkifyIPsInHTML(html) {
+  let skip = 0;
+  return String(html || "").split(/(<[^>]+>)/g).map((part) => {
+    if (!part) return "";
+    if (part.startsWith("<")) {
+      const tag = part.toLowerCase();
+      if (/^<(a|code)\b/.test(tag)) skip++;
+      if (/^<\/(a|code)>/.test(tag)) skip = Math.max(0, skip - 1);
+      return part;
+    }
+    return skip ? part : linkifyEscapedIPs(part);
+  }).join("");
 }
 
 function groupCount(rows, pick) {
@@ -2488,7 +2506,7 @@ function renderUserAgentDetail(item) {
 function incidentRows() {
   const alerts = state.data.alerts.map(alertRow);
   const errors = (state.data.traffic.recent_errors || []).slice(0, 4).map((event) => `
-    <div class="list-row"><div><strong>${escapeHTML(event.status || "Error")} ${escapeHTML(event.path || "/")}</strong><span>${escapeHTML(event.site_id || "-")} / ${shortTime(event.ts)}</span></div><span class="severity ${Number(event.status) >= 500 ? "critical" : "high"}">${escapeHTML(event.status || "error")}</span></div>
+    <div class="list-row"><div><strong>${escapeHTML(event.status || "Error")} ${escapeHTML(event.path || "/")}</strong><span>${escapeHTML(event.site_id || "-")} / ${event.client_ip ? ipLink(event.client_ip) : "-"} / ${shortTime(event.ts)}</span></div><span class="severity ${Number(event.status) >= 500 ? "critical" : "high"}">${escapeHTML(event.status || "error")}</span></div>
   `);
   return alerts.concat(errors);
 }
@@ -3161,15 +3179,15 @@ function renderReportDetail(item) {
     </article>
     <article class="detail-card">
       <h3>Traffic & Risk Summary</h3>
-      ${facts([
-        ["Range", summary.range || item.range || "-"],
-        ["Generated", shortTime(summary.generated_at || item.generated_at || item.created_at)],
-        ["4xx", `${formatNumber(summary.status_4xx)} (${formatPercent(summary.status_4xx_rate)})`],
-        ["5xx", `${formatNumber(summary.status_5xx)} (${formatPercent(summary.status_5xx_rate)})`],
-        ["Issues", formatNumber(summary.issue_count)],
-        ["Top Site", summary.top_site || "-"],
-        ["Top Path", summary.top_path || "-"],
-        ["Top Source IP", summary.top_source_ip || "-"],
+      ${factsRich([
+        ["Range", escapeHTML(summary.range || item.range || "-")],
+        ["Generated", escapeHTML(shortTime(summary.generated_at || item.generated_at || item.created_at))],
+        ["4xx", escapeHTML(`${formatNumber(summary.status_4xx)} (${formatPercent(summary.status_4xx_rate)})`)],
+        ["5xx", escapeHTML(`${formatNumber(summary.status_5xx)} (${formatPercent(summary.status_5xx_rate)})`)],
+        ["Issues", escapeHTML(formatNumber(summary.issue_count))],
+        ["Top Site", escapeHTML(summary.top_site || "-")],
+        ["Top Path", escapeHTML(summary.top_path || "-")],
+        ["Top Source IP", summary.top_source_ip ? ipLink(summary.top_source_ip) : "-"],
       ])}
     </article>
     <section class="detail-grid two report-detail-grid">
@@ -3196,14 +3214,14 @@ function reportChartCard(chart) {
         <strong>${escapeHTML(chart.title || chart.key || "Chart")}</strong>
         <span>${escapeHTML(chart.kind || "chart")} / ${escapeHTML(chart.unit || "count")}</span>
       </div>
-      ${facts([
-        ["Points", formatNumber(points.length)],
-        ["Total", formatNumber(total)],
-        ["Peak", peak.label ? `${escapeHTML(peak.label)} / ${formatNumber(peak.value)}` : "-"],
+      ${factsRich([
+        ["Points", escapeHTML(formatNumber(points.length))],
+        ["Total", escapeHTML(formatNumber(total))],
+        ["Peak", peak.label ? `${linkifyIPs(peak.label)} / ${escapeHTML(formatNumber(peak.value))}` : "-"],
       ])}
       <div class="list compact-list">${points.slice(0, 6).map((point) => `
         <div class="list-row">
-          <div><strong>${escapeHTML(point.label || shortTime(point.timestamp) || "-")}</strong><span>${escapeHTML(point.meta || chart.unit || "")}</span></div>
+          <div><strong>${linkifyIPs(point.label || shortTime(point.timestamp) || "-")}</strong><span>${linkifyIPs(point.meta || chart.unit || "")}</span></div>
           <b>${formatNumber(point.value)}${point.secondary !== undefined ? ` / ${formatNumber(point.secondary)}` : ""}</b>
         </div>
       `).join("") || empty("No chart points.")}</div>
@@ -3401,12 +3419,14 @@ function drawerPager(key, page) {
 
 function requestRows(rows) {
   if (!rows.length) return empty("No recent requests.");
+  const hasSource = rows.some((row) => row.client_ip || row.ip);
   return `
     <div class="table-wrap compact-table"><table>
-      <thead><tr><th>Time</th><th>Request</th><th>Status</th><th>Bytes</th></tr></thead>
+      <thead><tr><th>Time</th>${hasSource ? "<th>Source</th>" : ""}<th>Request</th><th>Status</th><th>Bytes</th></tr></thead>
       <tbody>${rows.map((row) => `
         <tr>
           <td>${shortTime(row.ts)}</td>
+          ${hasSource ? `<td>${ipLink(row.client_ip || row.ip)}</td>` : ""}
           <td>${escapeHTML(row.method || "GET")} ${escapeHTML(row.path || "/")}</td>
           <td><span class="severity ${Number(row.status) >= 500 ? "critical" : Number(row.status) >= 400 ? "high" : "low"}">${escapeHTML(row.status || "-")}</span></td>
           <td>${formatBytes(row.bytes_sent)}</td>
@@ -3541,6 +3561,7 @@ function renderInlineMarkdown(value) {
     .replace(/__([^_]+)__/g, "<strong>$1</strong>")
     .replace(/\*([^*]+)\*/g, "<em>$1</em>")
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, `<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>`);
+  text = linkifyIPsInHTML(text);
   code.forEach((snippet, index) => {
     text = text.replace(`@@CODE${index}@@`, snippet);
   });
