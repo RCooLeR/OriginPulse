@@ -846,7 +846,7 @@ func (api API) collectorHealth(w http.ResponseWriter, r *http.Request) {
 
 func (api API) retentionDryRun(w http.ResponseWriter, r *http.Request) {
 	if api.retention == nil || !api.retention.Enabled() {
-		writeError(w, http.StatusServiceUnavailable, "retention_unavailable", "retention requires DATABASE_URL")
+		writeJSON(w, http.StatusOK, retentionUnavailableResult(api.cfg, true))
 		return
 	}
 	result, err := api.retention.Run(r.Context(), retention.Options{DryRun: true})
@@ -1046,7 +1046,7 @@ func (api API) archiveCoverageReport(w http.ResponseWriter, r *http.Request) {
 
 func (api API) storageAuditReport(w http.ResponseWriter, r *http.Request) {
 	if api.storageAudit == nil || !api.storageAudit.Enabled() {
-		writeError(w, http.StatusServiceUnavailable, "storage_audit_unavailable", "storage audit requires DATABASE_URL")
+		writeJSON(w, http.StatusOK, storageAuditUnavailableReport(api.cfg))
 		return
 	}
 	report, err := api.storageAudit.Audit(r.Context())
@@ -1055,6 +1055,49 @@ func (api API) storageAuditReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+func retentionUnavailableResult(cfg config.Config, dryRun bool) retention.Result {
+	now := time.Now().UTC()
+	return retention.Result{
+		Enabled:               false,
+		DryRun:                dryRun,
+		RawFileCutoff:         now.Add(-cfg.Retention.RawFileMaxAge),
+		HotEventCutoff:        now.Add(-cfg.Retention.HotEventMaxAge),
+		ArchiveCutoff:         now.Add(-cfg.Retention.ArchiveMaxAge),
+		ReportCutoff:          now.Add(-cfg.Retention.ReportMaxAge),
+		TemporaryImportCutoff: now.Add(-cfg.Retention.TemporaryImportMaxAge),
+		RawFileMaxAge:         cfg.Retention.RawFileMaxAge.String(),
+		HotEventMaxAge:        cfg.Retention.HotEventMaxAge.String(),
+		ArchiveMaxAge:         cfg.Retention.ArchiveMaxAge.String(),
+		ReportMaxAge:          cfg.Retention.ReportMaxAge.String(),
+		TemporaryImportMaxAge: cfg.Retention.TemporaryImportMaxAge.String(),
+	}
+}
+
+func storageAuditUnavailableReport(cfg config.Config) storageaudit.Report {
+	now := time.Now().UTC()
+	return storageaudit.Report{
+		Enabled:     false,
+		GeneratedAt: now,
+		Retention: storageaudit.RetentionSummary{
+			Enabled:               cfg.Retention.Enabled,
+			RawFileMaxAge:         cfg.Retention.RawFileMaxAge.String(),
+			HotEventMaxAge:        cfg.Retention.HotEventMaxAge.String(),
+			DailyArchiveAfter:     cfg.Retention.DailyArchiveAfter.String(),
+			WeeklyArchiveAfter:    cfg.Retention.WeeklyArchiveAfter.String(),
+			ArchiveMaxAge:         cfg.Retention.ArchiveMaxAge.String(),
+			ReportMaxAge:          cfg.Retention.ReportMaxAge.String(),
+			TemporaryImportMaxAge: cfg.Retention.TemporaryImportMaxAge.String(),
+			RawFileCutoff:         now.Add(-cfg.Retention.RawFileMaxAge),
+			HotEventCutoff:        now.Add(-cfg.Retention.HotEventMaxAge),
+			DailyArchiveCutoff:    now.Add(-cfg.Retention.DailyArchiveAfter),
+			WeeklyArchiveCutoff:   now.Add(-cfg.Retention.WeeklyArchiveAfter),
+			ArchiveCutoff:         now.Add(-cfg.Retention.ArchiveMaxAge),
+			ReportCutoff:          now.Add(-cfg.Retention.ReportMaxAge),
+			TemporaryImportCutoff: now.Add(-cfg.Retention.TemporaryImportMaxAge),
+		},
+	}
 }
 
 func (api API) runArchive(w http.ResponseWriter, r *http.Request) {

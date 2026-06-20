@@ -8,6 +8,7 @@ import (
 	"originpulse/internal/accessanalysis"
 	"originpulse/internal/alerts"
 	"originpulse/internal/combiner"
+	"originpulse/internal/config"
 	"originpulse/internal/investigation"
 	"originpulse/internal/ipintel"
 	"originpulse/internal/notifications"
@@ -44,6 +45,66 @@ func TestPipelineRequestOptionsIncludesIndexWorkers(t *testing.T) {
 	}
 	if opts.TriggeredBy != "api" {
 		t.Fatalf("TriggeredBy = %q, want api", opts.TriggeredBy)
+	}
+}
+
+func TestRetentionUnavailableResultKeepsConfiguredPolicy(t *testing.T) {
+	cfg := config.Default()
+	result := retentionUnavailableResult(cfg, true)
+
+	if result.Enabled {
+		t.Fatal("disabled retention result reported enabled")
+	}
+	if !result.DryRun {
+		t.Fatal("disabled retention result did not preserve dry-run status")
+	}
+	if result.RawFileMaxAge != cfg.Retention.RawFileMaxAge.String() {
+		t.Fatalf("RawFileMaxAge = %q, want %q", result.RawFileMaxAge, cfg.Retention.RawFileMaxAge)
+	}
+	if result.HotEventMaxAge != cfg.Retention.HotEventMaxAge.String() {
+		t.Fatalf("HotEventMaxAge = %q, want %q", result.HotEventMaxAge, cfg.Retention.HotEventMaxAge)
+	}
+	if result.ArchiveMaxAge != cfg.Retention.ArchiveMaxAge.String() {
+		t.Fatalf("ArchiveMaxAge = %q, want %q", result.ArchiveMaxAge, cfg.Retention.ArchiveMaxAge)
+	}
+	if result.ReportMaxAge != cfg.Retention.ReportMaxAge.String() {
+		t.Fatalf("ReportMaxAge = %q, want %q", result.ReportMaxAge, cfg.Retention.ReportMaxAge)
+	}
+	if result.TemporaryImportMaxAge != cfg.Retention.TemporaryImportMaxAge.String() {
+		t.Fatalf("TemporaryImportMaxAge = %q, want %q", result.TemporaryImportMaxAge, cfg.Retention.TemporaryImportMaxAge)
+	}
+}
+
+func TestStorageAuditUnavailableReportKeepsConfiguredRetentionPolicy(t *testing.T) {
+	cfg := config.Default()
+	report := storageAuditUnavailableReport(cfg)
+
+	if report.Enabled {
+		t.Fatal("disabled storage audit report reported enabled")
+	}
+	if report.Retention.Enabled != cfg.Retention.Enabled {
+		t.Fatalf("Retention.Enabled = %v, want %v", report.Retention.Enabled, cfg.Retention.Enabled)
+	}
+	if report.Retention.RawFileMaxAge != cfg.Retention.RawFileMaxAge.String() {
+		t.Fatalf("RawFileMaxAge = %q, want %q", report.Retention.RawFileMaxAge, cfg.Retention.RawFileMaxAge)
+	}
+	if report.Retention.HotEventMaxAge != cfg.Retention.HotEventMaxAge.String() {
+		t.Fatalf("HotEventMaxAge = %q, want %q", report.Retention.HotEventMaxAge, cfg.Retention.HotEventMaxAge)
+	}
+	if report.Retention.DailyArchiveAfter != cfg.Retention.DailyArchiveAfter.String() {
+		t.Fatalf("DailyArchiveAfter = %q, want %q", report.Retention.DailyArchiveAfter, cfg.Retention.DailyArchiveAfter)
+	}
+	if report.Retention.WeeklyArchiveAfter != cfg.Retention.WeeklyArchiveAfter.String() {
+		t.Fatalf("WeeklyArchiveAfter = %q, want %q", report.Retention.WeeklyArchiveAfter, cfg.Retention.WeeklyArchiveAfter)
+	}
+	if report.Retention.ArchiveMaxAge != cfg.Retention.ArchiveMaxAge.String() {
+		t.Fatalf("ArchiveMaxAge = %q, want %q", report.Retention.ArchiveMaxAge, cfg.Retention.ArchiveMaxAge)
+	}
+	if report.Retention.ReportMaxAge != cfg.Retention.ReportMaxAge.String() {
+		t.Fatalf("ReportMaxAge = %q, want %q", report.Retention.ReportMaxAge, cfg.Retention.ReportMaxAge)
+	}
+	if report.Retention.TemporaryImportMaxAge != cfg.Retention.TemporaryImportMaxAge.String() {
+		t.Fatalf("TemporaryImportMaxAge = %q, want %q", report.Retention.TemporaryImportMaxAge, cfg.Retention.TemporaryImportMaxAge)
 	}
 }
 
