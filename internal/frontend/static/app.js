@@ -99,6 +99,7 @@ const state = {
     archiveImports: [],
     archiveImportCatalog: { total: 0, limit: archiveImportPageSize, offset: 0 },
     notifications: {},
+    pulseNotifications: {},
     webPush: {},
     users: [],
     segments: [],
@@ -291,6 +292,7 @@ async function refreshAll() {
       archiveImportCatalog: archiveImportCatalogMeta(archiveImports),
       archiveCoverage,
       notifications,
+      pulseNotifications: notifications,
       webPush,
       users: users.users || [],
       segments: segments.segments || [],
@@ -1138,7 +1140,7 @@ function renderSettings() {
 
 function renderPulseLogs() {
   const rawFiles = state.data.collectorHealth?.raw_files?.recent || [];
-  const deliveries = state.data.notifications?.recent || [];
+  const deliveries = state.data.pulseNotifications?.recent || state.data.notifications?.recent || [];
   const archives = state.data.archives || [];
   const archiveImports = state.data.archiveImports || [];
   const storage = state.data.storage || {};
@@ -1298,7 +1300,7 @@ function notificationsPanel() {
   const warnings = status.warnings || [];
   const webPushUnavailable = !webPush.enabled || !webPush.configured || !webPush.public_key;
   const webPushLabel = webPushStatusLabel(webPush);
-  const page = notificationPage(recent, state.pages.notificationsRecent);
+  const page = notificationPage(recent, state.pages.notificationsRecent, status);
   state.pages.notificationsRecent = page.page;
   return `
     <article class="panel">
@@ -1440,7 +1442,7 @@ function pulseRawFilesPanel(rows) {
 
 function pulseDeliveriesPanel(rows) {
   const filteredRows = filtered(searchItems(rows || [], (item) => `${item.title || ""} ${item.channel || ""} ${item.target || ""} ${item.status || ""} ${item.error || ""}`));
-  const page = state.search ? paginate(filteredRows, state.pages.pulseDeliveries, 8) : notificationPage(rows || [], state.pages.pulseDeliveries);
+  const page = state.search ? paginate(filteredRows, state.pages.pulseDeliveries, 8) : notificationPage(rows || [], state.pages.pulseDeliveries, state.data.pulseNotifications || state.data.notifications);
   state.pages.pulseDeliveries = page.page;
   return `
     <article class="panel">
@@ -4808,15 +4810,17 @@ async function loadNotificationPage(page = state.pages.notificationsRecent || 1,
     recent_limit: notificationPageSize,
     recent_offset: (safePage - 1) * notificationPageSize,
   });
-  state.data.notifications = response;
-  state.pages.notificationsRecent = notificationPage(response.recent || [], safePage).page;
-  state.pages.pulseDeliveries = state.pages.notificationsRecent;
-  if (key === "pulseDeliveries") state.pages.pulseDeliveries = state.pages.notificationsRecent;
+  if (key === "pulseDeliveries") {
+    state.data.pulseNotifications = response;
+    state.pages.pulseDeliveries = notificationPage(response.recent || [], safePage, response).page;
+  } else {
+    state.data.notifications = response;
+    state.pages.notificationsRecent = notificationPage(response.recent || [], safePage, response).page;
+  }
   render();
 }
 
-function notificationPage(rows, page = 1) {
-  const status = state.data.notifications || {};
+function notificationPage(rows, page = 1, status = state.data.notifications || {}) {
   if (Object.prototype.hasOwnProperty.call(status, "recent_total")) {
     return serverBackedPage(rows, Number(status.recent_total || 0), Number(status.recent_limit || notificationPageSize), Number(status.recent_offset || 0));
   }
