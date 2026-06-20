@@ -25,6 +25,8 @@ const reportCatalogPageSize = 8;
 const notificationPageSize = 8;
 const segmentPageSize = 10;
 const rawFilePageSize = 10;
+const archivePageSize = 8;
+const archiveImportPageSize = 8;
 const pulseHistoryLimit = 500;
 const alertHistoryLimit = 500;
 const alertRequestPageSize = 6;
@@ -83,7 +85,9 @@ const state = {
     retention: {},
     storage: {},
     archives: [],
+    archiveCatalog: { total: 0, limit: archivePageSize, offset: 0 },
     archiveImports: [],
+    archiveImportCatalog: { total: 0, limit: archiveImportPageSize, offset: 0 },
     notifications: {},
     webPush: {},
     users: [],
@@ -239,8 +243,8 @@ async function refreshAll() {
       safeFetch(`/api/v1/system/collector-health?${rawFileHistoryQuery(1)}`, {}),
       safeFetch("/api/v1/system/retention", {}),
       safeFetch("/api/v1/system/storage", {}),
-      safeFetch(`/api/v1/system/archives?limit=${pulseHistoryLimit}`, { archives: [] }),
-      safeFetch(`/api/v1/system/archive-imports?limit=${pulseHistoryLimit}`, { imports: [] }),
+      safeFetch(`/api/v1/system/archives?${archiveHistoryQuery(1)}`, { archives: [], total: 0, limit: archivePageSize, offset: 0 }),
+      safeFetch(`/api/v1/system/archive-imports?${archiveImportHistoryQuery(1)}`, { imports: [], total: 0, limit: archiveImportPageSize, offset: 0 }),
       safeFetch(`/api/v1/system/archive-coverage?${filter}`, { archives: [], active_temporary_imports: [] }),
       safeFetch(`/api/v1/notifications?${notificationHistoryQuery(1)}`, {}),
       safeFetch("/api/v1/notifications/web-push/public-key", {}),
@@ -264,7 +268,9 @@ async function refreshAll() {
       retention,
       storage,
       archives: archives.archives || [],
+      archiveCatalog: archiveCatalogMeta(archives),
       archiveImports: archiveImports.imports || [],
+      archiveImportCatalog: archiveImportCatalogMeta(archiveImports),
       archiveCoverage,
       notifications,
       webPush,
@@ -1156,13 +1162,13 @@ function storageReadinessPanel(storage) {
 
 function pulseArchivesPanel(rows) {
   const filteredRows = filtered(searchItems(rows || [], (item) => `${item.log_type || ""} ${item.granularity || ""} ${item.status || ""} ${item.path || ""}`));
-  const page = paginate(filteredRows, state.pages.pulseArchives, 8);
+  const page = state.search ? paginate(filteredRows, state.pages.pulseArchives, 8) : archivePage(rows || [], state.data.archiveCatalog);
   state.pages.pulseArchives = page.page;
   return `
     <article class="panel">
       <div class="panel-head">
         <div><h2>Archives</h2><p>Daily and weekly packed combined logs available for rehydration.</p></div>
-        <span class="pill">${formatNumber(filteredRows.length)} archives</span>
+        <span class="pill">${formatNumber(page.total)} archives</span>
       </div>
       ${archivesTable(page.rows)}
       ${pager("pulseArchives", page)}
@@ -1172,13 +1178,13 @@ function pulseArchivesPanel(rows) {
 
 function pulseArchiveImportsPanel(rows) {
   const filteredRows = filtered(searchItems(rows || [], (item) => `${item.status || ""} ${item.reason || ""} ${(item.archive_paths || []).join(" ")}`));
-  const page = paginate(filteredRows, state.pages.pulseArchiveImports, 8);
+  const page = state.search ? paginate(filteredRows, state.pages.pulseArchiveImports, 8) : archiveImportPage(rows || [], state.data.archiveImportCatalog);
   state.pages.pulseArchiveImports = page.page;
   return `
     <article class="panel">
       <div class="panel-head">
         <div><h2>Temporary Imports</h2><p>Archived data rehydrated for short investigations.</p></div>
-        <span class="pill">${formatNumber(filteredRows.length)} imports</span>
+        <span class="pill">${formatNumber(page.total)} imports</span>
       </div>
       ${archiveImportsTable(page.rows)}
       ${pager("pulseArchiveImports", page)}
@@ -2987,6 +2993,14 @@ async function handleAction(button) {
         await loadRawFilePage(page);
         return;
       }
+      if (key === "pulseArchives" && !state.search) {
+        await loadArchivePage(page);
+        return;
+      }
+      if (key === "pulseArchiveImports" && !state.search) {
+        await loadArchiveImportPage(page);
+        return;
+      }
       state.pages[key] = Math.max(1, page);
       render();
     }
@@ -4577,6 +4591,74 @@ function rawFileCatalogMeta(rawFiles = {}) {
 
 function rawFilePage(rows, catalog = {}) {
   return serverBackedPage(rows, Number(catalog.total ?? rows.length), Number(catalog.limit || rawFilePageSize), Number(catalog.offset || 0));
+}
+
+function archiveHistoryQuery(page = state.pages.pulseArchives || 1) {
+  const safePage = Math.max(1, Number(page || 1));
+  return new URLSearchParams({
+    limit: String(archivePageSize),
+    offset: String((safePage - 1) * archivePageSize),
+  }).toString();
+}
+
+async function loadArchivePage(page = state.pages.pulseArchives || 1) {
+  const safePage = Math.max(1, Number(page || 1));
+  const response = await safeFetch(`/api/v1/system/archives?${archiveHistoryQuery(safePage)}`, {
+    archives: [],
+    total: 0,
+    limit: archivePageSize,
+    offset: (safePage - 1) * archivePageSize,
+  });
+  state.data.archives = response.archives || [];
+  state.data.archiveCatalog = archiveCatalogMeta(response);
+  state.pages.pulseArchives = archivePage(state.data.archives, state.data.archiveCatalog).page;
+  render();
+}
+
+function archiveCatalogMeta(response = {}) {
+  return {
+    total: Number(response.total || 0),
+    limit: Number(response.limit || archivePageSize),
+    offset: Number(response.offset || 0),
+  };
+}
+
+function archivePage(rows, catalog = {}) {
+  return serverBackedPage(rows, Number(catalog.total ?? rows.length), Number(catalog.limit || archivePageSize), Number(catalog.offset || 0));
+}
+
+function archiveImportHistoryQuery(page = state.pages.pulseArchiveImports || 1) {
+  const safePage = Math.max(1, Number(page || 1));
+  return new URLSearchParams({
+    limit: String(archiveImportPageSize),
+    offset: String((safePage - 1) * archiveImportPageSize),
+  }).toString();
+}
+
+async function loadArchiveImportPage(page = state.pages.pulseArchiveImports || 1) {
+  const safePage = Math.max(1, Number(page || 1));
+  const response = await safeFetch(`/api/v1/system/archive-imports?${archiveImportHistoryQuery(safePage)}`, {
+    imports: [],
+    total: 0,
+    limit: archiveImportPageSize,
+    offset: (safePage - 1) * archiveImportPageSize,
+  });
+  state.data.archiveImports = response.imports || [];
+  state.data.archiveImportCatalog = archiveImportCatalogMeta(response);
+  state.pages.pulseArchiveImports = archiveImportPage(state.data.archiveImports, state.data.archiveImportCatalog).page;
+  render();
+}
+
+function archiveImportCatalogMeta(response = {}) {
+  return {
+    total: Number(response.total || 0),
+    limit: Number(response.limit || archiveImportPageSize),
+    offset: Number(response.offset || 0),
+  };
+}
+
+function archiveImportPage(rows, catalog = {}) {
+  return serverBackedPage(rows, Number(catalog.total ?? rows.length), Number(catalog.limit || archiveImportPageSize), Number(catalog.offset || 0));
 }
 
 function reportCatalogMeta(response = {}) {

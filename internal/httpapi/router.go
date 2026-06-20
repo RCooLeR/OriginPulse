@@ -900,12 +900,18 @@ func (api API) runRetention(w http.ResponseWriter, r *http.Request) {
 
 func (api API) recentArchives(w http.ResponseWriter, r *http.Request) {
 	if api.db == nil || !api.db.Enabled() {
-		writeJSON(w, http.StatusOK, map[string]any{"archives": []map[string]any{}})
+		writeJSON(w, http.StatusOK, map[string]any{"archives": []map[string]any{}, "total": 0, "limit": parseLimit(r, 100, 500), "offset": parseOffset(r)})
 		return
 	}
 	limit := parseLimit(r, 100, 500)
+	offset := parseOffset(r)
 	pool, err := api.db.Pool()
 	if err != nil {
+		writeError(w, http.StatusInternalServerError, "archives_failed", err.Error())
+		return
+	}
+	var total int
+	if err := pool.QueryRow(r.Context(), `SELECT count(*)::int FROM log_archives`).Scan(&total); err != nil {
 		writeError(w, http.StatusInternalServerError, "archives_failed", err.Error())
 		return
 	}
@@ -925,7 +931,7 @@ SELECT id::text,
        created_at
 FROM log_archives
 ORDER BY range_start DESC, created_at DESC
-LIMIT $1`, limit)
+LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "archives_failed", err.Error())
 		return
@@ -963,17 +969,23 @@ LIMIT $1`, limit)
 		writeError(w, http.StatusInternalServerError, "archives_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"archives": archives})
+	writeJSON(w, http.StatusOK, map[string]any{"archives": archives, "total": total, "limit": limit, "offset": offset})
 }
 
 func (api API) recentArchiveImports(w http.ResponseWriter, r *http.Request) {
 	if api.db == nil || !api.db.Enabled() {
-		writeJSON(w, http.StatusOK, map[string]any{"imports": []map[string]any{}})
+		writeJSON(w, http.StatusOK, map[string]any{"imports": []map[string]any{}, "total": 0, "limit": parseLimit(r, 100, 500), "offset": parseOffset(r)})
 		return
 	}
 	limit := parseLimit(r, 100, 500)
+	offset := parseOffset(r)
 	pool, err := api.db.Pool()
 	if err != nil {
+		writeError(w, http.StatusInternalServerError, "archive_imports_failed", err.Error())
+		return
+	}
+	var total int
+	if err := pool.QueryRow(r.Context(), `SELECT count(*)::int FROM temporary_imports`).Scan(&total); err != nil {
 		writeError(w, http.StatusInternalServerError, "archive_imports_failed", err.Error())
 		return
 	}
@@ -994,7 +1006,7 @@ SELECT id::text,
        coalesce(last_error, '')
 FROM temporary_imports
 ORDER BY imported_at DESC
-LIMIT $1`, limit)
+LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "archive_imports_failed", err.Error())
 		return
@@ -1033,7 +1045,7 @@ LIMIT $1`, limit)
 		writeError(w, http.StatusInternalServerError, "archive_imports_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"imports": imports})
+	writeJSON(w, http.StatusOK, map[string]any{"imports": imports, "total": total, "limit": limit, "offset": offset})
 }
 
 func (api API) archiveCoverageReport(w http.ResponseWriter, r *http.Request) {
