@@ -52,7 +52,7 @@ combiner:
   finalize_after: "3h"
 
 pipeline:
-  index_workers: 1
+  index_workers: 2
 
 retention:
   enabled: true

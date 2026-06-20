@@ -1271,14 +1271,7 @@ func (api API) runPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		From        string   `json:"from"`
-		To          string   `json:"to"`
-		Force       bool     `json:"force"`
-		SkipCombine bool     `json:"skip_combine"`
-		LogTypes    []string `json:"log_types"`
-		MaxSegments int      `json:"max_segments"`
-	}
+	var req pipelineRequest
 	if r.Body != nil && r.Body != http.NoBody {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 			writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
@@ -1287,7 +1280,7 @@ func (api API) runPipeline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.From == "" && req.To == "" {
-		result, err := api.pipeline.RunRecent(r.Context(), "api")
+		result, err := api.pipeline.RunRecentWithOptions(r.Context(), "api", req.options(time.Time{}, time.Time{}))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "pipeline_failed", err.Error())
 			return
@@ -1306,20 +1299,35 @@ func (api API) runPipeline(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_to", err.Error())
 		return
 	}
-	result, err := api.pipeline.Run(r.Context(), pipeline.Options{
-		From:        from,
-		To:          to,
-		Force:       req.Force,
-		SkipCombine: req.SkipCombine,
-		LogTypes:    req.LogTypes,
-		MaxSegments: req.MaxSegments,
-		TriggeredBy: "api",
-	})
+	result, err := api.pipeline.Run(r.Context(), req.options(from, to))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "pipeline_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+type pipelineRequest struct {
+	From         string   `json:"from"`
+	To           string   `json:"to"`
+	Force        bool     `json:"force"`
+	SkipCombine  bool     `json:"skip_combine"`
+	LogTypes     []string `json:"log_types"`
+	MaxSegments  int      `json:"max_segments"`
+	IndexWorkers int      `json:"index_workers"`
+}
+
+func (req pipelineRequest) options(from time.Time, to time.Time) pipeline.Options {
+	return pipeline.Options{
+		From:         from,
+		To:           to,
+		Force:        req.Force,
+		SkipCombine:  req.SkipCombine,
+		LogTypes:     req.LogTypes,
+		MaxSegments:  req.MaxSegments,
+		IndexWorkers: req.IndexWorkers,
+		TriggeredBy:  "api",
+	}
 }
 
 func (api API) collectNow(w http.ResponseWriter, r *http.Request) {

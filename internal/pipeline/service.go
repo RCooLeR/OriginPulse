@@ -111,6 +111,10 @@ func (s *Service) Run(ctx context.Context, opts Options) (Result, error) {
 }
 
 func (s *Service) RunRecent(ctx context.Context, triggeredBy string) (Result, error) {
+	return s.RunRecentWithOptions(ctx, triggeredBy, Options{})
+}
+
+func (s *Service) RunRecentWithOptions(ctx context.Context, triggeredBy string, opts Options) (Result, error) {
 	now := time.Now().UTC()
 	settlingWindow := s.cfg.Combiner.SettlingWindow
 	if settlingWindow <= 0 {
@@ -118,12 +122,13 @@ func (s *Service) RunRecent(ctx context.Context, triggeredBy string) (Result, er
 	}
 	to := now.Add(-settlingWindow)
 	from := to.Add(-45 * time.Minute)
-	return s.Run(ctx, Options{
-		From:        from,
-		To:          to,
-		MaxSegments: 100,
-		TriggeredBy: triggeredBy,
-	})
+	opts.From = from
+	opts.To = to
+	if opts.MaxSegments <= 0 {
+		opts.MaxSegments = 100
+	}
+	opts.TriggeredBy = triggeredBy
+	return s.Run(ctx, opts)
 }
 
 func (s *Service) run(ctx context.Context, opts Options) (Result, error) {

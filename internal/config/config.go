@@ -258,7 +258,7 @@ func Default() Config {
 			FinalizeAfter:  3 * time.Hour,
 		},
 		Pipeline: PipelineConfig{
-			IndexWorkers: 1,
+			IndexWorkers: 2,
 		},
 		Retention: RetentionConfig{
 			Enabled:                true,
