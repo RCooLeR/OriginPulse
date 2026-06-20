@@ -312,8 +312,8 @@ async function refreshEstateData() {
   render();
   try {
     const [analysis, traffic] = await Promise.all([
-      safeFetch(`/api/v1/analysis/access-log?${key}`, {}, 120000),
-      safeFetch(`/api/v1/investigate/traffic?${key}`, {}, 120000),
+      fetchJSON(`/api/v1/analysis/access-log?${key}`, { timeoutMs: 120000 }),
+      fetchJSON(`/api/v1/investigate/traffic?${key}`, { timeoutMs: 120000 }),
     ]);
     if (key === buildFilterQuery({ limit: analysisHistoryLimit }, { includeSite: false })) {
       state.data.estateAnalysis = analysis || {};
@@ -325,6 +325,7 @@ async function refreshEstateData() {
       showLogin();
       return;
     }
+    state.fetchErrors.push({ path: "sites estate analysis", message: error.message || "Request failed" });
     toast(`Sites estate analysis failed: ${error.message}`, true);
   } finally {
     state.estateDataLoading = false;
