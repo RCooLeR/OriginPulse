@@ -24,6 +24,7 @@ const pathToRoute = Object.fromEntries(routes.map((route) => [route.path, route.
 const reportCatalogPageSize = 8;
 const pulseHistoryLimit = 500;
 const alertHistoryLimit = 500;
+const alertRequestPageSize = 6;
 const drawerHistoryLimit = 500;
 const analysisHistoryLimit = 500;
 
@@ -2169,12 +2170,12 @@ function alertSearchText(item) {
 function renderAlertDetail(item) {
   const details = item.details || {};
   const requests = (item.requests || item.related_requests || []).length ? (item.requests || item.related_requests || []) : alertRelatedRequests(item);
-  const requestPage = drawerPage("alertRequests", requests, 6);
+  const requestPage = alertRequestPage(item, requests);
   const sev = normalizeSeverity(item.severity);
   return `
     ${miniMetrics([
       ["Score", formatNumber(item.score || 0), "fa-gauge-high"],
-      ["Requests", formatNumber(details.requests || requests.length), "fa-arrow-trend-up"],
+      ["Requests", formatNumber(details.requests || item.request_total || requests.length), "fa-arrow-trend-up"],
       ["4xx", formatNumber(details.status_4xx), "fa-triangle-exclamation"],
       ["5xx", formatNumber(details.status_5xx), "fa-bolt"],
     ])}
@@ -2219,6 +2220,26 @@ function renderAlertDetail(item) {
       </div>
     </article>
   `;
+}
+
+function alertRequestPage(item, requests) {
+  if (item && Object.prototype.hasOwnProperty.call(item, "request_total")) {
+    const limit = Math.max(1, Number(item.request_limit || alertRequestPageSize));
+    const total = Math.max(0, Number(item.request_total || 0));
+    const offset = Math.max(0, Number(item.request_offset || 0));
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const page = clamp(Math.floor(offset / limit) + 1, 1, totalPages);
+    return {
+      rows: requests,
+      page,
+      pageSize: limit,
+      total,
+      totalPages,
+      start: total ? offset + 1 : 0,
+      end: Math.min(total, offset + requests.length),
+    };
+  }
+  return drawerPage("alertRequests", requests, alertRequestPageSize);
 }
 
 function renderAlertRuleDetail(item) {
@@ -2939,6 +2960,10 @@ async function handleAction(button) {
     const key = button.dataset.pageKey;
     const page = Number(button.dataset.page || 1);
     if (key && Number.isFinite(page)) {
+      if (key === "alertRequests" && state.drawer.kind === "alert" && state.drawer.data?.id) {
+        await loadAlertRequestPage(page);
+        return;
+      }
       state.drawer.pages[key] = Math.max(1, page);
       renderCurrentDrawer();
     }
@@ -3853,8 +3878,11 @@ async function openDrawer(kind, rawIndex, value) {
     let item = cached;
     if (cached.id) {
       try {
-        const detail = await fetchJSON(`/api/v1/alerts/${encodeURIComponent(cached.id)}?limit=${alertHistoryLimit}`);
+        const detail = await fetchJSON(`/api/v1/alerts/${encodeURIComponent(cached.id)}?limit=${alertRequestPageSize}&offset=0`);
         item = { ...(detail.alert || cached), requests: detail.requests || [] };
+        item.request_total = detail.request_total ?? item.request_total ?? item.requests.length;
+        item.request_limit = detail.request_limit ?? alertRequestPageSize;
+        item.request_offset = detail.request_offset ?? 0;
         state.detailCache[value] = item;
       } catch (error) {
         body = `<p class="form-error">${escapeHTML(error.message)}</p>`;
@@ -3903,6 +3931,25 @@ async function openDrawer(kind, rawIndex, value) {
   qs("#drawerKicker").textContent = kind || "Details";
   qs("#drawerTitle").textContent = title;
   qs("#drawerBody").innerHTML = body || empty("No details available.");
+}
+
+async function loadAlertRequestPage(page) {
+  const item = state.drawer.data || {};
+  if (!item.id) return;
+  const limit = Math.max(1, Number(item.request_limit || alertRequestPageSize));
+  const safePage = Math.max(1, Number(page || 1));
+  const detail = await fetchJSON(`/api/v1/alerts/${encodeURIComponent(item.id)}?limit=${limit}&offset=${(safePage - 1) * limit}`);
+  const merged = {
+    ...item,
+    ...(detail.alert || {}),
+    requests: detail.requests || [],
+    request_total: detail.request_total ?? 0,
+    request_limit: detail.request_limit ?? limit,
+    request_offset: detail.request_offset ?? (safePage - 1) * limit,
+  };
+  state.drawer.data = merged;
+  state.detailCache[`alert:${item.id}`] = merged;
+  renderCurrentDrawer();
 }
 
 function closeDrawer() {

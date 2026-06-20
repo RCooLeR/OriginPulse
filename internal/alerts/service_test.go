@@ -45,3 +45,23 @@ func TestNormalizeDetailLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeDetailOffset(t *testing.T) {
+	tests := []struct {
+		name   string
+		offset int
+		want   int
+	}{
+		{name: "default", offset: 0, want: 0},
+		{name: "negative", offset: -50, want: 0},
+		{name: "keeps requested", offset: 250, want: 250},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeDetailOffset(tt.offset); got != tt.want {
+				t.Fatalf("normalizeDetailOffset(%d) = %d, want %d", tt.offset, got, tt.want)
+			}
+		})
+	}
+}

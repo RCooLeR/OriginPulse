@@ -54,8 +54,11 @@ type Alert struct {
 }
 
 type Detail struct {
-	Alert    Alert     `json:"alert"`
-	Requests []Request `json:"requests"`
+	Alert         Alert     `json:"alert"`
+	Requests      []Request `json:"requests"`
+	RequestTotal  int       `json:"request_total"`
+	RequestLimit  int       `json:"request_limit"`
+	RequestOffset int       `json:"request_offset"`
 }
 
 type Request struct {
@@ -132,6 +135,10 @@ LIMIT $1`, limit)
 }
 
 func (s *Service) Get(ctx context.Context, id string, limit int) (Detail, error) {
+	return s.GetPage(ctx, id, limit, 0)
+}
+
+func (s *Service) GetPage(ctx context.Context, id string, limit int, offset int) (Detail, error) {
 	if !s.Enabled() {
 		return Detail{}, ErrNotFound
 	}
@@ -140,6 +147,7 @@ func (s *Service) Get(ctx context.Context, id string, limit int) (Detail, error)
 		return Detail{}, ErrNotFound
 	}
 	limit = normalizeDetailLimit(limit)
+	offset = normalizeDetailOffset(offset)
 	pool, err := s.db.Pool()
 	if err != nil {
 		return Detail{}, err
@@ -170,11 +178,11 @@ WHERE id = $1::uuid`, id)
 	if err != nil {
 		return Detail{}, err
 	}
-	requests, err := loadAlertRequests(ctx, pool, alert, limit)
+	requests, total, err := loadAlertRequests(ctx, pool, alert, limit, offset)
 	if err != nil {
 		return Detail{}, err
 	}
-	return Detail{Alert: alert, Requests: requests}, nil
+	return Detail{Alert: alert, Requests: requests, RequestTotal: total, RequestLimit: limit, RequestOffset: offset}, nil
 }
 
 func (s *Service) Evaluate(ctx context.Context, opts Options) (Result, error) {
@@ -636,18 +644,29 @@ func scanAlert(row alertScanner) (Alert, error) {
 	return item, nil
 }
 
-func loadAlertRequests(ctx context.Context, pool *pgxpool.Pool, alert Alert, limit int) ([]Request, error) {
+func loadAlertRequests(ctx context.Context, pool *pgxpool.Pool, alert Alert, limit int, offset int) ([]Request, int, error) {
 	statusMin, statusMax := alertStatusRange(alert.RuleKey)
 	if alert.ActorType == "ip" && alert.ActorValue != "" {
-		return loadAlertRequestsForIP(ctx, pool, alert, statusMin, statusMax, limit)
+		return loadAlertRequestsForIP(ctx, pool, alert, statusMin, statusMax, limit, offset)
 	}
 	if alert.ActorType == "path" && alert.ActorValue != "" {
-		return loadAlertRequestsForPath(ctx, pool, alert, statusMin, statusMax, limit)
+		return loadAlertRequestsForPath(ctx, pool, alert, statusMin, statusMax, limit, offset)
 	}
-	return []Request{}, nil
+	return []Request{}, 0, nil
 }
 
-func loadAlertRequestsForIP(ctx context.Context, pool *pgxpool.Pool, alert Alert, statusMin int, statusMax int, limit int) ([]Request, error) {
+func loadAlertRequestsForIP(ctx context.Context, pool *pgxpool.Pool, alert Alert, statusMin int, statusMax int, limit int, offset int) ([]Request, int, error) {
+	var total int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*)::int
+FROM error_events f
+WHERE f.client_ip = $1::inet
+  AND f.ts >= $2 AND f.ts <= $3
+  AND ($4 = '' OR f.site_id = $4)
+  AND ($5 = '' OR f.env = $5)
+  AND f.status >= $6 AND f.status < $7`, alert.ActorValue, alert.FirstSeenAt, alert.LastSeenAt, alert.SiteID, alert.Env, statusMin, statusMax).Scan(&total); err != nil {
+		return nil, 0, err
+	}
 	rows, err := pool.Query(ctx, `
 SELECT f.ts,
        f.site_id,
@@ -670,15 +689,28 @@ WHERE f.client_ip = $1::inet
   AND ($5 = '' OR f.env = $5)
   AND f.status >= $6 AND f.status < $7
 ORDER BY f.ts DESC
-LIMIT $8`, alert.ActorValue, alert.FirstSeenAt, alert.LastSeenAt, alert.SiteID, alert.Env, statusMin, statusMax, limit)
+LIMIT $8 OFFSET $9`, alert.ActorValue, alert.FirstSeenAt, alert.LastSeenAt, alert.SiteID, alert.Env, statusMin, statusMax, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
-	return scanAlertRequests(rows)
+	requests, err := scanAlertRequests(rows)
+	return requests, total, err
 }
 
-func loadAlertRequestsForPath(ctx context.Context, pool *pgxpool.Pool, alert Alert, statusMin int, statusMax int, limit int) ([]Request, error) {
+func loadAlertRequestsForPath(ctx context.Context, pool *pgxpool.Pool, alert Alert, statusMin int, statusMax int, limit int, offset int) ([]Request, int, error) {
+	var total int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*)::int
+FROM error_events f
+JOIN dim_paths p ON p.id = f.path_id
+WHERE p.path = $1
+  AND f.ts >= $2 AND f.ts <= $3
+  AND ($4 = '' OR f.site_id = $4)
+  AND ($5 = '' OR f.env = $5)
+  AND f.status >= $6 AND f.status < $7`, alert.ActorValue, alert.FirstSeenAt, alert.LastSeenAt, alert.SiteID, alert.Env, statusMin, statusMax).Scan(&total); err != nil {
+		return nil, 0, err
+	}
 	rows, err := pool.Query(ctx, `
 SELECT f.ts,
        f.site_id,
@@ -701,12 +733,13 @@ WHERE p.path = $1
   AND ($5 = '' OR f.env = $5)
   AND f.status >= $6 AND f.status < $7
 ORDER BY f.ts DESC
-LIMIT $8`, alert.ActorValue, alert.FirstSeenAt, alert.LastSeenAt, alert.SiteID, alert.Env, statusMin, statusMax, limit)
+LIMIT $8 OFFSET $9`, alert.ActorValue, alert.FirstSeenAt, alert.LastSeenAt, alert.SiteID, alert.Env, statusMin, statusMax, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
-	return scanAlertRequests(rows)
+	requests, err := scanAlertRequests(rows)
+	return requests, total, err
 }
 
 func scanAlertRequests(rows pgx.Rows) ([]Request, error) {
@@ -835,6 +868,13 @@ func normalizeDetailLimit(limit int) int {
 		return DetailMaxLimit
 	}
 	return limit
+}
+
+func normalizeDetailOffset(offset int) int {
+	if offset < 0 {
+		return 0
+	}
+	return offset
 }
 
 func parseRange(value string) (time.Duration, string) {

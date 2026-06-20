@@ -504,7 +504,7 @@ func (api API) alertDetail(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, alerts.Detail{})
 		return
 	}
-	detail, err := api.alerts.Get(r.Context(), chi.URLParam(r, "id"), parseLimit(r, 100, alerts.DetailMaxLimit))
+	detail, err := api.alerts.GetPage(r.Context(), chi.URLParam(r, "id"), parseLimit(r, 100, alerts.DetailMaxLimit), parseOffset(r))
 	if errors.Is(err, alerts.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "alert_not_found", "alert not found")
 		return
