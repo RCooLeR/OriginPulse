@@ -1251,6 +1251,8 @@ function notificationsPanel() {
   const recent = status.recent || [];
   const webPush = state.data.webPush || {};
   const warnings = status.warnings || [];
+  const webPushUnavailable = !webPush.enabled || !webPush.configured || !webPush.public_key;
+  const webPushLabel = webPushStatusLabel(webPush);
   const page = notificationPage(recent, state.pages.notificationsRecent);
   state.pages.notificationsRecent = page.page;
   return `
@@ -1268,7 +1270,7 @@ function notificationsPanel() {
           ["Ready", yesNo(status.ready)],
           ["Targets", formatNumber(status.target_count || 0)],
           ["Minimum severity", status.min_severity || "-"],
-          ["Browser push", webPush.configured ? `${webPush.active_subscriptions || 0} active` : "Not configured"],
+          ["Browser push", webPushLabel],
         ])}
         ${warnings.length ? `<div class="list compact-list">${warnings.map((warning) => `
           <div class="list-row">
@@ -1276,8 +1278,8 @@ function notificationsPanel() {
           </div>
         `).join("")}</div>` : ""}
         <div class="toolbar inline-toolbar">
-          <button class="button outline small" type="button" data-action="enable-web-push">${iconHTML("fa-bell")}Enable Browser Push</button>
-          <button class="button outline small" type="button" data-action="disable-web-push">${iconHTML("fa-bell-slash")}Disable Browser Push</button>
+          <button class="button outline small" type="button" data-action="enable-web-push" ${webPushUnavailable ? "disabled" : ""} title="${escapeAttr(webPushHelp(webPush))}">${iconHTML("fa-bell")}Enable Browser Push</button>
+          <button class="button outline small" type="button" data-action="disable-web-push" ${!Number(webPush.active_subscriptions || 0) ? "disabled" : ""} title="Remove this browser subscription if one exists.">${iconHTML("fa-bell-slash")}Disable Browser Push</button>
         </div>
       </div>
       <div class="list">${channels.map(channelRow).join("") || empty("No notification channels configured.")}</div>
@@ -1285,6 +1287,20 @@ function notificationsPanel() {
       ${pager("notificationsRecent", page)}
     </article>
   `;
+}
+
+function webPushStatusLabel(webPush = {}) {
+  if (!webPush.enabled) return "Disabled";
+  if (!webPush.configured) return "VAPID keys missing";
+  if (!webPush.public_key) return "Public key missing";
+  return `${formatNumber(webPush.active_subscriptions || 0)} active`;
+}
+
+function webPushHelp(webPush = {}) {
+  if (!webPush.enabled) return "Browser push is disabled in notification config.";
+  if (!webPush.configured) return "Set VAPID public/private keys before enabling browser push.";
+  if (!webPush.public_key) return "The browser push public key is not available.";
+  return "Enable push notifications for this browser.";
 }
 
 function pipelineStep(label, value, icon, color) {
