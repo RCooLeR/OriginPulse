@@ -655,6 +655,7 @@ func bulkUpsertUserAgentDimensions(ctx context.Context, tx pgx.Tx, stats map[str
 	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE tmp_dim_user_agents (
   value text NOT NULL,
   hash bytea NOT NULL,
+  family text,
   browser_family text,
   browser_version text,
   os_family text,
@@ -664,6 +665,7 @@ func bulkUpsertUserAgentDimensions(ctx context.Context, tx pgx.Tx, stats map[str
   known_actor text,
   is_bot boolean NOT NULL,
   is_tool boolean NOT NULL,
+  risk_score integer,
   first_seen_at timestamptz NOT NULL,
   last_seen_at timestamptz NOT NULL,
   request_count bigint NOT NULL
@@ -682,6 +684,7 @@ func bulkUpsertUserAgentDimensions(ctx context.Context, tx pgx.Tx, stats map[str
 		rows = append(rows, []any{
 			stat.Value,
 			stat.Hash,
+			analysis.Family,
 			analysis.BrowserFamily,
 			analysis.BrowserVersion,
 			analysis.OSFamily,
@@ -691,30 +694,32 @@ func bulkUpsertUserAgentDimensions(ctx context.Context, tx pgx.Tx, stats map[str
 			analysis.KnownActor,
 			analysis.IsBot,
 			analysis.IsTool,
+			analysis.RiskScore,
 			stat.First,
 			stat.Last,
 			stat.Count,
 		})
 	}
 	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"tmp_dim_user_agents"}, []string{
-		"value", "hash", "browser_family", "browser_version", "os_family", "os_version", "device_family",
-		"actor_type", "known_actor", "is_bot", "is_tool", "first_seen_at", "last_seen_at", "request_count",
+		"value", "hash", "family", "browser_family", "browser_version", "os_family", "os_version", "device_family",
+		"actor_type", "known_actor", "is_bot", "is_tool", "risk_score", "first_seen_at", "last_seen_at", "request_count",
 	}, pgx.CopyFromRows(rows)); err != nil {
 		return ids, err
 	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO dim_user_agents (
-  user_agent, user_agent_hash, browser_family, browser_version, os_family, os_version, device_family,
-  actor_type, known_actor, is_bot, is_tool, first_seen_at, last_seen_at, request_count
+  user_agent, user_agent_hash, family, browser_family, browser_version, os_family, os_version, device_family,
+  actor_type, known_actor, is_bot, is_tool, risk_score, first_seen_at, last_seen_at, request_count
 )
 SELECT value, hash,
-       max(browser_family), max(browser_version), max(os_family), max(os_version), max(device_family),
-       max(actor_type), max(known_actor), bool_or(is_bot), bool_or(is_tool),
+       max(family), max(browser_family), max(browser_version), max(os_family), max(os_version), max(device_family),
+       max(actor_type), max(known_actor), bool_or(is_bot), bool_or(is_tool), max(risk_score),
        min(first_seen_at), max(last_seen_at), sum(request_count)::bigint
 FROM tmp_dim_user_agents
 GROUP BY value, hash
 ON CONFLICT (user_agent_hash) DO UPDATE SET
   user_agent = EXCLUDED.user_agent,
+  family = nullif(EXCLUDED.family, ''),
   browser_family = nullif(EXCLUDED.browser_family, ''),
   browser_version = nullif(EXCLUDED.browser_version, ''),
   os_family = nullif(EXCLUDED.os_family, ''),
@@ -724,6 +729,7 @@ ON CONFLICT (user_agent_hash) DO UPDATE SET
   known_actor = nullif(EXCLUDED.known_actor, ''),
   is_bot = EXCLUDED.is_bot,
   is_tool = EXCLUDED.is_tool,
+  risk_score = EXCLUDED.risk_score,
   first_seen_at = LEAST(dim_user_agents.first_seen_at, EXCLUDED.first_seen_at),
   last_seen_at = GREATEST(dim_user_agents.last_seen_at, EXCLUDED.last_seen_at),
   request_count = dim_user_agents.request_count + EXCLUDED.request_count`); err != nil {
@@ -1131,12 +1137,13 @@ RETURNING id`, event.Query, queryHash, event.TS)
 	analysis := useragent.Analyze(event.UserAgent, 1)
 	ids.UserAgentID, err = upsertTextHashDimension(ctx, pool, `
 INSERT INTO dim_user_agents (
-  user_agent, user_agent_hash, browser_family, browser_version, os_family, os_version, device_family,
-  actor_type, known_actor, is_bot, is_tool, first_seen_at, last_seen_at, request_count
+  user_agent, user_agent_hash, family, browser_family, browser_version, os_family, os_version, device_family,
+  actor_type, known_actor, is_bot, is_tool, risk_score, first_seen_at, last_seen_at, request_count
 )
-VALUES ($1, $2, nullif($4, ''), nullif($5, ''), nullif($6, ''), nullif($7, ''), nullif($8, ''), nullif($9, ''), nullif($10, ''), $11, $12, $3, $3, 1)
+VALUES ($1, $2, nullif($4, ''), nullif($5, ''), nullif($6, ''), nullif($7, ''), nullif($8, ''), nullif($9, ''), nullif($10, ''), nullif($11, ''), $12, $13, $14, $3, $3, 1)
 ON CONFLICT (user_agent_hash) DO UPDATE SET
   user_agent = EXCLUDED.user_agent,
+  family = EXCLUDED.family,
   browser_family = EXCLUDED.browser_family,
   browser_version = EXCLUDED.browser_version,
   os_family = EXCLUDED.os_family,
@@ -1146,10 +1153,11 @@ ON CONFLICT (user_agent_hash) DO UPDATE SET
   known_actor = EXCLUDED.known_actor,
   is_bot = EXCLUDED.is_bot,
   is_tool = EXCLUDED.is_tool,
+  risk_score = EXCLUDED.risk_score,
   first_seen_at = LEAST(dim_user_agents.first_seen_at, EXCLUDED.first_seen_at),
   last_seen_at = GREATEST(dim_user_agents.last_seen_at, EXCLUDED.last_seen_at),
   request_count = dim_user_agents.request_count + 1
-RETURNING id`, event.UserAgent, uaHash, event.TS, analysis.BrowserFamily, analysis.BrowserVersion, analysis.OSFamily, analysis.OSVersion, analysis.DeviceFamily, analysis.ActorType, analysis.KnownActor, analysis.IsBot, analysis.IsTool)
+RETURNING id`, event.UserAgent, uaHash, event.TS, analysis.Family, analysis.BrowserFamily, analysis.BrowserVersion, analysis.OSFamily, analysis.OSVersion, analysis.DeviceFamily, analysis.ActorType, analysis.KnownActor, analysis.IsBot, analysis.IsTool, analysis.RiskScore)
 	return ids, err
 }
 

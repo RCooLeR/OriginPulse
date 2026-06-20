@@ -1799,12 +1799,14 @@ function userAgentListLabel(agent) {
 function userAgentMetaLine(agent, info = parseUserAgent(agent)) {
   const item = typeof agent === "string" ? {} : (agent || {});
   const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  const risk = Number(item.risk_score || 0);
   return [
     info.classification,
     info.osLabel,
     info.device,
     info.engine,
     item.known_actor ? `Actor: ${item.known_actor}` : "",
+    risk ? `Risk ${risk}/100` : "",
     errors ? `${formatNumber(errors)} errors` : "",
   ].filter(Boolean).join(" / ");
 }
@@ -2551,6 +2553,7 @@ function renderUserAgentDetail(item) {
           ["Family", family || "-"],
           ["Known Actor", info.knownActor || agent.known_actor || "-"],
           ["Actor Type", agent.actor_type || info.actorType || "-"],
+          ["Risk Score", agent.risk_score ? `${formatNumber(agent.risk_score)}/100` : "-"],
           ["Platform", info.platform || "-"],
           ["First Seen", shortTime(agent.first_seen || traffic.first_seen)],
           ["Last Seen", shortTime(agent.last_seen || traffic.last_seen)],

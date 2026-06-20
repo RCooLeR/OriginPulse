@@ -90,6 +90,7 @@ func TestApplyUserAgentAnalysisKeepsStoredMetadata(t *testing.T) {
 		OSVersion:      "10/11",
 		DeviceFamily:   "Desktop",
 		ActorType:      "browser",
+		RiskScore:      12,
 		Requests:       42,
 	}
 
@@ -100,6 +101,9 @@ func TestApplyUserAgentAnalysisKeepsStoredMetadata(t *testing.T) {
 	}
 	if item.ActorType != "browser" || item.DeviceFamily != "Desktop" {
 		t.Fatalf("actor/device = %q/%q, want browser/Desktop", item.ActorType, item.DeviceFamily)
+	}
+	if item.RiskScore != 12 {
+		t.Fatalf("risk = %d, want stored risk 12", item.RiskScore)
 	}
 }
 

@@ -1002,6 +1002,7 @@ func (s *Service) loadUserAgents(ctx context.Context, report *Report, limit int,
 	}
 	rows, err := pool.Query(ctx, `
 SELECT left(coalesce(max(d.user_agent), max(e.user_agent), ''), 300),
+       coalesce(max(d.family), ''),
        coalesce(max(d.browser_family), ''),
        coalesce(max(d.browser_version), ''),
        coalesce(max(d.os_family), ''),
@@ -1011,6 +1012,7 @@ SELECT left(coalesce(max(d.user_agent), max(e.user_agent), ''), 300),
        coalesce(max(d.known_actor), ''),
        coalesce(bool_or(d.is_bot), false),
        coalesce(bool_or(d.is_tool), false),
+       coalesce(max(d.risk_score), 0),
        count(*)::bigint,
        count(DISTINCT e.client_ip)::bigint,
        count(*) FILTER (WHERE e.status >= 400 AND e.status < 500)::bigint,
@@ -1035,6 +1037,7 @@ LIMIT $4`, report.Since, report.Until, report.SiteID, limit)
 		var item UserAgentSummary
 		if err := rows.Scan(
 			&item.Sample,
+			&item.Family,
 			&item.BrowserFamily,
 			&item.BrowserVersion,
 			&item.OSFamily,
@@ -1044,6 +1047,7 @@ LIMIT $4`, report.Since, report.Until, report.SiteID, limit)
 			&item.KnownActor,
 			&item.IsBot,
 			&item.IsTool,
+			&item.RiskScore,
 			&item.Requests,
 			&item.UniqueIPs,
 			&item.Status4xx,
@@ -1157,6 +1161,7 @@ agent_ip_stats AS (
   GROUP BY rows.agent_key
 )
 SELECT t.sample,
+       coalesce(d.family, ''),
        coalesce(d.browser_family, ''),
        coalesce(d.browser_version, ''),
        coalesce(d.os_family, ''),
@@ -1166,6 +1171,7 @@ SELECT t.sample,
        coalesce(d.known_actor, ''),
        coalesce(d.is_bot, false),
        coalesce(d.is_tool, false),
+       coalesce(d.risk_score, 0),
        t.requests,
        coalesce(s.unique_ips, 0)::bigint,
        t.status_4xx,
@@ -1187,6 +1193,7 @@ ORDER BY t.requests DESC`, report.Since, report.Until, report.SiteID, limit, ful
 		var item UserAgentSummary
 		if err := rows.Scan(
 			&item.Sample,
+			&item.Family,
 			&item.BrowserFamily,
 			&item.BrowserVersion,
 			&item.OSFamily,
@@ -1196,6 +1203,7 @@ ORDER BY t.requests DESC`, report.Since, report.Until, report.SiteID, limit, ful
 			&item.KnownActor,
 			&item.IsBot,
 			&item.IsTool,
+			&item.RiskScore,
 			&item.Requests,
 			&item.UniqueIPs,
 			&item.Status4xx,
@@ -1248,7 +1256,9 @@ func applyUserAgentAnalysis(item *UserAgentSummary) {
 	}
 	item.IsBot = item.IsBot || analysis.IsBot
 	item.IsTool = item.IsTool || analysis.IsTool
-	item.RiskScore = analysis.RiskScore
+	if item.RiskScore <= 0 {
+		item.RiskScore = analysis.RiskScore
+	}
 }
 
 func (s *Service) loadSlowPaths(ctx context.Context, report *Report, limit int, rollupsReady bool) error {

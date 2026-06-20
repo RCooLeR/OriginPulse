@@ -133,7 +133,9 @@ func enrichMissingUserAgents(ctx context.Context, pool *pgxpool.Pool, batchSize 
 	rows, err := pool.Query(ctx, `
 SELECT id, user_agent, request_count
 FROM dim_user_agents
-WHERE coalesce(actor_type, '') = ''
+WHERE coalesce(family, '') = ''
+   OR risk_score IS NULL
+   OR coalesce(actor_type, '') = ''
    OR coalesce(device_family, '') = ''
    OR (actor_type = 'browser' AND coalesce(browser_family, '') = '')
 ORDER BY last_seen_at DESC
@@ -154,6 +156,7 @@ LIMIT $1`, batchSize)
 		analysis := useragent.Analyze(sample, requests)
 		updates = append(updates, []any{
 			id,
+			analysis.Family,
 			analysis.BrowserFamily,
 			analysis.BrowserVersion,
 			analysis.OSFamily,
@@ -163,6 +166,7 @@ LIMIT $1`, batchSize)
 			analysis.KnownActor,
 			analysis.IsBot,
 			analysis.IsTool,
+			analysis.RiskScore,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -181,6 +185,7 @@ LIMIT $1`, batchSize)
 	}()
 	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE backfill_user_agent_enrichment (
   id bigint NOT NULL,
+  family text,
   browser_family text,
   browser_version text,
   os_family text,
@@ -189,19 +194,21 @@ LIMIT $1`, batchSize)
   actor_type text,
   known_actor text,
   is_bot boolean NOT NULL,
-  is_tool boolean NOT NULL
+  is_tool boolean NOT NULL,
+  risk_score integer
 ) ON COMMIT DROP`); err != nil {
 		return 0, err
 	}
 	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"backfill_user_agent_enrichment"}, []string{
-		"id", "browser_family", "browser_version", "os_family", "os_version", "device_family",
-		"actor_type", "known_actor", "is_bot", "is_tool",
+		"id", "family", "browser_family", "browser_version", "os_family", "os_version", "device_family",
+		"actor_type", "known_actor", "is_bot", "is_tool", "risk_score",
 	}, pgx.CopyFromRows(updates)); err != nil {
 		return 0, err
 	}
 	tag, err := tx.Exec(ctx, `
 UPDATE dim_user_agents d
-SET browser_family = nullif(e.browser_family, ''),
+SET family = nullif(e.family, ''),
+    browser_family = nullif(e.browser_family, ''),
     browser_version = nullif(e.browser_version, ''),
     os_family = nullif(e.os_family, ''),
     os_version = nullif(e.os_version, ''),
@@ -209,7 +216,8 @@ SET browser_family = nullif(e.browser_family, ''),
     actor_type = nullif(e.actor_type, ''),
     known_actor = nullif(e.known_actor, ''),
     is_bot = e.is_bot,
-    is_tool = e.is_tool
+    is_tool = e.is_tool,
+    risk_score = e.risk_score
 FROM backfill_user_agent_enrichment e
 WHERE d.id = e.id`)
 	if err != nil {

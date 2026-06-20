@@ -65,6 +65,7 @@ type UserAgentRecord struct {
 	KnownActor     string    `json:"known_actor,omitempty"`
 	IsBot          bool      `json:"is_bot"`
 	IsTool         bool      `json:"is_tool"`
+	RiskScore      int       `json:"risk_score,omitempty"`
 	RequestCount   int64     `json:"request_count,omitempty"`
 	FirstSeen      time.Time `json:"first_seen,omitempty"`
 	LastSeen       time.Time `json:"last_seen,omitempty"`
@@ -156,6 +157,7 @@ func loadUserAgentRecord(ctx context.Context, pool *pgxpool.Pool, out *UserAgent
 	row := pool.QueryRow(ctx, `
 SELECT id,
        user_agent,
+       coalesce(family, ''),
        coalesce(browser_family, ''),
        coalesce(browser_version, ''),
        coalesce(os_family, ''),
@@ -165,6 +167,7 @@ SELECT id,
        coalesce(known_actor, ''),
        is_bot,
        is_tool,
+       coalesce(risk_score, 0),
        request_count,
        first_seen_at,
        last_seen_at
@@ -181,6 +184,7 @@ LIMIT 1`, id, sample)
 	err := row.Scan(
 		&out.UserAgent.ID,
 		&out.UserAgent.Sample,
+		&out.UserAgent.Family,
 		&out.UserAgent.BrowserFamily,
 		&out.UserAgent.BrowserVersion,
 		&out.UserAgent.OSFamily,
@@ -190,6 +194,7 @@ LIMIT 1`, id, sample)
 		&out.UserAgent.KnownActor,
 		&out.UserAgent.IsBot,
 		&out.UserAgent.IsTool,
+		&out.UserAgent.RiskScore,
 		&out.UserAgent.RequestCount,
 		&out.UserAgent.FirstSeen,
 		&out.UserAgent.LastSeen,
@@ -207,13 +212,16 @@ LIMIT 1`, id, sample)
 		out.UserAgent.KnownActor = analysis.KnownActor
 		out.UserAgent.IsBot = analysis.IsBot
 		out.UserAgent.IsTool = analysis.IsTool
+		out.UserAgent.RiskScore = analysis.RiskScore
 		return nil
 	}
 	if err != nil {
 		return err
 	}
 	analysis := useragent.Analyze(out.UserAgent.Sample, 0)
-	out.UserAgent.Family = analysis.Family
+	if out.UserAgent.Family == "" {
+		out.UserAgent.Family = analysis.Family
+	}
 	if out.UserAgent.BrowserFamily == "" {
 		out.UserAgent.BrowserFamily = analysis.BrowserFamily
 	}
@@ -237,6 +245,9 @@ LIMIT 1`, id, sample)
 	}
 	out.UserAgent.IsBot = out.UserAgent.IsBot || analysis.IsBot
 	out.UserAgent.IsTool = out.UserAgent.IsTool || analysis.IsTool
+	if out.UserAgent.RiskScore <= 0 {
+		out.UserAgent.RiskScore = analysis.RiskScore
+	}
 	return nil
 }
 
