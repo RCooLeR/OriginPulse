@@ -758,9 +758,10 @@ function mysqlProbePanel(rows) {
       </div>
       <div class="list">${page.rows.map((item, index) => {
         const key = cacheDetail("security-signal", item, `mysql:${item.category || ""}:${item.ip || ""}:${item.path || ""}:${index}`);
+        const meta = [item.site_id, item.env, item.match_reason || item.category, item.sample_query || ""].filter(Boolean).join(" / ");
         return `
         <div class="list-row">
-          <div><strong>${escapeHTML(`${item.method || "GET"} ${item.path || "/"}`)}</strong><span>${escapeHTML([item.site_id, item.env, item.match_reason || item.category, item.sample_query || ""].filter(Boolean).join(" / "))}</span></div>
+          <div><strong>${escapeHTML(`${item.method || "GET"} ${item.path || "/"}`)}</strong><span>${item.ip ? `${ipLink(item.ip)} / ` : ""}${escapeHTML(meta)}</span></div>
           <button class="button small" type="button" data-detail="security-signal" data-value="${escapeAttr(key)}">${formatNumber(item.requests)} req</button>
         </div>
       `;
