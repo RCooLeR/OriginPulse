@@ -3,4 +3,8 @@
 /config.yml
 /originpulse
 /originpulse.exe
+/tmp/
+/components-font-awesome/
+*.log
 *.tmp
+*.mmdb

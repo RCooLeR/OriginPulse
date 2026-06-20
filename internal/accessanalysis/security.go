@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"originpulse/internal/rollups"
 )
 
 type AccessProbeSummary struct {
@@ -116,6 +120,41 @@ const injectionPathPredicateSQL = `
  path_norm LIKE '/.env%' OR target LIKE '%/.env%' OR target LIKE '%wp-config.php%' OR target LIKE '%composer.json%' OR target LIKE '%composer.lock%' OR target LIKE '%id_rsa%' OR target LIKE '%/.git/%' OR
  ` + pathTraversalPredicateSQL + `)`
 
+const injectionCandidatePredicateSQL = `
+(path_norm LIKE '%.env%' OR query_norm LIKE '%.env%' OR
+ path_norm LIKE '%wp-config.php%' OR query_norm LIKE '%wp-config.php%' OR
+ path_norm LIKE '%composer.json%' OR query_norm LIKE '%composer.json%' OR
+ path_norm LIKE '%composer.lock%' OR query_norm LIKE '%composer.lock%' OR
+ path_norm LIKE '%id_rsa%' OR query_norm LIKE '%id_rsa%' OR
+ path_norm LIKE '%.git/%' OR query_norm LIKE '%.git/%' OR
+ path_norm LIKE '%union%' OR query_norm LIKE '%union%' OR
+ path_norm LIKE '%select%' OR query_norm LIKE '%select%' OR
+ path_norm LIKE '%information_schema%' OR query_norm LIKE '%information_schema%' OR
+ path_norm LIKE '%sleep(%' OR query_norm LIKE '%sleep(%' OR
+ path_norm LIKE '%benchmark(%' OR query_norm LIKE '%benchmark(%' OR
+ path_norm LIKE '%extractvalue(%' OR query_norm LIKE '%extractvalue(%' OR
+ path_norm LIKE '%updatexml(%' OR query_norm LIKE '%updatexml(%' OR
+ path_norm LIKE '%concat(%' OR query_norm LIKE '%concat(%' OR
+ path_norm LIKE '% or 1=1%' OR query_norm LIKE '% or 1=1%' OR
+ path_norm LIKE '% and 1=1%' OR query_norm LIKE '% and 1=1%' OR
+ path_norm LIKE '%+or+1%3d%' OR query_norm LIKE '%+or+1%3d%' OR
+ path_norm LIKE '%+and+1%3d%' OR query_norm LIKE '%+and+1%3d%' OR
+ path_norm LIKE '%--%' OR query_norm LIKE '%--%' OR
+ path_norm LIKE '%/*%' OR query_norm LIKE '%/*%' OR
+ path_norm LIKE '%2d%2d%' OR query_norm LIKE '%2d%2d%' OR
+ path_norm LIKE '%2f%2a%' OR query_norm LIKE '%2f%2a%' OR
+ path_norm LIKE '%<script%' OR query_norm LIKE '%<script%' OR
+ path_norm LIKE '%3cscript%' OR query_norm LIKE '%3cscript%' OR
+ path_norm LIKE '%javascript:%' OR query_norm LIKE '%javascript:%' OR
+ path_norm LIKE '%onerror=%' OR query_norm LIKE '%onerror=%' OR
+ path_norm LIKE '%onload=%' OR query_norm LIKE '%onload=%' OR
+ path_norm LIKE '%alert(%' OR query_norm LIKE '%alert(%' OR
+ path_norm LIKE '%/etc/passwd%' OR query_norm LIKE '%/etc/passwd%' OR
+ path_norm LIKE '%proc/self/environ%' OR query_norm LIKE '%proc/self/environ%' OR
+ path_norm LIKE '%boot.ini%' OR query_norm LIKE '%boot.ini%' OR
+ path_norm LIKE '%..%' OR query_norm LIKE '%..%' OR
+ path_norm LIKE '%2e%2e%' OR query_norm LIKE '%2e%2e%')`
+
 const pathTraversalRegex = `(^|[^.])(\.\.(/|%2f|%5c)|%2e%2e(/|%2f|%5c))`
 
 const pathTraversalPredicateSQL = `
@@ -126,54 +165,45 @@ func (s *Service) loadAdminProbes(ctx context.Context, report *Report, limit int
 	if err != nil {
 		return err
 	}
-	query := fmt.Sprintf(`
+	rows, err := pool.Query(ctx, `
 WITH base AS (
   SELECT site_id,
          env,
          client_ip,
-         upper(coalesce(method, '')) AS method_norm,
          coalesce(method, '') AS method,
          coalesce(path, '') AS path,
-         lower(coalesce(path, '')) AS path_norm,
          coalesce(query, '') AS query,
-         lower(coalesce(path, '') || '?' || coalesce(query, '')) AS target,
+         category,
          status,
          ts
-  FROM access_events
-  WHERE ts >= $1 AND ts < $2 AND ($3 = '' OR site_id = $3) AND client_ip IS NOT NULL
+  FROM security_probe_events
+  WHERE family = 'admin'
+    AND ts >= $1 AND ts < $2 AND ($3 = '' OR site_id = $3) AND client_ip IS NOT NULL
 ),
 ip_totals AS (
   SELECT client_ip, count(*)::bigint AS total_ip_hits
   FROM base
   GROUP BY client_ip
-),
-flagged AS (
-  SELECT *, %s AS category
-  FROM base
-  WHERE %s
-    AND NOT (path_norm ~ '^/[a-z]{2}(-[a-z]{2})?/api/restapi/' AND coalesce(status, 0) < 500)
-    AND NOT (path_norm LIKE '%%/wp-admin/admin-ajax.php' AND coalesce(status, 0) >= 200 AND coalesce(status, 0) < 400)
 )
 SELECT category,
-       f.site_id,
-       f.env,
-       host(f.client_ip),
-       f.method,
-       f.path,
-       coalesce(left(max(nullif(f.query, '')), 240), ''),
+       base.site_id,
+       base.env,
+       host(base.client_ip),
+       base.method,
+       base.path,
+       coalesce(left(max(nullif(base.query, '')), 240), ''),
        count(*)::bigint,
        max(t.total_ip_hits)::bigint,
-       count(*) FILTER (WHERE f.status >= 400 AND f.status < 500)::bigint,
-       count(*) FILTER (WHERE f.status >= 500 AND f.status < 600)::bigint,
-       min(f.ts),
-       max(f.ts)
-FROM flagged f
-JOIN ip_totals t ON t.client_ip = f.client_ip
-WHERE f.category <> ''
-GROUP BY f.category, f.site_id, f.env, f.client_ip, f.method, f.path
-ORDER BY count(*) DESC, max(f.ts) DESC
-LIMIT $4`, adminProbeCategorySQL, adminPathPredicateSQL)
-	rows, err := pool.Query(ctx, query, report.Since, report.Until, report.SiteID, limit)
+       count(*) FILTER (WHERE base.status >= 400 AND base.status < 500)::bigint,
+       count(*) FILTER (WHERE base.status >= 500 AND base.status < 600)::bigint,
+       min(base.ts),
+       max(base.ts)
+FROM base
+JOIN ip_totals t ON t.client_ip = base.client_ip
+WHERE base.category <> ''
+GROUP BY base.category, base.site_id, base.env, base.client_ip, base.method, base.path
+ORDER BY count(*) DESC, max(base.ts) DESC
+LIMIT $4`, report.Since, report.Until, report.SiteID, limit)
 	if err != nil {
 		return err
 	}
@@ -206,57 +236,54 @@ LIMIT $4`, adminProbeCategorySQL, adminPathPredicateSQL)
 	return rows.Err()
 }
 
-func (s *Service) loadInjectionProbes(ctx context.Context, report *Report, limit int) error {
+func (s *Service) loadInjectionProbes(ctx context.Context, report *Report, limit int, categoryFilter string) error {
 	pool, err := s.db.Pool()
 	if err != nil {
 		return err
 	}
-	query := fmt.Sprintf(`
+	rows, err := pool.Query(ctx, `
 WITH base AS (
   SELECT site_id,
          env,
          client_ip,
          coalesce(method, '') AS method,
          coalesce(path, '') AS path,
-         lower(coalesce(path, '')) AS path_norm,
          coalesce(query, '') AS query,
-         lower(coalesce(path, '') || '?' || coalesce(query, '')) AS target,
+         category,
+         coalesce(match_reason, '') AS match_reason,
          status,
          ts
-  FROM access_events
-  WHERE ts >= $1 AND ts < $2 AND ($3 = '' OR site_id = $3) AND client_ip IS NOT NULL
+  FROM security_probe_events
+  WHERE family = 'injection'
+    AND ts >= $1 AND ts < $2 AND ($3 = '' OR site_id = $3)
+    AND ($4 = '' OR category = $4)
+    AND client_ip IS NOT NULL
 ),
 ip_totals AS (
   SELECT client_ip, count(*)::bigint AS total_ip_hits
   FROM base
   GROUP BY client_ip
-),
-flagged AS (
-  SELECT *, %s AS category, %s AS match_reason
-  FROM base
-  WHERE %s
 )
 SELECT category,
-       f.site_id,
-       f.env,
-       host(f.client_ip),
-       f.method,
-       f.path,
-       coalesce(left(max(nullif(f.query, '')), 240), ''),
-       max(f.match_reason),
+       base.site_id,
+       base.env,
+       host(base.client_ip),
+       base.method,
+       base.path,
+       coalesce(left(max(nullif(base.query, '')), 240), ''),
+       max(base.match_reason),
        count(*)::bigint,
        max(t.total_ip_hits)::bigint,
-       count(*) FILTER (WHERE f.status >= 400 AND f.status < 500)::bigint,
-       count(*) FILTER (WHERE f.status >= 500 AND f.status < 600)::bigint,
-       min(f.ts),
-       max(f.ts)
-FROM flagged f
-JOIN ip_totals t ON t.client_ip = f.client_ip
-WHERE f.category <> ''
-GROUP BY f.category, f.site_id, f.env, f.client_ip, f.method, f.path
-ORDER BY count(*) DESC, max(f.ts) DESC
-LIMIT $4`, injectionProbeCategorySQL, injectionProbeReasonSQL, injectionPathPredicateSQL)
-	rows, err := pool.Query(ctx, query, report.Since, report.Until, report.SiteID, limit)
+       count(*) FILTER (WHERE base.status >= 400 AND base.status < 500)::bigint,
+       count(*) FILTER (WHERE base.status >= 500 AND base.status < 600)::bigint,
+       min(base.ts),
+       max(base.ts)
+FROM base
+JOIN ip_totals t ON t.client_ip = base.client_ip
+WHERE base.category <> ''
+GROUP BY base.category, base.site_id, base.env, base.client_ip, base.method, base.path
+ORDER BY count(*) DESC, max(base.ts) DESC
+LIMIT $5`, report.Since, report.Until, report.SiteID, strings.TrimSpace(categoryFilter), limit)
 	if err != nil {
 		return err
 	}
@@ -290,11 +317,18 @@ LIMIT $4`, injectionProbeCategorySQL, injectionProbeReasonSQL, injectionPathPred
 	return rows.Err()
 }
 
-func (s *Service) loadTorSources(ctx context.Context, report *Report, limit int) error {
+func (s *Service) loadTorSources(ctx context.Context, report *Report, limit int, rollupsReady bool) error {
 	pool, err := s.db.Pool()
 	if err != nil {
 		return err
 	}
+	if rollupsReady {
+		return loadTorSourcesFromRollups(ctx, pool, report, limit)
+	}
+	return loadTorSourcesFromRaw(ctx, pool, report, limit)
+}
+
+func loadTorSourcesFromRaw(ctx context.Context, pool *pgxpool.Pool, report *Report, limit int) error {
 	query := fmt.Sprintf(`
 WITH base AS (
   SELECT e.site_id,
@@ -335,6 +369,129 @@ GROUP BY client_ip, site_id, env
 ORDER BY count(*) FILTER (WHERE %s) DESC, count(*) DESC, max(ts) DESC
 LIMIT $4`, adminPathPredicateSQL, adminPathPredicateSQL)
 	rows, err := pool.Query(ctx, query, report.Since, report.Until, report.SiteID, limit)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var item TorSourceSummary
+		if err := rows.Scan(
+			&item.IP,
+			&item.SiteID,
+			&item.Env,
+			&item.Requests,
+			&item.AdminRequests,
+			&item.Status4xx,
+			&item.Status5xx,
+			&item.ReverseDNS,
+			&item.KnownActor,
+			&item.ActorType,
+			&item.RiskScore,
+			&item.ForwardConfirmed,
+			&item.VerifiedActor,
+			&item.FirstSeen,
+			&item.LastSeen,
+		); err != nil {
+			return err
+		}
+		item.VerifiedSource = item.ForwardConfirmed || item.VerifiedActor
+		if item.KnownActor == "" {
+			item.KnownActor = "Tor exit"
+		}
+		if item.ActorType == "" {
+			item.ActorType = "tor"
+		}
+		report.TorSources = append(report.TorSources, item)
+	}
+	return rows.Err()
+}
+
+func loadTorSourcesFromRollups(ctx context.Context, pool *pgxpool.Pool, report *Report, limit int) error {
+	fullStart, fullEnd, _ := rollups.FullHourRange(report.Since, report.Until)
+	rows, err := pool.Query(ctx, `
+WITH rollup_rows AS (
+  SELECT r.site_id,
+         r.env,
+         d.ip AS client_ip,
+         sum(r.requests)::bigint AS requests,
+         sum(r.status_4xx)::bigint AS status_4xx,
+         sum(r.status_5xx)::bigint AS status_5xx,
+         min(r.first_seen_at) AS first_seen_at,
+         max(r.last_seen_at) AS last_seen_at
+  FROM rollup_ip_1h r
+  JOIN dim_ips d ON d.id = r.ip_id
+  WHERE r.bucket_ts >= $4 AND r.bucket_ts < $5
+    AND ($3 = '' OR r.site_id = $3)
+  GROUP BY r.site_id, r.env, d.ip
+),
+edge_rows AS (
+  SELECT site_id,
+         env,
+         client_ip,
+         count(*)::bigint AS requests,
+         count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint AS status_4xx,
+         count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint AS status_5xx,
+         min(ts) AS first_seen_at,
+         max(ts) AS last_seen_at
+  FROM access_events
+  WHERE ts >= $1 AND ts < $2
+    AND ($3 = '' OR site_id = $3)
+    AND client_ip IS NOT NULL
+    AND (ts < $4 OR ts >= $5)
+  GROUP BY site_id, env, client_ip
+),
+traffic AS (
+  SELECT site_id,
+         env,
+         client_ip,
+         sum(requests)::bigint AS requests,
+         sum(status_4xx)::bigint AS status_4xx,
+         sum(status_5xx)::bigint AS status_5xx,
+         min(first_seen_at) AS first_seen_at,
+         max(last_seen_at) AS last_seen_at
+  FROM (
+    SELECT * FROM rollup_rows
+    UNION ALL
+    SELECT * FROM edge_rows
+  ) rows
+  GROUP BY site_id, env, client_ip
+),
+admin_probe_hits AS (
+  SELECT site_id,
+         env,
+         client_ip,
+         count(*)::bigint AS admin_requests
+  FROM security_probe_events
+  WHERE family = 'admin'
+    AND ts >= $1 AND ts < $2
+    AND ($3 = '' OR site_id = $3)
+    AND client_ip IS NOT NULL
+  GROUP BY site_id, env, client_ip
+)
+SELECT host(t.client_ip),
+       t.site_id,
+       t.env,
+       t.requests,
+       coalesce(a.admin_requests, 0)::bigint,
+       t.status_4xx,
+       t.status_5xx,
+       coalesce(ii.reverse_dns, ''),
+       coalesce(ii.known_actor, ''),
+       coalesce(ii.actor_type, ''),
+       coalesce(ii.risk_score, 80),
+       coalesce(ii.forward_confirmed, false),
+       coalesce(ii.verified_actor, false),
+       t.first_seen_at,
+       t.last_seen_at
+FROM traffic t
+JOIN ip_intel ii ON ii.ip = t.client_ip
+LEFT JOIN admin_probe_hits a ON a.site_id = t.site_id AND a.env = t.env AND a.client_ip = t.client_ip
+WHERE coalesce(ii.is_tor_exit, false)
+   OR lower(coalesce(ii.known_actor, '')) = 'tor exit'
+   OR lower(coalesce(ii.actor_type, '')) = 'tor'
+ORDER BY coalesce(a.admin_requests, 0) DESC, t.requests DESC, t.last_seen_at DESC
+LIMIT $6`, report.Since, report.Until, report.SiteID, fullStart, fullEnd, limit)
 	if err != nil {
 		return err
 	}

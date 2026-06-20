@@ -123,12 +123,42 @@ CREATE TABLE IF NOT EXISTS rollup_1m (
   status_5xx bigint NOT NULL DEFAULT 0,
   unique_ips bigint NOT NULL DEFAULT 0,
   bytes_sent bigint NOT NULL DEFAULT 0,
+  request_time_count bigint NOT NULL DEFAULT 0,
+  request_time_sum_ms bigint NOT NULL DEFAULT 0,
+  slow_requests bigint NOT NULL DEFAULT 0,
+  empty_user_agents bigint NOT NULL DEFAULT 0,
   top_ip inet,
   top_ip_requests bigint,
   top_path text,
   top_path_requests bigint,
   PRIMARY KEY (bucket_ts, site_id, env)
 );
+
+CREATE TABLE IF NOT EXISTS rollup_site_latency_1h (
+  bucket_ts timestamptz NOT NULL,
+  site_id text NOT NULL REFERENCES sites(id),
+  env text NOT NULL,
+  bucket_le_ms int NOT NULL,
+  requests bigint NOT NULL DEFAULT 0,
+  PRIMARY KEY (bucket_ts, site_id, env, bucket_le_ms)
+);
+
+CREATE TABLE IF NOT EXISTS rollup_path_latency_1h (
+  bucket_ts timestamptz NOT NULL,
+  site_id text NOT NULL REFERENCES sites(id),
+  env text NOT NULL,
+  path_id bigint NOT NULL,
+  bucket_le_ms int NOT NULL,
+  requests bigint NOT NULL DEFAULT 0,
+  status_5xx bigint NOT NULL DEFAULT 0,
+  request_time_sum_ms bigint NOT NULL DEFAULT 0,
+  first_seen_at timestamptz NOT NULL,
+  last_seen_at timestamptz NOT NULL,
+  PRIMARY KEY (bucket_ts, site_id, env, path_id, bucket_le_ms)
+);
+
+CREATE INDEX IF NOT EXISTS rollup_site_latency_1h_site_bucket_idx ON rollup_site_latency_1h (site_id, bucket_ts DESC, bucket_le_ms);
+CREATE INDEX IF NOT EXISTS rollup_path_latency_1h_site_bucket_requests_idx ON rollup_path_latency_1h (site_id, bucket_ts DESC, requests DESC);
 
 CREATE TABLE IF NOT EXISTS ip_intel (
   ip inet PRIMARY KEY,

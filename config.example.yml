@@ -51,12 +51,26 @@ combiner:
   settling_window: "2h"
   finalize_after: "3h"
 
+pipeline:
+  index_workers: 1
+
 retention:
   enabled: true
   interval: "24h"
   max_age: "17520h"
+  archive_dir: "./data/archives"
+  raw_file_max_age: "336h"
+  hot_event_max_age: "2160h"
+  daily_archive_after: "336h"
+  weekly_archive_after: "2160h"
+  archive_max_age: "17520h"
+  report_max_age: "43800h"
+  temporary_import_max_age: "168h"
   delete_raw_files: true
-  delete_combined_files: true
+  delete_combined_files: false
+  delete_hot_events: true
+  delete_rollups: false
+  delete_temporary_imports: true
 
 reports:
   enabled: true
@@ -82,6 +96,19 @@ notifications:
     vapid_private_key_env: "ORIGINPULSE_VAPID_PRIVATE_KEY"
     vapid_subject_env: "ORIGINPULSE_VAPID_SUBJECT"
     vapid_subject: "mailto:originpulse@localhost"
+
+geoip:
+  enabled: true
+  db_path_env: "GEOIP_DB_PATH"
+  db_path: "./data/GeoLite2-City.mmdb"
+  account_id_env: "MAXMIND_ACCOUNT_ID"
+  license_key_env: "MAXMIND_LICENSE_KEY"
+  download_url_env: "MAXMIND_GEOLITE2_CITY_URL"
+  download_url: "https://download.maxmind.com/geoip/databases/GeoLite2-City/download?suffix=tar.gz"
+  update_interval: "24h"
+  download_timeout: "2m"
+  last_modified_env: "GEOIP_LAST_MODIFIED_PATH"
+  last_modified_path: "./data/GeoLite2-City.lastmod"
 
 sites:
   - id: "example-site"

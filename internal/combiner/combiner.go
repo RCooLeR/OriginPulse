@@ -39,6 +39,8 @@ type CombinedLine struct {
 	Env         string `json:"env"`
 	ContainerID string `json:"container_id"`
 	LogType     string `json:"log_type"`
+	RawFileID   string `json:"raw_file_id,omitempty"`
+	RawLineNo   int64  `json:"raw_line_no,omitempty"`
 	Raw         string `json:"raw"`
 	Fingerprint string `json:"fingerprint"`
 }
@@ -49,6 +51,8 @@ type entry struct {
 	Env         string
 	ContainerID string
 	LogType     string
+	RawFileID   string
+	RawLineNo   int64
 	Raw         string
 	Fingerprint string
 }
@@ -181,7 +185,9 @@ func (s *Service) readSource(ctx context.Context, source RawSource, opts Options
 
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 128*1024), 10*1024*1024)
+	var rawLineNo int64
 	for scanner.Scan() {
+		rawLineNo++
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -216,6 +222,8 @@ func (s *Service) readSource(ctx context.Context, source RawSource, opts Options
 			Env:         source.Env,
 			ContainerID: source.ContainerID,
 			LogType:     source.LogType,
+			RawFileID:   source.RawFileID,
+			RawLineNo:   rawLineNo,
 			Raw:         raw,
 			Fingerprint: fp,
 		}
@@ -319,6 +327,8 @@ func writeGzipJSONL(ctx context.Context, writer io.Writer, entries []entry) (int
 			Env:         item.Env,
 			ContainerID: item.ContainerID,
 			LogType:     item.LogType,
+			RawFileID:   item.RawFileID,
+			RawLineNo:   item.RawLineNo,
 			Raw:         item.Raw,
 			Fingerprint: item.Fingerprint,
 		}

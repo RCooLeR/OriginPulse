@@ -2,6 +2,7 @@ package parser
 
 import (
 	"errors"
+	"math"
 	"net/netip"
 	"net/url"
 	"regexp"
@@ -16,17 +17,19 @@ var ErrTimestampNotFound = errors.New("timestamp not found")
 var ErrInvalidAccessLine = errors.New("invalid access log line")
 
 type AccessEvent struct {
-	TS        time.Time
-	ClientIP  string
-	Method    string
-	Scheme    string
-	Host      string
-	Path      string
-	Query     string
-	Status    int
-	BytesSent int64
-	Referer   string
-	UserAgent string
+	TS             time.Time
+	ClientIP       string
+	Method         string
+	Scheme         string
+	Host           string
+	Path           string
+	Query          string
+	Status         int
+	BytesSent      int64
+	Referer        string
+	UserAgent      string
+	RequestTimeMS  int
+	UpstreamTimeMS int
 }
 
 func ParseAccessTimestamp(line string) (time.Time, error) {
@@ -103,6 +106,12 @@ func ParseAccessLine(line string) (AccessEvent, error) {
 	}
 	if requestIndex+4 < len(fields) {
 		event.UserAgent = dashToEmpty(fields[requestIndex+4])
+	}
+	if requestIndex+5 < len(fields) {
+		event.RequestTimeMS = parseDurationMS(fields[requestIndex+5])
+	}
+	if requestIndex+6 < len(fields) {
+		event.UpstreamTimeMS = parseDurationMS(fields[requestIndex+6])
 	}
 	return event, nil
 }
@@ -230,6 +239,47 @@ func parseBytes(value string) int64 {
 		return 0
 	}
 	return parsed
+}
+
+func parseDurationMS(value string) int {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "-" {
+		return 0
+	}
+	if strings.Contains(value, ",") {
+		maxMS := 0
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" || part == "-" {
+				continue
+			}
+			ms, ok := parseSingleDurationMS(part)
+			if !ok {
+				return 0
+			}
+			if ms > maxMS {
+				maxMS = ms
+			}
+		}
+		return maxMS
+	}
+	ms, ok := parseSingleDurationMS(value)
+	if !ok {
+		return 0
+	}
+	return ms
+}
+
+func parseSingleDurationMS(value string) (int, bool) {
+	seconds, err := strconv.ParseFloat(value, 64)
+	if err != nil || seconds <= 0 {
+		return 0, false
+	}
+	ms := int(math.Round(seconds * 1000))
+	if ms == 0 {
+		return 1, true
+	}
+	return ms, true
 }
 
 func dashToEmpty(value string) string {

@@ -74,6 +74,12 @@ func TestParseAccessLineUsesForwardedPublicIP(t *testing.T) {
 	if event.ClientIP != "212.47.78.48" {
 		t.Fatalf("client ip = %q", event.ClientIP)
 	}
+	if event.RequestTimeMS != 123 {
+		t.Fatalf("request time = %d", event.RequestTimeMS)
+	}
+	if event.UpstreamTimeMS != 0 {
+		t.Fatalf("upstream time = %d", event.UpstreamTimeMS)
+	}
 }
 
 func TestParseAccessLineSkipsUnixForwardedPeer(t *testing.T) {
@@ -84,5 +90,36 @@ func TestParseAccessLineSkipsUnixForwardedPeer(t *testing.T) {
 	}
 	if event.ClientIP != "178.18.254.57" {
 		t.Fatalf("client ip = %q", event.ClientIP)
+	}
+	if event.RequestTimeMS != 123 {
+		t.Fatalf("request time = %d", event.RequestTimeMS)
+	}
+}
+
+func TestParseAccessLineRequestAndUpstreamTimes(t *testing.T) {
+	line := `203.0.113.10 - - [17/Jun/2026:14:22:31 +0000] "GET /slow HTTP/1.1" 200 123 "-" "curl/8" 1.234 0.250`
+	event, err := ParseAccessLine(line)
+	if err != nil {
+		t.Fatalf("ParseAccessLine: %v", err)
+	}
+	if event.RequestTimeMS != 1234 {
+		t.Fatalf("request time = %d", event.RequestTimeMS)
+	}
+	if event.UpstreamTimeMS != 250 {
+		t.Fatalf("upstream time = %d", event.UpstreamTimeMS)
+	}
+}
+
+func TestParseAccessLineCommaSeparatedUpstreamTimes(t *testing.T) {
+	line := `203.0.113.10 - - [17/Jun/2026:14:22:31 +0000] "GET /slow HTTP/1.1" 200 123 "-" "curl/8" 1.234 "0.100, 0.250, -"`
+	event, err := ParseAccessLine(line)
+	if err != nil {
+		t.Fatalf("ParseAccessLine: %v", err)
+	}
+	if event.RequestTimeMS != 1234 {
+		t.Fatalf("request time = %d", event.RequestTimeMS)
+	}
+	if event.UpstreamTimeMS != 250 {
+		t.Fatalf("upstream time = %d", event.UpstreamTimeMS)
 	}
 }

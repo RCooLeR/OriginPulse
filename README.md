@@ -39,8 +39,12 @@ GET  /api/v1/sites
 GET  /api/v1/system/credentials
 GET  /api/v1/system/jobs
 GET  /api/v1/system/retention
+GET  /api/v1/system/storage
+GET  /api/v1/system/archives
+GET  /api/v1/system/archive-imports
 POST /api/v1/system/collect
 POST /api/v1/system/pipeline
+POST /api/v1/system/backfill-dimensions
 ```
 
 ## Pantheon credentials
@@ -71,11 +75,18 @@ originpulse combine -config config.yml -log-type nginx-access -from 2026-06-17T1
 originpulse index -config config.yml -segment /data/combined/nginx-access/2026/06/17/14.log.gz
 originpulse pipeline -config config.yml
 originpulse retention -config config.yml -dry-run
+originpulse storage-audit -config config.yml
 originpulse web-push-keys
 originpulse check-config -config config.yml
 ```
 
 `DATABASE_URL` enables Postgres-backed auth, sessions, site storage, migrations, and the analytics schema. Without it, the app runs in a degraded local mode for frontend/API development.
+
+## GeoIP / MaxMind
+
+OriginPulse can enrich IP intelligence with GeoLite2 City. On startup it loads `GEOIP_DB_PATH` or `geoip.db_path`; if the file is missing and `MAXMIND_ACCOUNT_ID` plus `MAXMIND_LICENSE_KEY` are set, it downloads `GeoLite2-City.mmdb` and refreshes it on `geoip.update_interval`.
+
+Downloaded `.mmdb` files are runtime data and are ignored by git.
 
 ## Notifications
 

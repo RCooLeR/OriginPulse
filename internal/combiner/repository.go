@@ -8,6 +8,7 @@ import (
 )
 
 type RawSource struct {
+	RawFileID   string
 	SiteID      string
 	Env         string
 	ContainerID string
@@ -67,7 +68,7 @@ func (r *Repository) DownloadedRawSources(ctx context.Context, logType string, m
 	}
 
 	rows, err := pool.Query(ctx, `
-SELECT site_id, env, container_id, log_type, local_path
+SELECT id::text, site_id, env, container_id, log_type, local_path
 FROM raw_files
 WHERE status = 'downloaded'
   AND log_type = $1
@@ -81,7 +82,7 @@ ORDER BY site_id, env, container_id, local_path`, logType, since)
 	sources := make([]RawSource, 0)
 	for rows.Next() {
 		var source RawSource
-		if err := rows.Scan(&source.SiteID, &source.Env, &source.ContainerID, &source.LogType, &source.LocalPath); err != nil {
+		if err := rows.Scan(&source.RawFileID, &source.SiteID, &source.Env, &source.ContainerID, &source.LogType, &source.LocalPath); err != nil {
 			return nil, err
 		}
 		sources = append(sources, source)

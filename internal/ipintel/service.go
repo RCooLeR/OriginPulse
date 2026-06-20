@@ -9,7 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"originpulse/internal/db"
+	"originpulse/internal/geoip"
+	"originpulse/internal/rollups"
 	"originpulse/internal/servicefingerprints"
 )
 
@@ -32,6 +36,9 @@ type RefreshedIP struct {
 	IP               string    `json:"ip"`
 	Requests         int64     `json:"requests"`
 	ReverseDNS       string    `json:"reverse_dns,omitempty"`
+	CountryCode      string    `json:"country_code,omitempty"`
+	CityName         string    `json:"city_name,omitempty"`
+	TimeZone         string    `json:"time_zone,omitempty"`
 	KnownActor       string    `json:"known_actor,omitempty"`
 	ActorType        string    `json:"actor_type,omitempty"`
 	RiskScore        int       `json:"risk_score"`
@@ -46,11 +53,16 @@ type RefreshedIP struct {
 const torExitListURL = "https://check.torproject.org/torbulkexitlist"
 
 type Service struct {
-	db *db.Store
+	db    *db.Store
+	geoIP *geoip.Manager
 }
 
-func NewService(store *db.Store) *Service {
-	return &Service{db: store}
+func NewService(store *db.Store, geoIP ...*geoip.Manager) *Service {
+	var manager *geoip.Manager
+	if len(geoIP) > 0 {
+		manager = geoIP[0]
+	}
+	return &Service{db: store, geoIP: manager}
 }
 
 func (s *Service) Enabled() bool {
@@ -78,24 +90,23 @@ func (s *Service) RefreshTop(ctx context.Context, opts Options) (Result, error) 
 	}
 
 	torExits, torCheckAvailable := fetchTorExitSet(ctx)
-	rows, err := pool.Query(ctx, `
-SELECT host(client_ip), count(*)::bigint
-FROM access_events
-WHERE ts >= $1 AND client_ip IS NOT NULL
-GROUP BY client_ip
-ORDER BY count(*) DESC
-LIMIT $2`, result.Since, limit)
+	topIPs, err := loadRefreshTopIPs(ctx, pool, result.Since, now, limit)
 	if err != nil {
 		return result, err
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		var item RefreshedIP
-		if err := rows.Scan(&item.IP, &item.Requests); err != nil {
-			return result, err
-		}
+	for _, item := range topIPs {
 		item.RefreshedAt = now
+
+		geo, geoErr := s.lookupGeoIP(item.IP)
+		if geoErr == "" {
+			item.CountryCode = geo.CountryCode
+			item.CityName = geo.CityName
+			item.TimeZone = geo.TimeZone
+		} else if geoErr != "" && geoErr != geoip.ErrNotLoaded.Error() {
+			item.DNSErrors = append(item.DNSErrors, geoErr)
+			result.Failed++
+		}
 
 		names, lookupErr := lookupReverse(ctx, item.IP)
 		if lookupErr != "" {
@@ -124,11 +135,87 @@ LIMIT $2`, result.Since, limit)
 		result.Refreshed++
 		result.Items = append(result.Items, item)
 	}
-	if err := rows.Err(); err != nil {
-		return result, err
-	}
 
 	return result, nil
+}
+
+func loadRefreshTopIPs(ctx context.Context, pool *pgxpool.Pool, since time.Time, until time.Time, limit int) ([]RefreshedIP, error) {
+	rollupsReady, err := rollups.DimensionRollupsReady(ctx, pool, since, until, "")
+	if err != nil {
+		return nil, err
+	}
+	if rollupsReady {
+		return loadRefreshTopIPsFromRollups(ctx, pool, since, until, limit)
+	}
+	return loadRefreshTopIPsFromRaw(ctx, pool, since, until, limit)
+}
+
+func loadRefreshTopIPsFromRaw(ctx context.Context, pool *pgxpool.Pool, since time.Time, until time.Time, limit int) ([]RefreshedIP, error) {
+	rows, err := pool.Query(ctx, `
+SELECT host(client_ip), count(*)::bigint
+FROM access_events
+WHERE ts >= $1 AND ts < $3 AND client_ip IS NOT NULL
+GROUP BY client_ip
+ORDER BY count(*) DESC
+LIMIT $2`, since, limit, until)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]RefreshedIP, 0, limit)
+	for rows.Next() {
+		var item RefreshedIP
+		if err := rows.Scan(&item.IP, &item.Requests); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func loadRefreshTopIPsFromRollups(ctx context.Context, pool *pgxpool.Pool, since time.Time, until time.Time, limit int) ([]RefreshedIP, error) {
+	fullStart, fullEnd, _ := rollups.FullHourRange(since, until)
+	rows, err := pool.Query(ctx, `
+WITH rollup_rows AS (
+  SELECT d.ip, sum(r.requests)::bigint AS requests
+  FROM rollup_ip_1h r
+  JOIN dim_ips d ON d.id = r.ip_id
+  WHERE r.bucket_ts >= $3 AND r.bucket_ts < $4
+  GROUP BY d.ip
+),
+edge_rows AS (
+  SELECT client_ip AS ip, count(*)::bigint AS requests
+  FROM access_events
+  WHERE ts >= $1 AND ts < $2
+    AND client_ip IS NOT NULL
+    AND (ts < $3 OR ts >= $4)
+  GROUP BY client_ip
+),
+combined AS (
+  SELECT * FROM rollup_rows
+  UNION ALL
+  SELECT * FROM edge_rows
+)
+SELECT host(ip), sum(requests)::bigint
+FROM combined
+GROUP BY ip
+ORDER BY sum(requests) DESC
+LIMIT $5`, since, until, fullStart, fullEnd, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]RefreshedIP, 0, limit)
+	for rows.Next() {
+		var item RefreshedIP
+		if err := rows.Scan(&item.IP, &item.Requests); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (s *Service) upsert(ctx context.Context, item RefreshedIP, reverseNames []string, torCheckAvailable bool) error {
@@ -144,6 +231,11 @@ func (s *Service) upsert(ctx context.Context, item RefreshedIP, reverseNames []s
 		"dns_errors":    item.DNSErrors,
 		"tor_checked":   torCheckAvailable,
 		"is_tor_exit":   item.IsTorExit,
+		"geoip": map[string]any{
+			"country_code": item.CountryCode,
+			"city_name":    item.CityName,
+			"time_zone":    item.TimeZone,
+		},
 	}
 	sourceJSON, err := json.Marshal(source)
 	if err != nil {
@@ -152,22 +244,24 @@ func (s *Service) upsert(ctx context.Context, item RefreshedIP, reverseNames []s
 
 	_, err = pool.Exec(ctx, `
 INSERT INTO ip_intel (
-  ip, reverse_dns, known_actor, actor_type, forward_confirmed, verified_actor, is_tor_exit, is_datacenter, risk_score, source, refreshed_at
+  ip, country_code, reverse_dns, known_actor, actor_type, forward_confirmed, verified_actor, is_tor_exit, is_datacenter, risk_score, source, refreshed_at
 ) VALUES (
-  $1::inet, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11
+  $1::inet, nullif($2, ''), $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12
 )
 ON CONFLICT (ip) DO UPDATE SET
+  country_code = coalesce(EXCLUDED.country_code, ip_intel.country_code),
   reverse_dns = EXCLUDED.reverse_dns,
   known_actor = EXCLUDED.known_actor,
   actor_type = EXCLUDED.actor_type,
   forward_confirmed = EXCLUDED.forward_confirmed,
   verified_actor = EXCLUDED.verified_actor,
-  is_tor_exit = CASE WHEN $12 THEN EXCLUDED.is_tor_exit ELSE ip_intel.is_tor_exit END,
+  is_tor_exit = CASE WHEN $13 THEN EXCLUDED.is_tor_exit ELSE ip_intel.is_tor_exit END,
   is_datacenter = EXCLUDED.is_datacenter,
   risk_score = EXCLUDED.risk_score,
   source = EXCLUDED.source,
   refreshed_at = EXCLUDED.refreshed_at`,
 		item.IP,
+		item.CountryCode,
 		emptyToNil(item.ReverseDNS),
 		emptyToNil(item.KnownActor),
 		emptyToNil(item.ActorType),
@@ -181,6 +275,17 @@ ON CONFLICT (ip) DO UPDATE SET
 		torCheckAvailable,
 	)
 	return err
+}
+
+func (s *Service) lookupGeoIP(ip string) (geoip.CityResult, string) {
+	if s == nil || s.geoIP == nil {
+		return geoip.CityResult{}, geoip.ErrNotLoaded.Error()
+	}
+	result, err := s.geoIP.Lookup(ip)
+	if err != nil {
+		return geoip.CityResult{}, err.Error()
+	}
+	return result, ""
 }
 
 func fetchTorExitSet(ctx context.Context) (map[string]struct{}, bool) {

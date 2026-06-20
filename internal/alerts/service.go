@@ -5,12 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"originpulse/internal/db"
+	"originpulse/internal/rollups"
 )
+
+var ErrNotFound = errors.New("alert not found")
 
 type Options struct {
 	Range string
@@ -41,6 +46,25 @@ type Alert struct {
 	FirstSeenAt time.Time      `json:"first_seen_at"`
 	LastSeenAt  time.Time      `json:"last_seen_at"`
 	CreatedAt   time.Time      `json:"created_at"`
+}
+
+type Detail struct {
+	Alert    Alert     `json:"alert"`
+	Requests []Request `json:"requests"`
+}
+
+type Request struct {
+	Timestamp time.Time `json:"ts"`
+	SiteID    string    `json:"site_id"`
+	Env       string    `json:"env"`
+	Method    string    `json:"method,omitempty"`
+	Path      string    `json:"path"`
+	Query     string    `json:"query,omitempty"`
+	Status    int       `json:"status"`
+	BytesSent int64     `json:"bytes_sent,omitempty"`
+	ClientIP  string    `json:"client_ip,omitempty"`
+	UserAgent string    `json:"user_agent,omitempty"`
+	Referer   string    `json:"referer,omitempty"`
 }
 
 type Service struct {
@@ -104,6 +128,54 @@ LIMIT $1`, limit)
 	return alerts, rows.Err()
 }
 
+func (s *Service) Get(ctx context.Context, id string, limit int) (Detail, error) {
+	if !s.Enabled() {
+		return Detail{}, ErrNotFound
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Detail{}, ErrNotFound
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	pool, err := s.db.Pool()
+	if err != nil {
+		return Detail{}, err
+	}
+
+	row := pool.QueryRow(ctx, `
+SELECT id::text,
+       rule_key,
+       title,
+       severity,
+       status,
+       coalesce(site_id, ''),
+       coalesce(env, ''),
+       coalesce(actor_type, ''),
+       coalesce(actor_value, ''),
+       coalesce(score, 0),
+       coalesce(summary, ''),
+       details::text,
+       first_seen_at,
+       last_seen_at,
+       created_at
+FROM alerts
+WHERE id = $1::uuid`, id)
+	alert, err := scanAlert(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Detail{}, ErrNotFound
+	}
+	if err != nil {
+		return Detail{}, err
+	}
+	requests, err := loadAlertRequests(ctx, pool, alert, limit)
+	if err != nil {
+		return Detail{}, err
+	}
+	return Detail{Alert: alert, Requests: requests}, nil
+}
+
 func (s *Service) Evaluate(ctx context.Context, opts Options) (Result, error) {
 	duration, label := parseRange(opts.Range)
 	limit := normalizeLimit(opts.Limit)
@@ -121,41 +193,18 @@ func (s *Service) Evaluate(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return result, err
 	}
+	until := now
 
-	ipRows, err := pool.Query(ctx, `
-SELECT site_id,
-       env,
-       host(client_ip),
-       count(*)::bigint AS requests,
-       count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint AS status_4xx,
-       count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint AS status_5xx,
-       min(ts),
-       max(ts)
-FROM access_events
-WHERE ts >= $1 AND client_ip IS NOT NULL
-GROUP BY site_id, env, client_ip
-HAVING count(*) >= 50
-ORDER BY count(*) DESC
-LIMIT $2`, result.Since, limit)
+	rollupsReady, err := rollups.DimensionRollupsReady(ctx, pool, result.Since, until, "")
 	if err != nil {
 		return result, err
 	}
-	defer ipRows.Close()
-	for ipRows.Next() {
-		var candidate actorCandidate
-		if err := ipRows.Scan(
-			&candidate.SiteID,
-			&candidate.Env,
-			&candidate.ActorValue,
-			&candidate.Requests,
-			&candidate.Status4xx,
-			&candidate.Status5xx,
-			&candidate.FirstSeen,
-			&candidate.LastSeen,
-		); err != nil {
-			return result, err
-		}
-		candidate.ActorType = "ip"
+
+	ipCandidates, err := loadIPCandidates(ctx, pool, result.Since, until, limit, rollupsReady)
+	if err != nil {
+		return result, err
+	}
+	for _, candidate := range ipCandidates {
 		result.Evaluated++
 		if candidate.Status5xx >= 10 && ratio(candidate.Status5xx, candidate.Requests) >= 0.10 {
 			if err := s.upsertCandidate(ctx, candidate, "ip_5xx_burst"); err != nil {
@@ -171,42 +220,12 @@ LIMIT $2`, result.Since, limit)
 			result.Upserted++
 		}
 	}
-	if err := ipRows.Err(); err != nil {
-		return result, err
-	}
 
-	pathRows, err := pool.Query(ctx, `
-SELECT site_id,
-       env,
-       coalesce(path, ''),
-       count(*)::bigint AS requests,
-       count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint AS status_5xx,
-       min(ts),
-       max(ts)
-FROM access_events
-WHERE ts >= $1
-GROUP BY site_id, env, path
-HAVING count(*) >= 30
-ORDER BY count(*) DESC
-LIMIT $2`, result.Since, limit)
+	pathCandidates, err := loadPathCandidates(ctx, pool, result.Since, until, limit, rollupsReady)
 	if err != nil {
 		return result, err
 	}
-	defer pathRows.Close()
-	for pathRows.Next() {
-		var candidate actorCandidate
-		if err := pathRows.Scan(
-			&candidate.SiteID,
-			&candidate.Env,
-			&candidate.ActorValue,
-			&candidate.Requests,
-			&candidate.Status5xx,
-			&candidate.FirstSeen,
-			&candidate.LastSeen,
-		); err != nil {
-			return result, err
-		}
-		candidate.ActorType = "path"
+	for _, candidate := range pathCandidates {
 		result.Evaluated++
 		if candidate.Status5xx >= 5 && ratio(candidate.Status5xx, candidate.Requests) >= 0.20 {
 			if err := s.upsertCandidate(ctx, candidate, "path_5xx_hotspot"); err != nil {
@@ -215,12 +234,273 @@ LIMIT $2`, result.Since, limit)
 			result.Upserted++
 		}
 	}
-	if err := pathRows.Err(); err != nil {
-		return result, err
-	}
 
 	result.OpenAlerts, err = s.Open(ctx, 25)
 	return result, err
+}
+
+func loadIPCandidates(ctx context.Context, pool *pgxpool.Pool, since time.Time, until time.Time, limit int, rollupsReady bool) ([]actorCandidate, error) {
+	if rollupsReady {
+		return loadIPCandidatesFromRollups(ctx, pool, since, until, limit)
+	}
+	return loadIPCandidatesFromRaw(ctx, pool, since, until, limit)
+}
+
+func loadIPCandidatesFromRaw(ctx context.Context, pool *pgxpool.Pool, since time.Time, until time.Time, limit int) ([]actorCandidate, error) {
+	rows, err := pool.Query(ctx, `
+SELECT site_id,
+       env,
+       host(client_ip),
+       count(*)::bigint AS requests,
+       count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint AS status_4xx,
+       count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint AS status_5xx,
+       min(ts),
+       max(ts)
+FROM access_events
+WHERE ts >= $1 AND ts < $3 AND client_ip IS NOT NULL
+GROUP BY site_id, env, client_ip
+HAVING count(*) >= 50
+ORDER BY count(*) DESC
+LIMIT $2`, since, limit, until)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	candidates := make([]actorCandidate, 0, limit)
+	for rows.Next() {
+		var candidate actorCandidate
+		if err := rows.Scan(
+			&candidate.SiteID,
+			&candidate.Env,
+			&candidate.ActorValue,
+			&candidate.Requests,
+			&candidate.Status4xx,
+			&candidate.Status5xx,
+			&candidate.FirstSeen,
+			&candidate.LastSeen,
+		); err != nil {
+			return nil, err
+		}
+		candidate.ActorType = "ip"
+		candidates = append(candidates, candidate)
+	}
+	return candidates, rows.Err()
+}
+
+func loadIPCandidatesFromRollups(ctx context.Context, pool *pgxpool.Pool, since time.Time, until time.Time, limit int) ([]actorCandidate, error) {
+	fullStart, fullEnd, _ := rollups.FullHourRange(since, until)
+	rows, err := pool.Query(ctx, `
+WITH rollup_rows AS (
+  SELECT r.site_id,
+         r.env,
+         d.ip,
+         sum(r.requests)::bigint AS requests,
+         sum(r.status_4xx)::bigint AS status_4xx,
+         sum(r.status_5xx)::bigint AS status_5xx,
+         min(r.first_seen_at) AS first_seen_at,
+         max(r.last_seen_at) AS last_seen_at
+  FROM rollup_ip_1h r
+  JOIN dim_ips d ON d.id = r.ip_id
+  WHERE r.bucket_ts >= $3 AND r.bucket_ts < $4
+  GROUP BY r.site_id, r.env, d.ip
+),
+edge_rows AS (
+  SELECT site_id,
+         env,
+         client_ip AS ip,
+         count(*)::bigint AS requests,
+         count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint AS status_4xx,
+         count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint AS status_5xx,
+         min(ts) AS first_seen_at,
+         max(ts) AS last_seen_at
+  FROM access_events
+  WHERE ts >= $1 AND ts < $2
+    AND client_ip IS NOT NULL
+    AND (ts < $3 OR ts >= $4)
+  GROUP BY site_id, env, client_ip
+),
+combined AS (
+  SELECT * FROM rollup_rows
+  UNION ALL
+  SELECT * FROM edge_rows
+),
+grouped AS (
+  SELECT site_id,
+         env,
+         ip,
+         sum(requests)::bigint AS requests,
+         sum(status_4xx)::bigint AS status_4xx,
+         sum(status_5xx)::bigint AS status_5xx,
+         min(first_seen_at) AS first_seen_at,
+         max(last_seen_at) AS last_seen_at
+  FROM combined
+  GROUP BY site_id, env, ip
+)
+SELECT site_id,
+       env,
+       host(ip),
+       requests,
+       status_4xx,
+       status_5xx,
+       first_seen_at,
+       last_seen_at
+FROM grouped
+WHERE requests >= 50
+ORDER BY requests DESC
+LIMIT $5`, since, until, fullStart, fullEnd, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	candidates := make([]actorCandidate, 0, limit)
+	for rows.Next() {
+		var candidate actorCandidate
+		if err := rows.Scan(
+			&candidate.SiteID,
+			&candidate.Env,
+			&candidate.ActorValue,
+			&candidate.Requests,
+			&candidate.Status4xx,
+			&candidate.Status5xx,
+			&candidate.FirstSeen,
+			&candidate.LastSeen,
+		); err != nil {
+			return nil, err
+		}
+		candidate.ActorType = "ip"
+		candidates = append(candidates, candidate)
+	}
+	return candidates, rows.Err()
+}
+
+func loadPathCandidates(ctx context.Context, pool *pgxpool.Pool, since time.Time, until time.Time, limit int, rollupsReady bool) ([]actorCandidate, error) {
+	if rollupsReady {
+		return loadPathCandidatesFromRollups(ctx, pool, since, until, limit)
+	}
+	return loadPathCandidatesFromRaw(ctx, pool, since, until, limit)
+}
+
+func loadPathCandidatesFromRaw(ctx context.Context, pool *pgxpool.Pool, since time.Time, until time.Time, limit int) ([]actorCandidate, error) {
+	rows, err := pool.Query(ctx, `
+SELECT site_id,
+       env,
+       coalesce(path, ''),
+       count(*)::bigint AS requests,
+       count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint AS status_5xx,
+       min(ts),
+       max(ts)
+FROM access_events
+WHERE ts >= $1 AND ts < $3
+GROUP BY site_id, env, path
+HAVING count(*) >= 30
+ORDER BY count(*) DESC
+LIMIT $2`, since, limit, until)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	candidates := make([]actorCandidate, 0, limit)
+	for rows.Next() {
+		var candidate actorCandidate
+		if err := rows.Scan(
+			&candidate.SiteID,
+			&candidate.Env,
+			&candidate.ActorValue,
+			&candidate.Requests,
+			&candidate.Status5xx,
+			&candidate.FirstSeen,
+			&candidate.LastSeen,
+		); err != nil {
+			return nil, err
+		}
+		candidate.ActorType = "path"
+		candidates = append(candidates, candidate)
+	}
+	return candidates, rows.Err()
+}
+
+func loadPathCandidatesFromRollups(ctx context.Context, pool *pgxpool.Pool, since time.Time, until time.Time, limit int) ([]actorCandidate, error) {
+	fullStart, fullEnd, _ := rollups.FullHourRange(since, until)
+	rows, err := pool.Query(ctx, `
+WITH rollup_rows AS (
+  SELECT r.site_id,
+         r.env,
+         d.path,
+         sum(r.requests)::bigint AS requests,
+         sum(r.status_5xx)::bigint AS status_5xx,
+         min(r.first_seen_at) AS first_seen_at,
+         max(r.last_seen_at) AS last_seen_at
+  FROM rollup_path_1h r
+  JOIN dim_paths d ON d.id = r.path_id
+  WHERE r.bucket_ts >= $3 AND r.bucket_ts < $4
+  GROUP BY r.site_id, r.env, d.path
+),
+edge_rows AS (
+  SELECT site_id,
+         env,
+         coalesce(path, '') AS path,
+         count(*)::bigint AS requests,
+         count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint AS status_5xx,
+         min(ts) AS first_seen_at,
+         max(ts) AS last_seen_at
+  FROM access_events
+  WHERE ts >= $1 AND ts < $2
+    AND (ts < $3 OR ts >= $4)
+  GROUP BY site_id, env, coalesce(path, '')
+),
+combined AS (
+  SELECT * FROM rollup_rows
+  UNION ALL
+  SELECT * FROM edge_rows
+),
+grouped AS (
+  SELECT site_id,
+         env,
+         path,
+         sum(requests)::bigint AS requests,
+         sum(status_5xx)::bigint AS status_5xx,
+         min(first_seen_at) AS first_seen_at,
+         max(last_seen_at) AS last_seen_at
+  FROM combined
+  GROUP BY site_id, env, path
+)
+SELECT site_id,
+       env,
+       path,
+       requests,
+       status_5xx,
+       first_seen_at,
+       last_seen_at
+FROM grouped
+WHERE requests >= 30
+ORDER BY requests DESC
+LIMIT $5`, since, until, fullStart, fullEnd, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	candidates := make([]actorCandidate, 0, limit)
+	for rows.Next() {
+		var candidate actorCandidate
+		if err := rows.Scan(
+			&candidate.SiteID,
+			&candidate.Env,
+			&candidate.ActorValue,
+			&candidate.Requests,
+			&candidate.Status5xx,
+			&candidate.FirstSeen,
+			&candidate.LastSeen,
+		); err != nil {
+			return nil, err
+		}
+		candidate.ActorType = "path"
+		candidates = append(candidates, candidate)
+	}
+	return candidates, rows.Err()
 }
 
 type actorCandidate struct {
@@ -353,6 +633,113 @@ func scanAlert(row alertScanner) (Alert, error) {
 		_ = json.Unmarshal([]byte(detailsRaw), &item.Details)
 	}
 	return item, nil
+}
+
+func loadAlertRequests(ctx context.Context, pool *pgxpool.Pool, alert Alert, limit int) ([]Request, error) {
+	statusMin, statusMax := alertStatusRange(alert.RuleKey)
+	if alert.ActorType == "ip" && alert.ActorValue != "" {
+		return loadAlertRequestsForIP(ctx, pool, alert, statusMin, statusMax, limit)
+	}
+	if alert.ActorType == "path" && alert.ActorValue != "" {
+		return loadAlertRequestsForPath(ctx, pool, alert, statusMin, statusMax, limit)
+	}
+	return []Request{}, nil
+}
+
+func loadAlertRequestsForIP(ctx context.Context, pool *pgxpool.Pool, alert Alert, statusMin int, statusMax int, limit int) ([]Request, error) {
+	rows, err := pool.Query(ctx, `
+SELECT f.ts,
+       f.site_id,
+       f.env,
+       coalesce(f.method, ''),
+       coalesce(p.path, ''),
+       coalesce(q.query, ''),
+       f.status,
+       coalesce(f.bytes_sent, 0)::bigint,
+       coalesce(host(f.client_ip), ''),
+       left(coalesce(ua.user_agent, ''), 300),
+       coalesce(f.referer, '')
+FROM error_events f
+LEFT JOIN dim_paths p ON p.id = f.path_id
+LEFT JOIN dim_queries q ON q.id = f.query_id
+LEFT JOIN dim_user_agents ua ON ua.id = f.user_agent_id
+WHERE f.client_ip = $1::inet
+  AND f.ts >= $2 AND f.ts <= $3
+  AND ($4 = '' OR f.site_id = $4)
+  AND ($5 = '' OR f.env = $5)
+  AND f.status >= $6 AND f.status < $7
+ORDER BY f.ts DESC
+LIMIT $8`, alert.ActorValue, alert.FirstSeenAt, alert.LastSeenAt, alert.SiteID, alert.Env, statusMin, statusMax, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAlertRequests(rows)
+}
+
+func loadAlertRequestsForPath(ctx context.Context, pool *pgxpool.Pool, alert Alert, statusMin int, statusMax int, limit int) ([]Request, error) {
+	rows, err := pool.Query(ctx, `
+SELECT f.ts,
+       f.site_id,
+       f.env,
+       coalesce(f.method, ''),
+       coalesce(p.path, ''),
+       coalesce(q.query, ''),
+       f.status,
+       coalesce(f.bytes_sent, 0)::bigint,
+       coalesce(host(f.client_ip), ''),
+       left(coalesce(ua.user_agent, ''), 300),
+       coalesce(f.referer, '')
+FROM error_events f
+JOIN dim_paths p ON p.id = f.path_id
+LEFT JOIN dim_queries q ON q.id = f.query_id
+LEFT JOIN dim_user_agents ua ON ua.id = f.user_agent_id
+WHERE p.path = $1
+  AND f.ts >= $2 AND f.ts <= $3
+  AND ($4 = '' OR f.site_id = $4)
+  AND ($5 = '' OR f.env = $5)
+  AND f.status >= $6 AND f.status < $7
+ORDER BY f.ts DESC
+LIMIT $8`, alert.ActorValue, alert.FirstSeenAt, alert.LastSeenAt, alert.SiteID, alert.Env, statusMin, statusMax, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAlertRequests(rows)
+}
+
+func scanAlertRequests(rows pgx.Rows) ([]Request, error) {
+	requests := []Request{}
+	for rows.Next() {
+		var item Request
+		if err := rows.Scan(
+			&item.Timestamp,
+			&item.SiteID,
+			&item.Env,
+			&item.Method,
+			&item.Path,
+			&item.Query,
+			&item.Status,
+			&item.BytesSent,
+			&item.ClientIP,
+			&item.UserAgent,
+			&item.Referer,
+		); err != nil {
+			return nil, err
+		}
+		requests = append(requests, item)
+	}
+	return requests, rows.Err()
+}
+
+func alertStatusRange(ruleKey string) (int, int) {
+	if strings.Contains(ruleKey, "5xx") {
+		return 500, 600
+	}
+	if strings.Contains(ruleKey, "4xx") {
+		return 400, 500
+	}
+	return 400, 600
 }
 
 func describe(candidate actorCandidate, ruleKey string) (string, string, int) {

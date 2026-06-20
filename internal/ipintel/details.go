@@ -16,6 +16,9 @@ import (
 	"originpulse/internal/servicefingerprints"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"originpulse/internal/rollups"
 )
 
 var (
@@ -55,6 +58,7 @@ type Detail struct {
 	TopUserAgents    []DetailUserAgent `json:"top_user_agents"`
 	StoredIntel      StoredIntel       `json:"stored_intel"`
 	DNS              DNSDetails        `json:"dns"`
+	GeoIP            GeoIPDetails      `json:"geoip,omitempty"`
 	ASN              ASNDetails        `json:"asn"`
 	RDAP             RDAPDetails       `json:"rdap"`
 	LookupErrors     []string          `json:"lookup_errors,omitempty"`
@@ -152,6 +156,17 @@ type StoredIntel struct {
 	ManualAction     string    `json:"manual_action,omitempty"`
 	RiskScore        int       `json:"risk_score,omitempty"`
 	RefreshedAt      time.Time `json:"refreshed_at,omitempty"`
+}
+
+type GeoIPDetails struct {
+	Loaded      bool    `json:"loaded"`
+	CountryCode string  `json:"country_code,omitempty"`
+	CountryName string  `json:"country_name,omitempty"`
+	CityName    string  `json:"city_name,omitempty"`
+	TimeZone    string  `json:"time_zone,omitempty"`
+	Latitude    float64 `json:"latitude,omitempty"`
+	Longitude   float64 `json:"longitude,omitempty"`
+	Error       string  `json:"error,omitempty"`
 }
 
 func (s *Service) ApplyManualIntel(ctx context.Context, opts ManualIntelOptions) error {
@@ -328,10 +343,15 @@ func (s *Service) Details(ctx context.Context, opts DetailOptions) (Detail, erro
 		URLHits:          []DetailURLHit{},
 		RecentRequests:   []DetailRequest{},
 		TopUserAgents:    []DetailUserAgent{},
-		ExternalProvider: "Team Cymru DNS + RDAP bootstrap",
+		ExternalProvider: "GeoLite2 City + Team Cymru DNS + RDAP bootstrap",
 	}
 	if err != nil {
 		return out, err
+	}
+
+	out.GeoIP = s.geoIPDetails(out.IP)
+	if out.GeoIP.Error != "" && out.GeoIP.Loaded {
+		out.LookupErrors = append(out.LookupErrors, out.GeoIP.Error)
 	}
 
 	out.DNS = lookupDNSDetails(ctx, out.IP)
@@ -433,87 +453,34 @@ func (s *Service) loadDetailTraffic(ctx context.Context, out *Detail, limit int)
 		return err
 	}
 
-	if err := pool.QueryRow(ctx, `
-SELECT count(*)::bigint,
-       count(DISTINCT path_hash)::bigint,
-       count(DISTINCT user_agent_hash)::bigint,
-       count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint,
-       count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint,
-       coalesce(sum(bytes_sent), 0)::bigint,
-       coalesce(avg(request_time_ms) FILTER (WHERE request_time_ms IS NOT NULL), 0)::float8,
-       coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY request_time_ms) FILTER (WHERE request_time_ms IS NOT NULL), 0)::float8,
-       coalesce(min(ts), '0001-01-01T00:00:00Z'::timestamptz),
-       coalesce(max(ts), '0001-01-01T00:00:00Z'::timestamptz)
-FROM access_events
-WHERE client_ip = $1::inet AND ts >= $2 AND ts < $3 AND ($4 = '' OR site_id = $4)`,
-		out.IP, out.Since, out.Until, out.SiteID,
-	).Scan(
-		&out.Traffic.Requests,
-		&out.Traffic.UniquePaths,
-		&out.Traffic.UniqueUserAgents,
-		&out.Traffic.Status4xx,
-		&out.Traffic.Status5xx,
-		&out.Traffic.BytesSent,
-		&out.Traffic.AvgRequestTimeMS,
-		&out.Traffic.P95RequestTimeMS,
-		&out.Traffic.FirstSeen,
-		&out.Traffic.LastSeen,
-	); err != nil {
-		return err
-	}
-
-	siteRows, err := pool.Query(ctx, `
-SELECT site_id,
-       env,
-       count(*)::bigint,
-       count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint,
-       count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint,
-       min(ts),
-       max(ts)
-FROM access_events
-WHERE client_ip = $1::inet AND ts >= $2 AND ts < $3 AND ($4 = '' OR site_id = $4)
-GROUP BY site_id, env
-ORDER BY count(*) DESC
-LIMIT $5`, out.IP, out.Since, out.Until, out.SiteID, limit)
+	rollupsReady, err := rollups.DimensionRollupsReady(ctx, pool, out.Since, out.Until, out.SiteID)
 	if err != nil {
 		return err
 	}
-	defer siteRows.Close()
-	for siteRows.Next() {
-		var item DetailSite
-		if err := siteRows.Scan(&item.SiteID, &item.Env, &item.Requests, &item.Status4xx, &item.Status5xx, &item.FirstSeen, &item.LastSeen); err != nil {
+	if rollupsReady {
+		if err := loadDetailTrafficSummaryFromRollups(ctx, pool, out); err != nil {
 			return err
 		}
-		out.Sites = append(out.Sites, item)
-	}
-	if err := siteRows.Err(); err != nil {
-		return err
+		if err := loadDetailSitesFromRollups(ctx, pool, out, limit); err != nil {
+			return err
+		}
+	} else {
+		if err := loadDetailTrafficSummaryFromRaw(ctx, pool, out); err != nil {
+			return err
+		}
+		if err := loadDetailSitesFromRaw(ctx, pool, out, limit); err != nil {
+			return err
+		}
 	}
 
-	pathRows, err := pool.Query(ctx, `
-SELECT coalesce(path, ''),
-       count(*)::bigint,
-       count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint,
-       count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint,
-       coalesce(sum(bytes_sent), 0)::bigint
-FROM access_events
-WHERE client_ip = $1::inet AND ts >= $2 AND ts < $3 AND ($4 = '' OR site_id = $4)
-GROUP BY path
-ORDER BY count(*) DESC
-LIMIT $5`, out.IP, out.Since, out.Until, out.SiteID, limit)
-	if err != nil {
-		return err
-	}
-	defer pathRows.Close()
-	for pathRows.Next() {
-		var item DetailPath
-		if err := pathRows.Scan(&item.Path, &item.Requests, &item.Status4xx, &item.Status5xx, &item.BytesSent); err != nil {
+	if rollupsReady {
+		if err := loadDetailTopPathsFromRollups(ctx, pool, out, limit); err != nil {
 			return err
 		}
-		out.TopPaths = append(out.TopPaths, item)
-	}
-	if err := pathRows.Err(); err != nil {
-		return err
+	} else {
+		if err := loadDetailTopPathsFromRaw(ctx, pool, out, limit); err != nil {
+			return err
+		}
 	}
 
 	urlRows, err := pool.Query(ctx, `
@@ -623,7 +590,299 @@ LIMIT $5`, out.IP, out.Since, out.Until, out.SiteID, limit)
 		return err
 	}
 
-	agentRows, err := pool.Query(ctx, `
+	if rollupsReady {
+		return loadDetailTopUserAgentsFromRollups(ctx, pool, out, limit)
+	}
+	return loadDetailTopUserAgentsFromRaw(ctx, pool, out, limit)
+}
+
+func loadDetailTrafficSummaryFromRaw(ctx context.Context, pool *pgxpool.Pool, out *Detail) error {
+	if err := pool.QueryRow(ctx, `
+SELECT count(*)::bigint,
+       count(DISTINCT path_hash)::bigint,
+       count(DISTINCT user_agent_hash)::bigint,
+       count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint,
+       count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint,
+       coalesce(sum(bytes_sent), 0)::bigint,
+       coalesce(avg(request_time_ms) FILTER (WHERE request_time_ms IS NOT NULL), 0)::float8,
+       coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY request_time_ms) FILTER (WHERE request_time_ms IS NOT NULL), 0)::float8,
+       coalesce(min(ts), '0001-01-01T00:00:00Z'::timestamptz),
+       coalesce(max(ts), '0001-01-01T00:00:00Z'::timestamptz)
+FROM access_events
+WHERE client_ip = $1::inet AND ts >= $2 AND ts < $3 AND ($4 = '' OR site_id = $4)`,
+		out.IP, out.Since, out.Until, out.SiteID,
+	).Scan(
+		&out.Traffic.Requests,
+		&out.Traffic.UniquePaths,
+		&out.Traffic.UniqueUserAgents,
+		&out.Traffic.Status4xx,
+		&out.Traffic.Status5xx,
+		&out.Traffic.BytesSent,
+		&out.Traffic.AvgRequestTimeMS,
+		&out.Traffic.P95RequestTimeMS,
+		&out.Traffic.FirstSeen,
+		&out.Traffic.LastSeen,
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+func loadDetailSitesFromRaw(ctx context.Context, pool *pgxpool.Pool, out *Detail, limit int) error {
+	siteRows, err := pool.Query(ctx, `
+SELECT site_id,
+       env,
+       count(*)::bigint,
+       count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint,
+       count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint,
+       min(ts),
+       max(ts)
+FROM access_events
+WHERE client_ip = $1::inet AND ts >= $2 AND ts < $3 AND ($4 = '' OR site_id = $4)
+GROUP BY site_id, env
+ORDER BY count(*) DESC
+LIMIT $5`, out.IP, out.Since, out.Until, out.SiteID, limit)
+	if err != nil {
+		return err
+	}
+	defer siteRows.Close()
+	for siteRows.Next() {
+		var item DetailSite
+		if err := siteRows.Scan(&item.SiteID, &item.Env, &item.Requests, &item.Status4xx, &item.Status5xx, &item.FirstSeen, &item.LastSeen); err != nil {
+			return err
+		}
+		out.Sites = append(out.Sites, item)
+	}
+	if err := siteRows.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func loadDetailTrafficSummaryFromRollups(ctx context.Context, pool *pgxpool.Pool, out *Detail) error {
+	fullStart, fullEnd, _ := rollups.FullHourRange(out.Since, out.Until)
+	err := pool.QueryRow(ctx, `
+WITH rollup_rows AS (
+  SELECT r.requests,
+         r.status_4xx,
+         r.status_5xx,
+         r.bytes_sent,
+         r.first_seen_at,
+         r.last_seen_at
+  FROM rollup_ip_1h r
+  JOIN dim_ips d ON d.id = r.ip_id
+  WHERE d.ip = $1::inet
+    AND r.bucket_ts >= $5 AND r.bucket_ts < $6
+    AND ($4 = '' OR r.site_id = $4)
+),
+edge_rows AS (
+  SELECT count(*)::bigint AS requests,
+         count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint AS status_4xx,
+         count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint AS status_5xx,
+         coalesce(sum(bytes_sent), 0)::bigint AS bytes_sent,
+         min(ts) AS first_seen_at,
+         max(ts) AS last_seen_at
+  FROM access_events
+  WHERE client_ip = $1::inet
+    AND ts >= $2 AND ts < $3
+    AND ($4 = '' OR site_id = $4)
+    AND (ts < $5 OR ts >= $6)
+),
+combined AS (
+  SELECT * FROM rollup_rows
+  UNION ALL
+  SELECT * FROM edge_rows
+)
+SELECT coalesce(sum(requests), 0)::bigint,
+       coalesce(sum(status_4xx), 0)::bigint,
+       coalesce(sum(status_5xx), 0)::bigint,
+       coalesce(sum(bytes_sent), 0)::bigint,
+       coalesce(min(first_seen_at), '0001-01-01T00:00:00Z'::timestamptz),
+       coalesce(max(last_seen_at), '0001-01-01T00:00:00Z'::timestamptz)
+FROM combined`, out.IP, out.Since, out.Until, out.SiteID, fullStart, fullEnd).Scan(
+		&out.Traffic.Requests,
+		&out.Traffic.Status4xx,
+		&out.Traffic.Status5xx,
+		&out.Traffic.BytesSent,
+		&out.Traffic.FirstSeen,
+		&out.Traffic.LastSeen,
+	)
+	if err != nil {
+		return err
+	}
+	return pool.QueryRow(ctx, `
+SELECT count(DISTINCT path_id)::bigint,
+       count(DISTINCT user_agent_id)::bigint,
+       coalesce(avg(request_time_ms) FILTER (WHERE request_time_ms IS NOT NULL), 0)::float8,
+       coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY request_time_ms) FILTER (WHERE request_time_ms IS NOT NULL), 0)::float8
+FROM access_events
+WHERE client_ip = $1::inet AND ts >= $2 AND ts < $3 AND ($4 = '' OR site_id = $4)`,
+		out.IP, out.Since, out.Until, out.SiteID,
+	).Scan(
+		&out.Traffic.UniquePaths,
+		&out.Traffic.UniqueUserAgents,
+		&out.Traffic.AvgRequestTimeMS,
+		&out.Traffic.P95RequestTimeMS,
+	)
+}
+
+func loadDetailSitesFromRollups(ctx context.Context, pool *pgxpool.Pool, out *Detail, limit int) error {
+	fullStart, fullEnd, _ := rollups.FullHourRange(out.Since, out.Until)
+	rows, err := pool.Query(ctx, `
+WITH rollup_rows AS (
+  SELECT r.site_id,
+         r.env,
+         sum(r.requests)::bigint AS requests,
+         sum(r.status_4xx)::bigint AS status_4xx,
+         sum(r.status_5xx)::bigint AS status_5xx,
+         min(r.first_seen_at) AS first_seen_at,
+         max(r.last_seen_at) AS last_seen_at
+  FROM rollup_ip_1h r
+  JOIN dim_ips d ON d.id = r.ip_id
+  WHERE d.ip = $1::inet
+    AND r.bucket_ts >= $5 AND r.bucket_ts < $6
+    AND ($4 = '' OR r.site_id = $4)
+  GROUP BY r.site_id, r.env
+),
+edge_rows AS (
+  SELECT site_id,
+         env,
+         count(*)::bigint AS requests,
+         count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint AS status_4xx,
+         count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint AS status_5xx,
+         min(ts) AS first_seen_at,
+         max(ts) AS last_seen_at
+  FROM access_events
+  WHERE client_ip = $1::inet
+    AND ts >= $2 AND ts < $3
+    AND ($4 = '' OR site_id = $4)
+    AND (ts < $5 OR ts >= $6)
+  GROUP BY site_id, env
+),
+combined AS (
+  SELECT * FROM rollup_rows
+  UNION ALL
+  SELECT * FROM edge_rows
+),
+grouped AS (
+  SELECT site_id,
+         env,
+         sum(requests)::bigint AS requests,
+         sum(status_4xx)::bigint AS status_4xx,
+         sum(status_5xx)::bigint AS status_5xx,
+         min(first_seen_at) AS first_seen_at,
+         max(last_seen_at) AS last_seen_at
+  FROM combined
+  GROUP BY site_id, env
+)
+SELECT site_id, env, requests, status_4xx, status_5xx, first_seen_at, last_seen_at
+FROM grouped
+ORDER BY requests DESC
+LIMIT $7`, out.IP, out.Since, out.Until, out.SiteID, fullStart, fullEnd, limit)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item DetailSite
+		if err := rows.Scan(&item.SiteID, &item.Env, &item.Requests, &item.Status4xx, &item.Status5xx, &item.FirstSeen, &item.LastSeen); err != nil {
+			return err
+		}
+		out.Sites = append(out.Sites, item)
+	}
+	return rows.Err()
+}
+
+func loadDetailTopPathsFromRaw(ctx context.Context, pool *pgxpool.Pool, out *Detail, limit int) error {
+	rows, err := pool.Query(ctx, `
+SELECT coalesce(path, ''),
+       count(*)::bigint,
+       count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint,
+       count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint,
+       coalesce(sum(bytes_sent), 0)::bigint
+FROM access_events
+WHERE client_ip = $1::inet AND ts >= $2 AND ts < $3 AND ($4 = '' OR site_id = $4)
+GROUP BY path
+ORDER BY count(*) DESC
+LIMIT $5`, out.IP, out.Since, out.Until, out.SiteID, limit)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item DetailPath
+		if err := rows.Scan(&item.Path, &item.Requests, &item.Status4xx, &item.Status5xx, &item.BytesSent); err != nil {
+			return err
+		}
+		out.TopPaths = append(out.TopPaths, item)
+	}
+	return rows.Err()
+}
+
+func loadDetailTopPathsFromRollups(ctx context.Context, pool *pgxpool.Pool, out *Detail, limit int) error {
+	fullStart, fullEnd, _ := rollups.FullHourRange(out.Since, out.Until)
+	rows, err := pool.Query(ctx, `
+WITH rollup_rows AS (
+  SELECT p.path,
+         sum(r.requests)::bigint AS requests,
+         sum(r.status_4xx)::bigint AS status_4xx,
+         sum(r.status_5xx)::bigint AS status_5xx,
+         sum(r.bytes_sent)::bigint AS bytes_sent
+  FROM rollup_ip_path_1h r
+  JOIN dim_ips d ON d.id = r.ip_id
+  JOIN dim_paths p ON p.id = r.path_id
+  WHERE d.ip = $1::inet
+    AND r.bucket_ts >= $5 AND r.bucket_ts < $6
+    AND ($4 = '' OR r.site_id = $4)
+  GROUP BY p.path
+),
+edge_rows AS (
+  SELECT coalesce(path, '') AS path,
+         count(*)::bigint AS requests,
+         count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint AS status_4xx,
+         count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint AS status_5xx,
+         coalesce(sum(bytes_sent), 0)::bigint AS bytes_sent
+  FROM access_events
+  WHERE client_ip = $1::inet
+    AND ts >= $2 AND ts < $3
+    AND ($4 = '' OR site_id = $4)
+    AND (ts < $5 OR ts >= $6)
+  GROUP BY path
+),
+combined AS (
+  SELECT * FROM rollup_rows
+  UNION ALL
+  SELECT * FROM edge_rows
+),
+grouped AS (
+  SELECT path,
+         sum(requests)::bigint AS requests,
+         sum(status_4xx)::bigint AS status_4xx,
+         sum(status_5xx)::bigint AS status_5xx,
+         sum(bytes_sent)::bigint AS bytes_sent
+  FROM combined
+  GROUP BY path
+)
+SELECT path, requests, status_4xx, status_5xx, bytes_sent
+FROM grouped
+ORDER BY requests DESC
+LIMIT $7`, out.IP, out.Since, out.Until, out.SiteID, fullStart, fullEnd, limit)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item DetailPath
+		if err := rows.Scan(&item.Path, &item.Requests, &item.Status4xx, &item.Status5xx, &item.BytesSent); err != nil {
+			return err
+		}
+		out.TopPaths = append(out.TopPaths, item)
+	}
+	return rows.Err()
+}
+
+func loadDetailTopUserAgentsFromRaw(ctx context.Context, pool *pgxpool.Pool, out *Detail, limit int) error {
+	rows, err := pool.Query(ctx, `
 SELECT left(coalesce(user_agent, ''), 220),
        count(*)::bigint,
        count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint,
@@ -636,15 +895,74 @@ LIMIT $5`, out.IP, out.Since, out.Until, out.SiteID, limit)
 	if err != nil {
 		return err
 	}
-	defer agentRows.Close()
-	for agentRows.Next() {
+	defer rows.Close()
+	for rows.Next() {
 		var item DetailUserAgent
-		if err := agentRows.Scan(&item.Sample, &item.Requests, &item.Status4xx, &item.Status5xx); err != nil {
+		if err := rows.Scan(&item.Sample, &item.Requests, &item.Status4xx, &item.Status5xx); err != nil {
 			return err
 		}
 		out.TopUserAgents = append(out.TopUserAgents, item)
 	}
-	return agentRows.Err()
+	return rows.Err()
+}
+
+func loadDetailTopUserAgentsFromRollups(ctx context.Context, pool *pgxpool.Pool, out *Detail, limit int) error {
+	fullStart, fullEnd, _ := rollups.FullHourRange(out.Since, out.Until)
+	rows, err := pool.Query(ctx, `
+WITH rollup_rows AS (
+  SELECT left(coalesce(ua.user_agent, ''), 220) AS sample,
+         sum(r.requests)::bigint AS requests,
+         sum(r.status_4xx)::bigint AS status_4xx,
+         sum(r.status_5xx)::bigint AS status_5xx
+  FROM rollup_ip_user_agent_1h r
+  JOIN dim_ips d ON d.id = r.ip_id
+  JOIN dim_user_agents ua ON ua.id = r.user_agent_id
+  WHERE d.ip = $1::inet
+    AND r.bucket_ts >= $5 AND r.bucket_ts < $6
+    AND ($4 = '' OR r.site_id = $4)
+  GROUP BY left(coalesce(ua.user_agent, ''), 220)
+),
+edge_rows AS (
+  SELECT left(coalesce(user_agent, ''), 220) AS sample,
+         count(*)::bigint AS requests,
+         count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint AS status_4xx,
+         count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint AS status_5xx
+  FROM access_events
+  WHERE client_ip = $1::inet
+    AND ts >= $2 AND ts < $3
+    AND ($4 = '' OR site_id = $4)
+    AND (ts < $5 OR ts >= $6)
+  GROUP BY user_agent_hash, left(coalesce(user_agent, ''), 220)
+),
+combined AS (
+  SELECT * FROM rollup_rows
+  UNION ALL
+  SELECT * FROM edge_rows
+),
+grouped AS (
+  SELECT sample,
+         sum(requests)::bigint AS requests,
+         sum(status_4xx)::bigint AS status_4xx,
+         sum(status_5xx)::bigint AS status_5xx
+  FROM combined
+  GROUP BY sample
+)
+SELECT sample, requests, status_4xx, status_5xx
+FROM grouped
+ORDER BY requests DESC
+LIMIT $7`, out.IP, out.Since, out.Until, out.SiteID, fullStart, fullEnd, limit)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item DetailUserAgent
+		if err := rows.Scan(&item.Sample, &item.Requests, &item.Status4xx, &item.Status5xx); err != nil {
+			return err
+		}
+		out.TopUserAgents = append(out.TopUserAgents, item)
+	}
+	return rows.Err()
 }
 
 func (s *Service) cacheExternalIntel(ctx context.Context, out Detail) error {
@@ -656,7 +974,7 @@ func (s *Service) cacheExternalIntel(ctx context.Context, out Detail) error {
 	asn := out.ASN.ASN
 	asnOrg := out.ASN.Name
 	network := validCIDR(out.ASN.Prefix)
-	country := out.ASN.CountryCode
+	country := firstString([]string{out.GeoIP.CountryCode, out.ASN.CountryCode})
 	if network == "" {
 		network = firstValidCIDR(out.RDAP.CIDRs)
 	}
@@ -696,6 +1014,16 @@ func (s *Service) cacheExternalIntel(ctx context.Context, out Detail) error {
 			"reverse_names":     out.DNS.ReverseNames,
 			"forward_addresses": out.DNS.ForwardAddresses,
 			"forward_confirmed": out.DNS.ForwardConfirmed,
+		},
+		"geoip": map[string]any{
+			"loaded":       out.GeoIP.Loaded,
+			"country_code": out.GeoIP.CountryCode,
+			"country_name": out.GeoIP.CountryName,
+			"city_name":    out.GeoIP.CityName,
+			"time_zone":    out.GeoIP.TimeZone,
+			"latitude":     out.GeoIP.Latitude,
+			"longitude":    out.GeoIP.Longitude,
+			"lookup_error": out.GeoIP.Error,
 		},
 	}
 	if matchedFingerprint {
@@ -776,6 +1104,25 @@ func externalServiceFingerprint(out Detail) (servicefingerprints.Match, bool, bo
 		return match, true, true
 	}
 	return servicefingerprints.Match{}, false, false
+}
+
+func (s *Service) geoIPDetails(ip string) GeoIPDetails {
+	if s == nil || s.geoIP == nil || !s.geoIP.Loaded() {
+		return GeoIPDetails{Loaded: false}
+	}
+	result, err := s.geoIP.Lookup(ip)
+	if err != nil {
+		return GeoIPDetails{Loaded: true, Error: err.Error()}
+	}
+	return GeoIPDetails{
+		Loaded:      true,
+		CountryCode: result.CountryCode,
+		CountryName: result.CountryName,
+		CityName:    result.CityName,
+		TimeZone:    result.TimeZone,
+		Latitude:    result.Latitude,
+		Longitude:   result.Longitude,
+	}
 }
 
 func lookupDNSDetails(ctx context.Context, ip string) DNSDetails {

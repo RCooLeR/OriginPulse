@@ -20,9 +20,11 @@ type Config struct {
 	Ollama        OllamaConfig        `yaml:"ollama" json:"ollama"`
 	Collection    CollectionConfig    `yaml:"collection" json:"collection"`
 	Combiner      CombinerConfig      `yaml:"combiner" json:"combiner"`
+	Pipeline      PipelineConfig      `yaml:"pipeline" json:"pipeline"`
 	Retention     RetentionConfig     `yaml:"retention" json:"retention"`
 	Reports       ReportsConfig       `yaml:"reports" json:"reports"`
 	Notifications NotificationsConfig `yaml:"notifications" json:"notifications"`
+	GeoIP         GeoIPConfig         `yaml:"geoip" json:"geoip"`
 	Sites         []SiteConfig        `yaml:"sites" json:"sites"`
 }
 
@@ -88,12 +90,27 @@ type CombinerConfig struct {
 	FinalizeAfter  time.Duration `yaml:"finalize_after" json:"finalize_after"`
 }
 
+type PipelineConfig struct {
+	IndexWorkers int `yaml:"index_workers" json:"index_workers"`
+}
+
 type RetentionConfig struct {
-	Enabled             bool          `yaml:"enabled" json:"enabled"`
-	Interval            time.Duration `yaml:"interval" json:"interval"`
-	MaxAge              time.Duration `yaml:"max_age" json:"max_age"`
-	DeleteRawFiles      bool          `yaml:"delete_raw_files" json:"delete_raw_files"`
-	DeleteCombinedFiles bool          `yaml:"delete_combined_files" json:"delete_combined_files"`
+	Enabled                bool          `yaml:"enabled" json:"enabled"`
+	Interval               time.Duration `yaml:"interval" json:"interval"`
+	MaxAge                 time.Duration `yaml:"max_age" json:"max_age"`
+	ArchiveDir             string        `yaml:"archive_dir" json:"archive_dir"`
+	RawFileMaxAge          time.Duration `yaml:"raw_file_max_age" json:"raw_file_max_age"`
+	HotEventMaxAge         time.Duration `yaml:"hot_event_max_age" json:"hot_event_max_age"`
+	DailyArchiveAfter      time.Duration `yaml:"daily_archive_after" json:"daily_archive_after"`
+	WeeklyArchiveAfter     time.Duration `yaml:"weekly_archive_after" json:"weekly_archive_after"`
+	ArchiveMaxAge          time.Duration `yaml:"archive_max_age" json:"archive_max_age"`
+	ReportMaxAge           time.Duration `yaml:"report_max_age" json:"report_max_age"`
+	TemporaryImportMaxAge  time.Duration `yaml:"temporary_import_max_age" json:"temporary_import_max_age"`
+	DeleteRawFiles         bool          `yaml:"delete_raw_files" json:"delete_raw_files"`
+	DeleteCombinedFiles    bool          `yaml:"delete_combined_files" json:"delete_combined_files"`
+	DeleteHotEvents        bool          `yaml:"delete_hot_events" json:"delete_hot_events"`
+	DeleteRollups          bool          `yaml:"delete_rollups" json:"delete_rollups"`
+	DeleteTemporaryImports bool          `yaml:"delete_temporary_imports" json:"delete_temporary_imports"`
 }
 
 type ReportsConfig struct {
@@ -107,6 +124,22 @@ type NotificationsConfig struct {
 	MinSeverity string                  `yaml:"min_severity" json:"min_severity"`
 	Email       EmailNotificationConfig `yaml:"email" json:"email"`
 	Push        PushNotificationConfig  `yaml:"push" json:"push"`
+}
+
+type GeoIPConfig struct {
+	Enabled          bool          `yaml:"enabled" json:"enabled"`
+	DBPath           string        `yaml:"db_path" json:"db_path"`
+	DBPathEnv        string        `yaml:"db_path_env" json:"db_path_env"`
+	AccountID        string        `yaml:"account_id" json:"-"`
+	AccountIDEnv     string        `yaml:"account_id_env" json:"account_id_env"`
+	LicenseKey       string        `yaml:"license_key" json:"-"`
+	LicenseKeyEnv    string        `yaml:"license_key_env" json:"license_key_env"`
+	DownloadURL      string        `yaml:"download_url" json:"download_url"`
+	DownloadURLEnv   string        `yaml:"download_url_env" json:"download_url_env"`
+	UpdateInterval   time.Duration `yaml:"update_interval" json:"update_interval"`
+	DownloadTimeout  time.Duration `yaml:"download_timeout" json:"download_timeout"`
+	LastModifiedPath string        `yaml:"last_modified_path" json:"last_modified_path"`
+	LastModifiedEnv  string        `yaml:"last_modified_env" json:"last_modified_env"`
 }
 
 type EmailNotificationConfig struct {
@@ -222,12 +255,25 @@ func Default() Config {
 			SettlingWindow: 2 * time.Hour,
 			FinalizeAfter:  3 * time.Hour,
 		},
+		Pipeline: PipelineConfig{
+			IndexWorkers: 1,
+		},
 		Retention: RetentionConfig{
-			Enabled:             true,
-			Interval:            24 * time.Hour,
-			MaxAge:              2 * 365 * 24 * time.Hour,
-			DeleteRawFiles:      true,
-			DeleteCombinedFiles: true,
+			Enabled:                true,
+			Interval:               24 * time.Hour,
+			MaxAge:                 2 * 365 * 24 * time.Hour,
+			RawFileMaxAge:          14 * 24 * time.Hour,
+			HotEventMaxAge:         90 * 24 * time.Hour,
+			DailyArchiveAfter:      14 * 24 * time.Hour,
+			WeeklyArchiveAfter:     90 * 24 * time.Hour,
+			ArchiveMaxAge:          2 * 365 * 24 * time.Hour,
+			ReportMaxAge:           5 * 365 * 24 * time.Hour,
+			TemporaryImportMaxAge:  7 * 24 * time.Hour,
+			DeleteRawFiles:         true,
+			DeleteCombinedFiles:    false,
+			DeleteHotEvents:        true,
+			DeleteRollups:          false,
+			DeleteTemporaryImports: true,
 		},
 		Reports: ReportsConfig{
 			Enabled:  true,
@@ -249,6 +295,19 @@ func Default() Config {
 				VAPIDSubjectEnv:    "ORIGINPULSE_VAPID_SUBJECT",
 				VAPIDSubject:       "mailto:originpulse@localhost",
 			},
+		},
+		GeoIP: GeoIPConfig{
+			Enabled:          true,
+			DBPath:           "./data/GeoLite2-City.mmdb",
+			DBPathEnv:        "GEOIP_DB_PATH",
+			AccountIDEnv:     "MAXMIND_ACCOUNT_ID",
+			LicenseKeyEnv:    "MAXMIND_LICENSE_KEY",
+			DownloadURL:      "https://download.maxmind.com/geoip/databases/GeoLite2-City/download?suffix=tar.gz",
+			DownloadURLEnv:   "MAXMIND_GEOLITE2_CITY_URL",
+			UpdateInterval:   24 * time.Hour,
+			DownloadTimeout:  2 * time.Minute,
+			LastModifiedPath: "./data/GeoLite2-City.lastmod",
+			LastModifiedEnv:  "GEOIP_LAST_MODIFIED_PATH",
 		},
 	}
 	cfg.normalize()
@@ -285,6 +344,9 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Combiner.QuarantineDir) == "" {
 		return errors.New("combiner.quarantine_dir is required")
 	}
+	if c.Pipeline.IndexWorkers <= 0 {
+		return errors.New("pipeline.index_workers must be positive")
+	}
 	if c.Pantheon.SFTPPort == 0 {
 		return errors.New("pantheon.sftp_port must be set")
 	}
@@ -292,8 +354,26 @@ func (c *Config) Validate() error {
 		if c.Retention.Interval <= 0 {
 			return errors.New("retention.interval must be positive")
 		}
-		if c.Retention.MaxAge <= 0 {
-			return errors.New("retention.max_age must be positive")
+		if c.Retention.RawFileMaxAge <= 0 {
+			return errors.New("retention.raw_file_max_age must be positive")
+		}
+		if c.Retention.HotEventMaxAge <= 0 {
+			return errors.New("retention.hot_event_max_age must be positive")
+		}
+		if c.Retention.DailyArchiveAfter <= 0 {
+			return errors.New("retention.daily_archive_after must be positive")
+		}
+		if c.Retention.WeeklyArchiveAfter <= 0 {
+			return errors.New("retention.weekly_archive_after must be positive")
+		}
+		if c.Retention.ArchiveMaxAge <= 0 {
+			return errors.New("retention.archive_max_age must be positive")
+		}
+		if c.Retention.ReportMaxAge <= 0 {
+			return errors.New("retention.report_max_age must be positive")
+		}
+		if c.Retention.TemporaryImportMaxAge <= 0 {
+			return errors.New("retention.temporary_import_max_age must be positive")
 		}
 	}
 	if c.Reports.Enabled && c.Reports.Interval <= 0 {
@@ -322,6 +402,17 @@ func (c *Config) Validate() error {
 	}
 	if push.Enabled && strings.TrimSpace(c.PushVAPIDSubject()) == "" && strings.TrimSpace(c.PushVAPIDPublicKey()) != "" {
 		return errors.New("notifications.push.vapid_subject is required when browser push is configured")
+	}
+	if c.GeoIP.Enabled {
+		if strings.TrimSpace(c.GeoIPDBPath()) == "" {
+			return errors.New("geoip.db_path is required when geoip is enabled")
+		}
+		if c.GeoIP.UpdateInterval < 0 {
+			return errors.New("geoip.update_interval cannot be negative")
+		}
+		if c.GeoIP.DownloadTimeout <= 0 {
+			return errors.New("geoip.download_timeout must be positive")
+		}
 	}
 
 	ids := make(map[string]struct{}, len(c.Sites))
@@ -483,12 +574,61 @@ func (c Config) PushVAPIDSubject() string {
 	return strings.TrimSpace(c.Notifications.Push.VAPIDSubject)
 }
 
+func (c Config) GeoIPDBPath() string {
+	if c.GeoIP.DBPathEnv != "" {
+		if value := strings.TrimSpace(os.Getenv(c.GeoIP.DBPathEnv)); value != "" {
+			return c.absPath(value)
+		}
+	}
+	return c.absPath(c.GeoIP.DBPath)
+}
+
+func (c Config) GeoIPAccountID() string {
+	if c.GeoIP.AccountIDEnv != "" {
+		if value := strings.TrimSpace(os.Getenv(c.GeoIP.AccountIDEnv)); value != "" {
+			return value
+		}
+	}
+	return strings.TrimSpace(c.GeoIP.AccountID)
+}
+
+func (c Config) GeoIPLicenseKey() string {
+	if c.GeoIP.LicenseKeyEnv != "" {
+		if value := strings.TrimSpace(os.Getenv(c.GeoIP.LicenseKeyEnv)); value != "" {
+			return value
+		}
+	}
+	return strings.TrimSpace(c.GeoIP.LicenseKey)
+}
+
+func (c Config) GeoIPDownloadURL() string {
+	if c.GeoIP.DownloadURLEnv != "" {
+		if value := strings.TrimSpace(os.Getenv(c.GeoIP.DownloadURLEnv)); value != "" {
+			return value
+		}
+	}
+	return strings.TrimSpace(c.GeoIP.DownloadURL)
+}
+
+func (c Config) GeoIPLastModifiedPath() string {
+	if c.GeoIP.LastModifiedEnv != "" {
+		if value := strings.TrimSpace(os.Getenv(c.GeoIP.LastModifiedEnv)); value != "" {
+			return c.absPath(value)
+		}
+	}
+	return c.absPath(c.GeoIP.LastModifiedPath)
+}
+
 func (c Config) RawDir() string {
 	return c.absPath(c.Collection.RawDir)
 }
 
 func (c Config) CombinedDir() string {
 	return c.absPath(c.Combiner.CombinedDir)
+}
+
+func (c Config) ArchiveDir() string {
+	return c.absPath(c.Retention.ArchiveDir)
 }
 
 func (c Config) QuarantineDir() string {
@@ -602,11 +742,38 @@ func (c *Config) normalize() {
 	if c.Combiner.FinalizeAfter == 0 {
 		c.Combiner.FinalizeAfter = 3 * time.Hour
 	}
+	if c.Pipeline.IndexWorkers == 0 {
+		c.Pipeline.IndexWorkers = 2
+	}
 	if c.Retention.Interval == 0 {
 		c.Retention.Interval = 24 * time.Hour
 	}
 	if c.Retention.MaxAge == 0 {
 		c.Retention.MaxAge = 2 * 365 * 24 * time.Hour
+	}
+	if c.Retention.ArchiveDir == "" {
+		c.Retention.ArchiveDir = filepath.Join(c.App.DataDir, "archives")
+	}
+	if c.Retention.RawFileMaxAge == 0 {
+		c.Retention.RawFileMaxAge = 14 * 24 * time.Hour
+	}
+	if c.Retention.HotEventMaxAge == 0 {
+		c.Retention.HotEventMaxAge = 90 * 24 * time.Hour
+	}
+	if c.Retention.DailyArchiveAfter == 0 {
+		c.Retention.DailyArchiveAfter = 14 * 24 * time.Hour
+	}
+	if c.Retention.WeeklyArchiveAfter == 0 {
+		c.Retention.WeeklyArchiveAfter = 90 * 24 * time.Hour
+	}
+	if c.Retention.ArchiveMaxAge == 0 {
+		c.Retention.ArchiveMaxAge = 2 * 365 * 24 * time.Hour
+	}
+	if c.Retention.ReportMaxAge == 0 {
+		c.Retention.ReportMaxAge = 5 * 365 * 24 * time.Hour
+	}
+	if c.Retention.TemporaryImportMaxAge == 0 {
+		c.Retention.TemporaryImportMaxAge = 7 * 24 * time.Hour
 	}
 	if c.Reports.Interval == 0 {
 		c.Reports.Interval = 24 * time.Hour
@@ -640,6 +807,36 @@ func (c *Config) normalize() {
 	}
 	if c.Notifications.Push.VAPIDSubject == "" {
 		c.Notifications.Push.VAPIDSubject = "mailto:originpulse@localhost"
+	}
+	if c.GeoIP.DBPath == "" {
+		c.GeoIP.DBPath = filepath.Join(c.App.DataDir, "GeoLite2-City.mmdb")
+	}
+	if c.GeoIP.DBPathEnv == "" {
+		c.GeoIP.DBPathEnv = "GEOIP_DB_PATH"
+	}
+	if c.GeoIP.AccountIDEnv == "" {
+		c.GeoIP.AccountIDEnv = "MAXMIND_ACCOUNT_ID"
+	}
+	if c.GeoIP.LicenseKeyEnv == "" {
+		c.GeoIP.LicenseKeyEnv = "MAXMIND_LICENSE_KEY"
+	}
+	if c.GeoIP.DownloadURL == "" {
+		c.GeoIP.DownloadURL = "https://download.maxmind.com/geoip/databases/GeoLite2-City/download?suffix=tar.gz"
+	}
+	if c.GeoIP.DownloadURLEnv == "" {
+		c.GeoIP.DownloadURLEnv = "MAXMIND_GEOLITE2_CITY_URL"
+	}
+	if c.GeoIP.UpdateInterval == 0 {
+		c.GeoIP.UpdateInterval = 24 * time.Hour
+	}
+	if c.GeoIP.DownloadTimeout == 0 {
+		c.GeoIP.DownloadTimeout = 2 * time.Minute
+	}
+	if c.GeoIP.LastModifiedPath == "" {
+		c.GeoIP.LastModifiedPath = filepath.Join(c.App.DataDir, "GeoLite2-City.lastmod")
+	}
+	if c.GeoIP.LastModifiedEnv == "" {
+		c.GeoIP.LastModifiedEnv = "GEOIP_LAST_MODIFIED_PATH"
 	}
 }
 

@@ -6,21 +6,26 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 
 	"originpulse/internal/accessanalysis"
 	"originpulse/internal/alerts"
 	"originpulse/internal/analytics"
+	"originpulse/internal/backfill"
 	"originpulse/internal/config"
 	"originpulse/internal/db"
 	"originpulse/internal/investigation"
 )
+
+var ErrNotFound = errors.New("report not found")
 
 type Options struct {
 	Range      string `json:"range"`
@@ -42,7 +47,8 @@ type Report struct {
 	Charts           []ReportChart  `json:"charts,omitempty"`
 	Drilldowns       []Drilldown    `json:"drilldowns,omitempty"`
 	Input            map[string]any `json:"input,omitempty"`
-	Output           string         `json:"output"`
+	Output           string         `json:"output,omitempty"`
+	OutputPreview    string         `json:"output_preview,omitempty"`
 	CreatedAt        time.Time      `json:"created_at"`
 }
 
@@ -53,6 +59,7 @@ type Service struct {
 	accessAnalysis *accessanalysis.Service
 	investigation  *investigation.Service
 	alerts         *alerts.Service
+	backfill       *backfill.Service
 	client         *http.Client
 }
 
@@ -63,6 +70,7 @@ func NewService(
 	accessAnalysis *accessanalysis.Service,
 	investigation *investigation.Service,
 	alerts *alerts.Service,
+	backfillService *backfill.Service,
 ) *Service {
 	return &Service{
 		cfg:            cfg,
@@ -71,8 +79,13 @@ func NewService(
 		accessAnalysis: accessAnalysis,
 		investigation:  investigation,
 		alerts:         alerts,
+		backfill:       backfillService,
 		client:         &http.Client{Timeout: 180 * time.Second},
 	}
+}
+
+func (s *Service) Enabled() bool {
+	return s != nil && s.db != nil && s.db.Enabled()
 }
 
 func (s *Service) Daily(ctx context.Context, opts Options) (Report, error) {
@@ -98,7 +111,7 @@ func (s *Service) Generate(ctx context.Context, opts Options) (Report, error) {
 		CreatedAt:        now,
 	}
 
-	input, err := s.reportInput(ctx, label, siteID)
+	input, err := s.reportInput(ctx, label, siteID, now)
 	if err != nil {
 		return report, err
 	}
@@ -180,8 +193,8 @@ SELECT id::text,
        range_end,
        coalesce(site_id, ''),
        model,
-       input::text,
-       output,
+       coalesce(input->'report_summary', '{}'::jsonb)::text,
+       left(output, 1200),
        created_at
 FROM llm_reports
 WHERE ($2 = '' OR site_id = $2 OR site_id IS NULL)
@@ -195,7 +208,7 @@ LIMIT $1`, limit, siteID)
 	reports := make([]Report, 0, limit)
 	for rows.Next() {
 		var item Report
-		var inputRaw string
+		var summaryRaw string
 		if err := rows.Scan(
 			&item.ID,
 			&item.ReportType,
@@ -203,8 +216,8 @@ LIMIT $1`, limit, siteID)
 			&item.RangeEnd,
 			&item.SiteID,
 			&item.Model,
-			&inputRaw,
-			&item.Output,
+			&summaryRaw,
+			&item.OutputPreview,
 			&item.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -212,18 +225,78 @@ LIMIT $1`, limit, siteID)
 		item.Stored = true
 		item.OllamaConfigured = true
 		item.Range = rangeLabel(item.RangeStart, item.RangeEnd)
-		_ = json.Unmarshal([]byte(inputRaw), &item.Input)
-		populateReportViewsFromInput(&item)
+		var summary ReportSummary
+		if err := json.Unmarshal([]byte(summaryRaw), &summary); err == nil {
+			item.Summary = &summary
+		}
 		reports = append(reports, item)
 	}
 	return reports, rows.Err()
 }
 
-func (s *Service) reportInput(ctx context.Context, rangeLabel string, siteID string) (map[string]any, error) {
+func (s *Service) Get(ctx context.Context, id string) (Report, error) {
+	if s.db == nil || !s.db.Enabled() {
+		return Report{}, ErrNotFound
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Report{}, ErrNotFound
+	}
+	pool, err := s.db.Pool()
+	if err != nil {
+		return Report{}, err
+	}
+
+	var item Report
+	var inputRaw string
+	err = pool.QueryRow(ctx, `
+SELECT id::text,
+       report_type,
+       range_start,
+       range_end,
+       coalesce(site_id, ''),
+       model,
+       input::text,
+       output,
+       created_at
+FROM llm_reports
+WHERE id = $1::uuid`, id).Scan(
+		&item.ID,
+		&item.ReportType,
+		&item.RangeStart,
+		&item.RangeEnd,
+		&item.SiteID,
+		&item.Model,
+		&inputRaw,
+		&item.Output,
+		&item.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Report{}, ErrNotFound
+	}
+	if err != nil {
+		return Report{}, err
+	}
+	item.Stored = true
+	item.OllamaConfigured = true
+	item.Range = rangeLabel(item.RangeStart, item.RangeEnd)
+	_ = json.Unmarshal([]byte(inputRaw), &item.Input)
+	populateReportViewsFromInput(&item)
+	return item, nil
+}
+
+func (s *Service) reportInput(ctx context.Context, rangeLabel string, siteID string, now time.Time) (map[string]any, error) {
 	input := map[string]any{
 		"range":        rangeLabel,
 		"site_id":      siteID,
-		"generated_at": time.Now().UTC(),
+		"generated_at": now.UTC(),
+	}
+	if s.Enabled() {
+		audit, err := s.fastReadAuditWithCatchup(ctx, FastReadAuditOptions{Range: rangeLabel, SiteID: siteID, Now: now})
+		if err != nil {
+			return nil, err
+		}
+		input["fast_read_audit"] = audit
 	}
 
 	if s.analytics != nil {
@@ -256,6 +329,35 @@ func (s *Service) reportInput(ctx context.Context, rangeLabel string, siteID str
 	}
 
 	return input, nil
+}
+
+func (s *Service) fastReadAuditWithCatchup(ctx context.Context, opts FastReadAuditOptions) (FastReadAudit, error) {
+	audit, err := s.FastReadAudit(ctx, opts)
+	if err != nil {
+		return audit, err
+	}
+	if !audit.ExpectedRawRangeAggregations || s.backfill == nil || !s.backfill.Enabled() {
+		return audit, nil
+	}
+	lastUnbackfilled := audit.UnbackfilledFullHourEvents
+	for attempt := 0; attempt < 3 && audit.ExpectedRawRangeAggregations; attempt++ {
+		if _, err := s.backfill.Run(ctx, backfill.Options{BatchSize: 10000, MaxBatches: 20, Rollups: true}); err != nil {
+			return audit, err
+		}
+		next, err := s.FastReadAudit(ctx, opts)
+		if err != nil {
+			return audit, err
+		}
+		audit = next
+		if !audit.ExpectedRawRangeAggregations {
+			break
+		}
+		if audit.UnbackfilledFullHourEvents >= lastUnbackfilled {
+			break
+		}
+		lastUnbackfilled = audit.UnbackfilledFullHourEvents
+	}
+	return audit, nil
 }
 
 func (s *Service) callOllama(ctx context.Context, prompt string) (string, error) {

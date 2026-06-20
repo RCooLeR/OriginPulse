@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"originpulse/internal/alerts"
+	"originpulse/internal/archive"
 	"originpulse/internal/config"
 	"originpulse/internal/ipintel"
 	"originpulse/internal/jobs"
@@ -25,13 +26,14 @@ type Scheduler struct {
 	pipeline      *pipeline.Service
 	alerts        *alerts.Service
 	ipIntel       *ipintel.Service
+	archive       *archive.Service
 	retention     *retention.Service
 	notifications *notifications.Service
 	reports       *reports.Service
 }
 
-func New(cfg config.Config, store *jobs.Store, collector *pantheon.Collector, pipelineService *pipeline.Service, alerts *alerts.Service, ipIntel *ipintel.Service, retentionService *retention.Service, notificationService *notifications.Service, reportService *reports.Service) *Scheduler {
-	return &Scheduler{cfg: cfg, jobs: store, collector: collector, pipeline: pipelineService, alerts: alerts, ipIntel: ipIntel, retention: retentionService, notifications: notificationService, reports: reportService}
+func New(cfg config.Config, store *jobs.Store, collector *pantheon.Collector, pipelineService *pipeline.Service, alerts *alerts.Service, ipIntel *ipintel.Service, archiveService *archive.Service, retentionService *retention.Service, notificationService *notifications.Service, reportService *reports.Service) *Scheduler {
+	return &Scheduler{cfg: cfg, jobs: store, collector: collector, pipeline: pipelineService, alerts: alerts, ipIntel: ipIntel, archive: archiveService, retention: retentionService, notifications: notificationService, reports: reportService}
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
@@ -68,11 +70,33 @@ func (s *Scheduler) loop(ctx context.Context) {
 			s.evaluateAlerts(ctx)
 			s.refreshIPIntel(ctx)
 		case <-retentionTicker.C:
+			s.runArchive(ctx)
 			s.runRetention(ctx)
 		case <-reportTicker.C:
 			s.runReports(ctx)
 		}
 	}
+}
+
+func (s *Scheduler) runArchive(ctx context.Context) {
+	if s.archive == nil || !s.archive.Enabled() || !s.cfg.Retention.Enabled {
+		return
+	}
+	job := s.jobs.Start(ctx, "archive_logs", "scheduler", map[string]string{"daily_after": s.cfg.Retention.DailyArchiveAfter.String(), "weekly_after": s.cfg.Retention.WeeklyArchiveAfter.String()})
+	result, err := s.archive.Run(ctx, archive.Options{MaxGroups: 25, RemoveSources: true})
+	if err != nil {
+		s.jobs.Finish(job.ID, jobs.StatusFailed, "archive failed", err)
+		log.Error().Err(err).Msg("scheduled archive failed")
+		return
+	}
+	s.jobs.Finish(job.ID, jobs.StatusSuccess, "archive completed", nil)
+	log.Info().
+		Int("archives_written", result.ArchivesWritten).
+		Int("files_archived", result.FilesArchived).
+		Int("source_files_deleted", result.SourceFilesDeleted).
+		Int64("source_bytes", result.SourceBytes).
+		Int64("compressed_bytes", result.CompressedBytes).
+		Msg("scheduled archive completed")
 }
 
 func (s *Scheduler) runPipeline(ctx context.Context) {
@@ -88,6 +112,10 @@ func (s *Scheduler) runPipeline(ctx context.Context) {
 		Int("combined_segments", result.CombinedSegments).
 		Int("indexed_segments", result.IndexedSegments).
 		Int("events_inserted", result.EventsInserted).
+		Int("rollups_repaired", result.RollupsRepaired).
+		Int("security_probes", result.SecurityProbes).
+		Int("error_events", result.ErrorEvents).
+		Int("slow_request_events", result.SlowRequests).
 		Msg("scheduled pipeline completed")
 }
 

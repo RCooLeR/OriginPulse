@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -16,7 +17,11 @@ import (
 	"originpulse/internal/accessanalysis"
 	"originpulse/internal/alerts"
 	"originpulse/internal/analytics"
+	"originpulse/internal/archive"
+	"originpulse/internal/archivecoverage"
+	"originpulse/internal/archiveimport"
 	"originpulse/internal/auth"
+	"originpulse/internal/backfill"
 	"originpulse/internal/combiner"
 	"originpulse/internal/config"
 	"originpulse/internal/db"
@@ -31,75 +36,91 @@ import (
 	"originpulse/internal/reports"
 	"originpulse/internal/retention"
 	"originpulse/internal/sites"
+	"originpulse/internal/storageaudit"
 )
 
 type Dependencies struct {
-	Config         config.Config
-	DB             *db.Store
-	Auth           *auth.Service
-	Sites          *sites.Repository
-	RawFiles       *pantheon.RawFileRepository
-	Combiner       *combiner.Service
-	Segments       *combiner.Repository
-	Indexer        *indexer.Service
-	Analytics      *analytics.Service
-	AccessAnalysis *accessanalysis.Service
-	Investigation  *investigation.Service
-	IPIntel        *ipintel.Service
-	Alerts         *alerts.Service
-	Reports        *reports.Service
-	Notifications  *notifications.Service
-	Retention      *retention.Service
-	Jobs           *jobs.Store
-	Collector      *pantheon.Collector
-	Pipeline       *pipeline.Service
+	Config          config.Config
+	DB              *db.Store
+	Auth            *auth.Service
+	Sites           *sites.Repository
+	RawFiles        *pantheon.RawFileRepository
+	Combiner        *combiner.Service
+	Segments        *combiner.Repository
+	Indexer         *indexer.Service
+	Analytics       *analytics.Service
+	AccessAnalysis  *accessanalysis.Service
+	Investigation   *investigation.Service
+	IPIntel         *ipintel.Service
+	Alerts          *alerts.Service
+	Reports         *reports.Service
+	Notifications   *notifications.Service
+	Retention       *retention.Service
+	Archive         *archive.Service
+	ArchiveCoverage *archivecoverage.Service
+	ArchiveImport   *archiveimport.Service
+	Backfill        *backfill.Service
+	StorageAudit    *storageaudit.Service
+	Jobs            *jobs.Store
+	Collector       *pantheon.Collector
+	Pipeline        *pipeline.Service
 }
 
 type API struct {
-	cfg            config.Config
-	db             *db.Store
-	auth           *auth.Service
-	sites          *sites.Repository
-	rawFiles       *pantheon.RawFileRepository
-	combiner       *combiner.Service
-	segments       *combiner.Repository
-	indexer        *indexer.Service
-	analytics      *analytics.Service
-	accessAnalysis *accessanalysis.Service
-	investigation  *investigation.Service
-	ipIntel        *ipintel.Service
-	alerts         *alerts.Service
-	reports        *reports.Service
-	notifications  *notifications.Service
-	retention      *retention.Service
-	jobs           *jobs.Store
-	collector      *pantheon.Collector
-	pipeline       *pipeline.Service
-	startedAt      time.Time
+	cfg             config.Config
+	db              *db.Store
+	auth            *auth.Service
+	sites           *sites.Repository
+	rawFiles        *pantheon.RawFileRepository
+	combiner        *combiner.Service
+	segments        *combiner.Repository
+	indexer         *indexer.Service
+	analytics       *analytics.Service
+	accessAnalysis  *accessanalysis.Service
+	investigation   *investigation.Service
+	ipIntel         *ipintel.Service
+	alerts          *alerts.Service
+	reports         *reports.Service
+	notifications   *notifications.Service
+	retention       *retention.Service
+	archive         *archive.Service
+	archiveCoverage *archivecoverage.Service
+	archiveImport   *archiveimport.Service
+	backfill        *backfill.Service
+	storageAudit    *storageaudit.Service
+	jobs            *jobs.Store
+	collector       *pantheon.Collector
+	pipeline        *pipeline.Service
+	startedAt       time.Time
 }
 
 func NewRouter(deps Dependencies) http.Handler {
 	api := API{
-		cfg:            deps.Config,
-		db:             deps.DB,
-		auth:           deps.Auth,
-		sites:          deps.Sites,
-		rawFiles:       deps.RawFiles,
-		combiner:       deps.Combiner,
-		segments:       deps.Segments,
-		indexer:        deps.Indexer,
-		analytics:      deps.Analytics,
-		accessAnalysis: deps.AccessAnalysis,
-		investigation:  deps.Investigation,
-		ipIntel:        deps.IPIntel,
-		alerts:         deps.Alerts,
-		reports:        deps.Reports,
-		notifications:  deps.Notifications,
-		retention:      deps.Retention,
-		jobs:           deps.Jobs,
-		collector:      deps.Collector,
-		pipeline:       deps.Pipeline,
-		startedAt:      time.Now().UTC(),
+		cfg:             deps.Config,
+		db:              deps.DB,
+		auth:            deps.Auth,
+		sites:           deps.Sites,
+		rawFiles:        deps.RawFiles,
+		combiner:        deps.Combiner,
+		segments:        deps.Segments,
+		indexer:         deps.Indexer,
+		analytics:       deps.Analytics,
+		accessAnalysis:  deps.AccessAnalysis,
+		investigation:   deps.Investigation,
+		ipIntel:         deps.IPIntel,
+		alerts:          deps.Alerts,
+		reports:         deps.Reports,
+		notifications:   deps.Notifications,
+		retention:       deps.Retention,
+		archive:         deps.Archive,
+		archiveCoverage: deps.ArchiveCoverage,
+		archiveImport:   deps.ArchiveImport,
+		backfill:        deps.Backfill,
+		storageAudit:    deps.StorageAudit,
+		jobs:            deps.Jobs,
+		collector:       deps.Collector,
+		pipeline:        deps.Pipeline,
+		startedAt:       time.Now().UTC(),
 	}
 
 	r := chi.NewRouter()
@@ -122,8 +143,10 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/investigate/ip/{ip}", api.ipDetails)
 			r.Patch("/investigate/ip/{ip}/manual-intel", api.updateIPManualIntel)
 			r.Get("/alerts", api.openAlerts)
+			r.Get("/alerts/{id}", api.alertDetail)
 			r.Post("/alerts/evaluate", api.evaluateAlerts)
 			r.Get("/reports/recent", api.recentReports)
+			r.Get("/reports/{id}", api.reportDetail)
 			r.Post("/reports/generate", api.generateReport)
 			r.Post("/reports/daily/generate", api.generateDailyReport)
 			r.Get("/notifications", api.notificationStatus)
@@ -137,6 +160,10 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/system/collector-health", api.collectorHealth)
 			r.Get("/system/jobs", api.recentJobs)
 			r.Get("/system/retention", api.retentionDryRun)
+			r.Get("/system/archives", api.recentArchives)
+			r.Get("/system/archive-imports", api.recentArchiveImports)
+			r.Get("/system/archive-coverage", api.archiveCoverageReport)
+			r.Get("/system/storage", api.storageAuditReport)
 			r.Get("/system/collection-plan", api.collectionPlan)
 			r.Get("/system/segments", api.recentSegments)
 			r.Post("/system/collect", api.collectNow)
@@ -144,6 +171,10 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Post("/system/index", api.indexSegment)
 			r.Post("/system/pipeline", api.runPipeline)
 			r.Post("/system/retention", api.runRetention)
+			r.Post("/system/archive-logs", api.runArchive)
+			r.Post("/system/import-archive", api.importArchive)
+			r.Post("/system/import-archives", api.importArchives)
+			r.Post("/system/backfill-dimensions", api.runBackfill)
 			r.Post("/system/refresh-ip-intel", api.refreshIPIntel)
 			r.Get("/users", api.listUsers)
 			r.Post("/users", api.createUser)
@@ -237,11 +268,17 @@ func (api API) accessLogAnalysis(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	report, err := api.accessAnalysis.Analyze(r.Context(), accessanalysis.Options{
-		Range:  r.URL.Query().Get("range"),
-		Limit:  parseLimit(r, 25, 250),
-		SiteID: r.URL.Query().Get("site_id"),
-		From:   from,
-		To:     to,
+		Range:                  r.URL.Query().Get("range"),
+		Limit:                  parseLimit(r, 25, 250),
+		SiteID:                 r.URL.Query().Get("site_id"),
+		From:                   from,
+		To:                     to,
+		IncludeSecurity:        parseBool(r.URL.Query().Get("include_security")),
+		IncludeAdminProbes:     parseBool(r.URL.Query().Get("include_admin")),
+		IncludeInjectionProbes: parseBool(r.URL.Query().Get("include_injection")),
+		IncludeTorSources:      parseBool(r.URL.Query().Get("include_tor")),
+		SecurityOnly:           parseBool(r.URL.Query().Get("security_only")),
+		ProbeCategory:          r.URL.Query().Get("probe_category"),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "access_log_analysis_failed", err.Error())
@@ -380,6 +417,23 @@ func (api API) openAlerts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"alerts": openAlerts})
 }
 
+func (api API) alertDetail(w http.ResponseWriter, r *http.Request) {
+	if api.alerts == nil {
+		writeJSON(w, http.StatusNotFound, alerts.Detail{})
+		return
+	}
+	detail, err := api.alerts.Get(r.Context(), chi.URLParam(r, "id"), parseLimit(r, 50, 100))
+	if errors.Is(err, alerts.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "alert_not_found", "alert not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "alert_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
 func (api API) evaluateAlerts(w http.ResponseWriter, r *http.Request) {
 	if api.alerts == nil {
 		writeJSON(w, http.StatusOK, alerts.Result{})
@@ -466,6 +520,23 @@ func (api API) recentReports(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"reports": recentReports})
+}
+
+func (api API) reportDetail(w http.ResponseWriter, r *http.Request) {
+	if api.reports == nil {
+		writeJSON(w, http.StatusNotFound, reports.Report{})
+		return
+	}
+	report, err := api.reports.Get(r.Context(), chi.URLParam(r, "id"))
+	if errors.Is(err, reports.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "report_not_found", "report not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "report_failed", err.Error())
+		return
+	}
+	writeReport(w, http.StatusOK, report)
 }
 
 func (api API) generateReport(w http.ResponseWriter, r *http.Request) {
@@ -710,7 +781,8 @@ func (api API) runRetention(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := struct {
-		DryRun bool `json:"dry_run"`
+		DryRun               bool `json:"dry_run"`
+		TemporaryImportsOnly bool `json:"temporary_imports_only"`
 	}{}
 	if r.Body != nil && r.Body != http.NoBody {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
@@ -718,9 +790,322 @@ func (api API) runRetention(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	result, err := api.retention.Run(r.Context(), retention.Options{DryRun: req.DryRun})
+	result, err := api.retention.Run(r.Context(), retention.Options{DryRun: req.DryRun, TemporaryImportsOnly: req.TemporaryImportsOnly})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "retention_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (api API) recentArchives(w http.ResponseWriter, r *http.Request) {
+	if api.db == nil || !api.db.Enabled() {
+		writeJSON(w, http.StatusOK, map[string]any{"archives": []map[string]any{}})
+		return
+	}
+	limit := parseLimit(r, 50, 200)
+	pool, err := api.db.Pool()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "archives_failed", err.Error())
+		return
+	}
+	rows, err := pool.Query(r.Context(), `
+SELECT id::text,
+       log_type,
+       granularity,
+       range_start,
+       range_end,
+       path,
+       coalesce(sha256, ''),
+       source_file_count,
+       source_bytes,
+       compressed_bytes,
+       status,
+       expires_at,
+       created_at
+FROM log_archives
+ORDER BY range_start DESC, created_at DESC
+LIMIT $1`, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "archives_failed", err.Error())
+		return
+	}
+	defer rows.Close()
+
+	archives := []map[string]any{}
+	for rows.Next() {
+		var id, logType, granularity, path, sha256, status string
+		var rangeStart, rangeEnd, createdAt time.Time
+		var expiresAt *time.Time
+		var sourceFileCount int
+		var sourceBytes, compressedBytes int64
+		if err := rows.Scan(&id, &logType, &granularity, &rangeStart, &rangeEnd, &path, &sha256, &sourceFileCount, &sourceBytes, &compressedBytes, &status, &expiresAt, &createdAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "archives_failed", err.Error())
+			return
+		}
+		archives = append(archives, map[string]any{
+			"id":                id,
+			"log_type":          logType,
+			"granularity":       granularity,
+			"range_start":       rangeStart,
+			"range_end":         rangeEnd,
+			"path":              path,
+			"sha256":            sha256,
+			"source_file_count": sourceFileCount,
+			"source_bytes":      sourceBytes,
+			"compressed_bytes":  compressedBytes,
+			"status":            status,
+			"expires_at":        expiresAt,
+			"created_at":        createdAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "archives_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"archives": archives})
+}
+
+func (api API) recentArchiveImports(w http.ResponseWriter, r *http.Request) {
+	if api.db == nil || !api.db.Enabled() {
+		writeJSON(w, http.StatusOK, map[string]any{"imports": []map[string]any{}})
+		return
+	}
+	limit := parseLimit(r, 50, 200)
+	pool, err := api.db.Pool()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "archive_imports_failed", err.Error())
+		return
+	}
+	rows, err := pool.Query(r.Context(), `
+SELECT id::text,
+       coalesce(reason, ''),
+       range_start,
+       range_end,
+       archive_paths,
+       status,
+       imported_at,
+       expires_at,
+       source_file_count,
+       imported_event_count,
+       conflicted_event_count,
+       invalid_event_count,
+       security_probe_count,
+       coalesce(last_error, '')
+FROM temporary_imports
+ORDER BY imported_at DESC
+LIMIT $1`, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "archive_imports_failed", err.Error())
+		return
+	}
+	defer rows.Close()
+
+	imports := []map[string]any{}
+	for rows.Next() {
+		var id, reason, status, lastError string
+		var rangeStart, rangeEnd, importedAt, expiresAt time.Time
+		var archivePaths []string
+		var sourceFileCount int
+		var importedEvents, conflictedEvents, invalidEvents, securityProbes int64
+		if err := rows.Scan(&id, &reason, &rangeStart, &rangeEnd, &archivePaths, &status, &importedAt, &expiresAt, &sourceFileCount, &importedEvents, &conflictedEvents, &invalidEvents, &securityProbes, &lastError); err != nil {
+			writeError(w, http.StatusInternalServerError, "archive_imports_failed", err.Error())
+			return
+		}
+		imports = append(imports, map[string]any{
+			"id":                     id,
+			"reason":                 reason,
+			"range_start":            rangeStart,
+			"range_end":              rangeEnd,
+			"archive_paths":          archivePaths,
+			"status":                 status,
+			"imported_at":            importedAt,
+			"expires_at":             expiresAt,
+			"source_file_count":      sourceFileCount,
+			"imported_event_count":   importedEvents,
+			"conflicted_event_count": conflictedEvents,
+			"invalid_event_count":    invalidEvents,
+			"security_probe_count":   securityProbes,
+			"last_error":             lastError,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "archive_imports_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"imports": imports})
+}
+
+func (api API) archiveCoverageReport(w http.ResponseWriter, r *http.Request) {
+	if api.archiveCoverage == nil || !api.archiveCoverage.Enabled() {
+		writeJSON(w, http.StatusOK, archivecoverage.Coverage{
+			Range:                  r.URL.Query().Get("range"),
+			Archives:               []archivecoverage.Archive{},
+			ActiveTemporaryImports: []archivecoverage.TemporaryImport{},
+		})
+		return
+	}
+	from, to, err := parseTimeFilters(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_time_window", err.Error())
+		return
+	}
+	report, err := api.archiveCoverage.Coverage(r.Context(), archivecoverage.Options{
+		Range: r.URL.Query().Get("range"),
+		From:  from,
+		To:    to,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "archive_coverage_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
+func (api API) storageAuditReport(w http.ResponseWriter, r *http.Request) {
+	if api.storageAudit == nil || !api.storageAudit.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "storage_audit_unavailable", "storage audit requires DATABASE_URL")
+		return
+	}
+	report, err := api.storageAudit.Audit(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_audit_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
+func (api API) runArchive(w http.ResponseWriter, r *http.Request) {
+	if api.archive == nil || !api.archive.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "archive_unavailable", "archive lifecycle requires DATABASE_URL")
+		return
+	}
+	var req struct {
+		DryRun        bool   `json:"dry_run"`
+		LogType       string `json:"log_type"`
+		MaxGroups     int    `json:"max_groups"`
+		RemoveSources bool   `json:"remove_sources"`
+	}
+	if r.Body != nil && r.Body != http.NoBody {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
+			return
+		}
+	}
+	result, err := api.archive.Run(r.Context(), archive.Options{DryRun: req.DryRun, LogType: req.LogType, MaxGroups: req.MaxGroups, RemoveSources: req.RemoveSources})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "archive_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (api API) importArchive(w http.ResponseWriter, r *http.Request) {
+	if api.archiveImport == nil || !api.archiveImport.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "archive_import_unavailable", "archive import requires DATABASE_URL")
+		return
+	}
+	var req struct {
+		ArchiveID   string `json:"archive_id"`
+		ArchivePath string `json:"archive_path"`
+		Reason      string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
+		return
+	}
+	result, err := api.archiveImport.Import(r.Context(), archiveimport.Options{ArchiveID: req.ArchiveID, ArchivePath: req.ArchivePath, Reason: req.Reason})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "archive_import_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (api API) importArchives(w http.ResponseWriter, r *http.Request) {
+	if api.archiveImport == nil || !api.archiveImport.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "archive_import_unavailable", "archive import requires DATABASE_URL")
+		return
+	}
+	var req struct {
+		ArchiveIDs []string `json:"archive_ids"`
+		Reason     string   `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
+		return
+	}
+	if len(req.ArchiveIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "archive_ids_required", "at least one archive id is required")
+		return
+	}
+	results := []archiveimport.Result{}
+	totals := map[string]int{
+		"files_imported":      0,
+		"events_seen":         0,
+		"valid_events":        0,
+		"invalid_events":      0,
+		"events_inserted":     0,
+		"events_conflicted":   0,
+		"events_skipped":      0,
+		"rollups_updated":     0,
+		"security_probes":     0,
+		"error_events":        0,
+		"slow_request_events": 0,
+	}
+	for _, archiveID := range req.ArchiveIDs {
+		archiveID = strings.TrimSpace(archiveID)
+		if archiveID == "" {
+			continue
+		}
+		result, err := api.archiveImport.Import(r.Context(), archiveimport.Options{ArchiveID: archiveID, Reason: req.Reason})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "archive_import_failed", err.Error())
+			return
+		}
+		results = append(results, result)
+		totals["files_imported"] += result.FilesImported
+		totals["events_seen"] += result.EventsSeen
+		totals["valid_events"] += result.ValidEvents
+		totals["invalid_events"] += result.InvalidEvents
+		totals["events_inserted"] += result.EventsInserted
+		totals["events_conflicted"] += result.EventsConflicted
+		totals["events_skipped"] += result.EventsSkipped
+		totals["rollups_updated"] += result.RollupsUpdated
+		totals["security_probes"] += result.SecurityProbes
+		totals["error_events"] += result.ErrorEvents
+		totals["slow_request_events"] += result.SlowRequestEvents
+	}
+	if len(results) == 0 {
+		writeError(w, http.StatusBadRequest, "archive_ids_required", "at least one archive id is required")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"imports": results,
+		"totals":  totals,
+	})
+}
+
+func (api API) runBackfill(w http.ResponseWriter, r *http.Request) {
+	if api.backfill == nil || !api.backfill.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "backfill_unavailable", "backfill requires DATABASE_URL")
+		return
+	}
+	var req struct {
+		BatchSize  int  `json:"batch_size"`
+		MaxBatches int  `json:"max_batches"`
+		Rollups    bool `json:"rollups"`
+	}
+	req.Rollups = true
+	if r.Body != nil && r.Body != http.NoBody {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
+			return
+		}
+	}
+	result, err := api.backfill.Run(r.Context(), backfill.Options{BatchSize: req.BatchSize, MaxBatches: req.MaxBatches, Rollups: req.Rollups})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "backfill_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -784,12 +1169,13 @@ func (api API) combineNow(w http.ResponseWriter, r *http.Request) {
 func (api API) indexSegment(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		SegmentPath string `json:"segment_path"`
+		Force       bool   `json:"force"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 		return
 	}
-	result, err := api.indexer.IndexSegment(r.Context(), indexer.Options{SegmentPath: req.SegmentPath})
+	result, err := api.indexer.IndexSegment(r.Context(), indexer.Options{SegmentPath: req.SegmentPath, Force: req.Force})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "index_failed", err.Error())
 		return
@@ -1104,6 +1490,15 @@ func parseLimit(r *http.Request, defaultLimit int, maxLimit int) int {
 		}
 	}
 	return defaultLimit
+}
+
+func parseBool(value string) bool {
+	switch value {
+	case "1", "true", "TRUE", "yes", "YES", "on", "ON":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseTimeFilters(r *http.Request) (time.Time, time.Time, error) {

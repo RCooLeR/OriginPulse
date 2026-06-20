@@ -18,6 +18,7 @@ import (
 )
 
 var ErrUnavailable = errors.New("database is not configured")
+var ErrLockUnavailable = errors.New("maintenance lock is already held")
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
@@ -98,8 +99,12 @@ func (s *Store) WithAdvisoryLock(ctx context.Context, key int64, fn func(context
 	}
 	defer conn.Release()
 
-	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, key); err != nil {
+	var locked bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&locked); err != nil {
 		return err
+	}
+	if !locked {
+		return ErrLockUnavailable
 	}
 	defer func() {
 		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, key)
