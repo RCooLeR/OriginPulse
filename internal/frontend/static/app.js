@@ -22,6 +22,7 @@ const routes = [
 const routeById = Object.fromEntries(routes.map((route) => [route.id, route]));
 const pathToRoute = Object.fromEntries(routes.map((route) => [route.path, route.id]));
 const reportCatalogPageSize = 8;
+const notificationPageSize = 8;
 const pulseHistoryLimit = 500;
 const alertHistoryLimit = 500;
 const alertRequestPageSize = 6;
@@ -237,7 +238,7 @@ async function refreshAll() {
       safeFetch(`/api/v1/system/archives?limit=${pulseHistoryLimit}`, { archives: [] }),
       safeFetch(`/api/v1/system/archive-imports?limit=${pulseHistoryLimit}`, { imports: [] }),
       safeFetch(`/api/v1/system/archive-coverage?${filter}`, { archives: [], active_temporary_imports: [] }),
-      safeFetch(`/api/v1/notifications?limit=${pulseHistoryLimit}`, {}),
+      safeFetch(`/api/v1/notifications?${notificationHistoryQuery(1)}`, {}),
       safeFetch("/api/v1/notifications/web-push/public-key", {}),
       safeFetch("/api/v1/users", { users: [] }),
       safeFetch(`/api/v1/system/segments?limit=${pulseHistoryLimit}`, { segments: [] }),
@@ -1185,7 +1186,7 @@ function notificationsPanel() {
   const recent = status.recent || [];
   const webPush = state.data.webPush || {};
   const warnings = status.warnings || [];
-  const page = paginate(recent, state.pages.notificationsRecent, 5);
+  const page = notificationPage(recent, state.pages.notificationsRecent);
   state.pages.notificationsRecent = page.page;
   return `
     <article class="panel">
@@ -1280,13 +1281,13 @@ function pulseRawFilesPanel(rows) {
 
 function pulseDeliveriesPanel(rows) {
   const filteredRows = filtered(searchItems(rows || [], (item) => `${item.title || ""} ${item.channel || ""} ${item.target || ""} ${item.status || ""} ${item.error || ""}`));
-  const page = paginate(filteredRows, state.pages.pulseDeliveries, 8);
+  const page = state.search ? paginate(filteredRows, state.pages.pulseDeliveries, 8) : notificationPage(rows || [], state.pages.pulseDeliveries);
   state.pages.pulseDeliveries = page.page;
   return `
     <article class="panel">
       <div class="panel-head">
         <div><h2>Notification Deliveries</h2><p>Recent email, webhook push, and browser push attempts.</p></div>
-        <span class="pill">${formatNumber(filteredRows.length)} deliveries</span>
+        <span class="pill">${formatNumber(page.total)} deliveries</span>
       </div>
       <div class="list">${page.rows.map(deliveryRow).join("") || empty("No recent deliveries.")}</div>
       ${pager("pulseDeliveries", page)}
@@ -2968,6 +2969,10 @@ async function handleAction(button) {
         await loadReportCatalogPage(page);
         return;
       }
+      if ((key === "notificationsRecent" || key === "pulseDeliveries") && !state.search) {
+        await loadNotificationPage(page, key);
+        return;
+      }
       state.pages[key] = Math.max(1, page);
       render();
     }
@@ -4462,6 +4467,37 @@ async function loadReportCatalogPage(page = state.pages.reportCatalog || 1) {
   state.data.reportCatalog = reportCatalogMeta(response);
   state.pages.reportCatalog = reportCatalogPage(state.data.reports, state.data.reportCatalog).page;
   render();
+}
+
+function notificationHistoryQuery(page = state.pages.notificationsRecent || 1) {
+  const safePage = Math.max(1, Number(page || 1));
+  return new URLSearchParams({
+    limit: String(notificationPageSize),
+    offset: String((safePage - 1) * notificationPageSize),
+  }).toString();
+}
+
+async function loadNotificationPage(page = state.pages.notificationsRecent || 1, key = "notificationsRecent") {
+  const safePage = Math.max(1, Number(page || 1));
+  const response = await safeFetch(`/api/v1/notifications?${notificationHistoryQuery(safePage)}`, {
+    recent: [],
+    recent_total: 0,
+    recent_limit: notificationPageSize,
+    recent_offset: (safePage - 1) * notificationPageSize,
+  });
+  state.data.notifications = response;
+  state.pages.notificationsRecent = notificationPage(response.recent || [], safePage).page;
+  state.pages.pulseDeliveries = state.pages.notificationsRecent;
+  if (key === "pulseDeliveries") state.pages.pulseDeliveries = state.pages.notificationsRecent;
+  render();
+}
+
+function notificationPage(rows, page = 1) {
+  const status = state.data.notifications || {};
+  if (Object.prototype.hasOwnProperty.call(status, "recent_total")) {
+    return serverBackedPage(rows, Number(status.recent_total || 0), Number(status.recent_limit || notificationPageSize), Number(status.recent_offset || 0));
+  }
+  return paginate(rows, page, notificationPageSize);
 }
 
 function reportCatalogMeta(response = {}) {

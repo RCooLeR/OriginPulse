@@ -54,13 +54,16 @@ type Delivery struct {
 }
 
 type Status struct {
-	Enabled     bool       `json:"enabled"`
-	Ready       bool       `json:"ready"`
-	MinSeverity string     `json:"min_severity"`
-	TargetCount int        `json:"target_count"`
-	Warnings    []string   `json:"warnings,omitempty"`
-	Channels    []Channel  `json:"channels"`
-	Recent      []Delivery `json:"recent"`
+	Enabled      bool       `json:"enabled"`
+	Ready        bool       `json:"ready"`
+	MinSeverity  string     `json:"min_severity"`
+	TargetCount  int        `json:"target_count"`
+	Warnings     []string   `json:"warnings,omitempty"`
+	Channels     []Channel  `json:"channels"`
+	Recent       []Delivery `json:"recent"`
+	RecentTotal  int        `json:"recent_total"`
+	RecentLimit  int        `json:"recent_limit"`
+	RecentOffset int        `json:"recent_offset"`
 }
 
 type WebPushStatus struct {
@@ -123,7 +126,13 @@ func (s *Service) Enabled() bool {
 }
 
 func (s *Service) Status(ctx context.Context, limit int) (Status, error) {
-	recent, err := s.Recent(ctx, limit)
+	return s.StatusPage(ctx, limit, 0)
+}
+
+func (s *Service) StatusPage(ctx context.Context, limit int, offset int) (Status, error) {
+	limit = normalizeRecentLimit(limit)
+	offset = normalizeRecentOffset(offset)
+	recent, total, err := s.RecentPage(ctx, limit, offset)
 	if err != nil {
 		return Status{}, err
 	}
@@ -143,13 +152,16 @@ func (s *Service) Status(ctx context.Context, limit int) (Status, error) {
 	}
 	warnings := notificationWarnings(s.cfg.Notifications.Enabled, channels, targetCount, activeWebPush)
 	return Status{
-		Enabled:     s.cfg.Notifications.Enabled,
-		Ready:       s.cfg.Notifications.Enabled && targetCount > 0,
-		MinSeverity: s.cfg.Notifications.MinSeverity,
-		TargetCount: targetCount,
-		Warnings:    warnings,
-		Channels:    channels,
-		Recent:      recent,
+		Enabled:      s.cfg.Notifications.Enabled,
+		Ready:        s.cfg.Notifications.Enabled && targetCount > 0,
+		MinSeverity:  s.cfg.Notifications.MinSeverity,
+		TargetCount:  targetCount,
+		Warnings:     warnings,
+		Channels:     channels,
+		Recent:       recent,
+		RecentTotal:  total,
+		RecentLimit:  limit,
+		RecentOffset: offset,
 	}, nil
 }
 
@@ -282,15 +294,25 @@ func (s *Service) Test(ctx context.Context) (Result, error) {
 }
 
 func (s *Service) Recent(ctx context.Context, limit int) ([]Delivery, error) {
+	items, _, err := s.RecentPage(ctx, limit, 0)
+	return items, err
+}
+
+func (s *Service) RecentPage(ctx context.Context, limit int, offset int) ([]Delivery, int, error) {
 	if !s.Enabled() {
-		return []Delivery{}, nil
+		return []Delivery{}, 0, nil
 	}
 	limit = normalizeRecentLimit(limit)
+	offset = normalizeRecentOffset(offset)
 	pool, err := s.db.Pool()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
+	var total int
+	if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM notification_deliveries`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
 	rows, err := pool.Query(ctx, `
 SELECT id::text,
        coalesce(alert_id::text, ''),
@@ -305,9 +327,9 @@ SELECT id::text,
        sent_at
 FROM notification_deliveries
 ORDER BY created_at DESC
-LIMIT $1`, limit)
+LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -327,12 +349,12 @@ LIMIT $1`, limit)
 			&item.CreatedAt,
 			&item.SentAt,
 		); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		item.Target = redactTarget(item.Channel, item.Target)
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	return items, total, rows.Err()
 }
 
 func normalizeRecentLimit(limit int) int {
@@ -343,6 +365,13 @@ func normalizeRecentLimit(limit int) int {
 		return RecentMaxLimit
 	}
 	return limit
+}
+
+func normalizeRecentOffset(offset int) int {
+	if offset < 0 {
+		return 0
+	}
+	return offset
 }
 
 func (s *Service) WebPushStatus(ctx context.Context) (WebPushStatus, error) {

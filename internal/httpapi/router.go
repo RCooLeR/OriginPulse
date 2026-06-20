@@ -710,7 +710,7 @@ func (api API) notificationStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, notifications.Status{})
 		return
 	}
-	status, err := api.notifications.Status(r.Context(), parseLimit(r, 100, notifications.RecentMaxLimit))
+	status, err := api.notifications.StatusPage(r.Context(), parseLimit(r, 100, notifications.RecentMaxLimit), parseOffset(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "notifications_failed", err.Error())
 		return
