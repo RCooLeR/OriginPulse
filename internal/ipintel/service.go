@@ -22,6 +22,8 @@ type Options struct {
 	Limit int    `json:"limit"`
 }
 
+const ResultMaxLimit = 500
+
 type Result struct {
 	Range           string        `json:"range"`
 	Since           time.Time     `json:"since"`
@@ -407,8 +409,8 @@ func normalizeLimit(limit int) int {
 	if limit <= 0 {
 		return 25
 	}
-	if limit > 250 {
-		return 250
+	if limit > ResultMaxLimit {
+		return ResultMaxLimit
 	}
 	return limit
 }

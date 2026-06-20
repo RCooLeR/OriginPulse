@@ -25,6 +25,7 @@ const reportCatalogLimit = 500;
 const pulseHistoryLimit = 500;
 const alertHistoryLimit = 500;
 const drawerHistoryLimit = 500;
+const analysisHistoryLimit = 500;
 
 const state = {
   route: pathToRoute[location.pathname] || "overview",
@@ -205,9 +206,9 @@ async function refreshAll() {
   document.body.classList.add("busy");
   try {
     const filter = buildFilterQuery();
-    const analysisFilter = buildFilterQuery({ limit: 100 });
-    const estateAnalysisFilter = buildFilterQuery({ limit: 100 }, { includeSite: false });
-    const estateTrafficFilter = buildFilterQuery({ limit: 80 }, { includeSite: false });
+    const analysisFilter = buildFilterQuery({ limit: analysisHistoryLimit });
+    const estateAnalysisFilter = buildFilterQuery({ limit: analysisHistoryLimit }, { includeSite: false });
+    const estateTrafficFilter = buildFilterQuery({ limit: analysisHistoryLimit }, { includeSite: false });
     const analysisRequest = safeFetch(`/api/v1/analysis/access-log?${analysisFilter}`, {}, 30000);
     const estateAnalysisRequest = analysisFilter === estateAnalysisFilter
       ? analysisRequest
@@ -216,7 +217,7 @@ async function refreshAll() {
       safeFetch(`/api/v1/dashboard/overview?${filter}`, {}),
       analysisRequest,
       estateAnalysisRequest,
-      safeFetch(`/api/v1/investigate/traffic?${buildFilterQuery({ limit: 80 })}`, {}),
+      safeFetch(`/api/v1/investigate/traffic?${buildFilterQuery({ limit: analysisHistoryLimit })}`, {}),
       safeFetch(`/api/v1/investigate/traffic?${estateTrafficFilter}`, {}),
       safeFetch("/api/v1/sites", { sites: [] }),
       safeFetch(`/api/v1/alerts?limit=${alertHistoryLimit}`, { alerts: [] }),
@@ -278,16 +279,16 @@ async function ensureRouteData() {
 
 async function refreshSecurityAnalysis(route = state.route) {
   const key = route === "mysql"
-    ? buildFilterQuery({ limit: 250, include_injection: "1", security_only: "1", probe_category: "sql_injection" })
-    : buildFilterQuery({ limit: 100, include_security: "1", security_only: "1" });
+    ? buildFilterQuery({ limit: analysisHistoryLimit, include_injection: "1", security_only: "1", probe_category: "sql_injection" })
+    : buildFilterQuery({ limit: analysisHistoryLimit, include_security: "1", security_only: "1" });
   if (state.securityAnalysisKey === key || state.securityAnalysisLoading) return;
   state.securityAnalysisLoading = true;
   render();
   try {
     const analysis = await fetchJSON(`/api/v1/analysis/access-log?${key}`, { timeoutMs: 120000 });
     const latestKey = route === "mysql"
-      ? buildFilterQuery({ limit: 250, include_injection: "1", security_only: "1", probe_category: "sql_injection" })
-      : buildFilterQuery({ limit: 100, include_security: "1", security_only: "1" });
+      ? buildFilterQuery({ limit: analysisHistoryLimit, include_injection: "1", security_only: "1", probe_category: "sql_injection" })
+      : buildFilterQuery({ limit: analysisHistoryLimit, include_security: "1", security_only: "1" });
     if (key === latestKey) {
       state.data.analysis = mergeSecurityAnalysis(state.data.analysis || {}, analysis || {});
       state.securityAnalysisKey = key;
@@ -2957,7 +2958,7 @@ async function handleAction(button) {
   }
   if (action === "refresh-ip-intel") {
     return runButton(button, "IP intelligence refreshed", async () => {
-      await fetchJSON("/api/v1/system/refresh-ip-intel", { method: "POST", body: JSON.stringify({ range: state.range, limit: 80 }) });
+      await fetchJSON("/api/v1/system/refresh-ip-intel", { method: "POST", body: JSON.stringify({ range: state.range, limit: analysisHistoryLimit }) });
       await refreshAll();
     });
   }
@@ -3734,8 +3735,8 @@ async function openDrawer(kind, rawIndex, value) {
     const rows = siteRows({ estate: true });
     const item = rows.find((row) => row.id === value) || rows[index] || {};
     title = item.name || "Site";
-    const siteFilter = buildFilterQuery({ site_id: item.id, limit: 100 }, { includeSite: false });
-    const siteTrafficFilter = buildFilterQuery({ site_id: item.id, limit: 80 }, { includeSite: false });
+    const siteFilter = buildFilterQuery({ site_id: item.id, limit: analysisHistoryLimit }, { includeSite: false });
+    const siteTrafficFilter = buildFilterQuery({ site_id: item.id, limit: analysisHistoryLimit }, { includeSite: false });
     const [siteAnalysis, siteTraffic] = await Promise.all([
       safeFetch(`/api/v1/analysis/access-log?${siteFilter}`, {}),
       safeFetch(`/api/v1/investigate/traffic?${siteTrafficFilter}`, {}),

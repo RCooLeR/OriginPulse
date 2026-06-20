@@ -72,6 +72,28 @@ func TestNormalizeDetailLimit(t *testing.T) {
 	}
 }
 
+func TestNormalizeLimitAllowsDeeperRefreshBatches(t *testing.T) {
+	tests := []struct {
+		name  string
+		limit int
+		want  int
+	}{
+		{name: "default", limit: 0, want: 25},
+		{name: "negative", limit: -1, want: 25},
+		{name: "keeps requested", limit: 250, want: 250},
+		{name: "max", limit: ResultMaxLimit, want: ResultMaxLimit},
+		{name: "clamped", limit: ResultMaxLimit + 1, want: ResultMaxLimit},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeLimit(tt.limit); got != tt.want {
+				t.Fatalf("normalizeLimit(%d) = %d, want %d", tt.limit, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClassifyReverseDNSServiceFingerprints(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -324,14 +324,14 @@ func (s *Service) reportInput(ctx context.Context, rangeLabel string, siteID str
 		input["access_analysis"] = analysis
 	}
 	if s.investigation != nil {
-		traffic, err := s.investigation.Traffic(ctx, investigation.Options{Range: rangeLabel, SiteID: siteID, Limit: 100})
+		traffic, err := s.investigation.Traffic(ctx, investigation.Options{Range: rangeLabel, SiteID: siteID, Limit: investigation.DetailMaxLimit})
 		if err != nil {
 			return nil, err
 		}
 		input["traffic"] = traffic
 	}
 	if s.alerts != nil {
-		openAlerts, err := s.alerts.Open(ctx, 100)
+		openAlerts, err := s.alerts.Open(ctx, alerts.RecentMaxLimit)
 		if err != nil {
 			return nil, err
 		}

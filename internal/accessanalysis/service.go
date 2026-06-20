@@ -29,6 +29,8 @@ type Options struct {
 	IncludeTimings         bool      `json:"include_timings"`
 }
 
+const ResultMaxLimit = 500
+
 type Report struct {
 	Range           string               `json:"range"`
 	SiteID          string               `json:"site_id,omitempty"`
@@ -1895,8 +1897,8 @@ func normalizeLimit(limit int) int {
 	if limit <= 0 {
 		return 25
 	}
-	if limit > 250 {
-		return 250
+	if limit > ResultMaxLimit {
+		return ResultMaxLimit
 	}
 	return limit
 }

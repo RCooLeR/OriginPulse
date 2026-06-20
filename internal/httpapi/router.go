@@ -271,7 +271,7 @@ func (api API) accessLogAnalysis(w http.ResponseWriter, r *http.Request) {
 	}
 	report, err := api.accessAnalysis.Analyze(r.Context(), accessanalysis.Options{
 		Range:                  r.URL.Query().Get("range"),
-		Limit:                  parseLimit(r, 25, 250),
+		Limit:                  parseLimit(r, 100, accessanalysis.ResultMaxLimit),
 		SiteID:                 r.URL.Query().Get("site_id"),
 		From:                   from,
 		To:                     to,
@@ -309,7 +309,7 @@ func (api API) investigateTraffic(w http.ResponseWriter, r *http.Request) {
 	}
 	traffic, err := api.investigation.Traffic(r.Context(), investigation.Options{
 		Range:  r.URL.Query().Get("range"),
-		Limit:  parseLimit(r, 10, 100),
+		Limit:  parseLimit(r, 100, investigation.DetailMaxLimit),
 		SiteID: r.URL.Query().Get("site_id"),
 		From:   from,
 		To:     to,
@@ -564,7 +564,7 @@ func (api API) refreshIPIntel(w http.ResponseWriter, r *http.Request) {
 		Limit int    `json:"limit"`
 	}{
 		Range: r.URL.Query().Get("range"),
-		Limit: parseLimit(r, 25, 250),
+		Limit: parseLimit(r, 100, ipintel.ResultMaxLimit),
 	}
 	if r.Body != nil && r.Body != http.NoBody {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
@@ -576,7 +576,7 @@ func (api API) refreshIPIntel(w http.ResponseWriter, r *http.Request) {
 		req.Range = r.URL.Query().Get("range")
 	}
 	if req.Limit <= 0 {
-		req.Limit = parseLimit(r, 25, 250)
+		req.Limit = parseLimit(r, 100, ipintel.ResultMaxLimit)
 	}
 
 	result, err := api.ipIntel.RefreshTop(r.Context(), ipintel.Options{
