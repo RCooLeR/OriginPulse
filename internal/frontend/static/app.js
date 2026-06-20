@@ -2951,11 +2951,101 @@ function mysqlProbeSourceIPs(probes) {
 
 function searchItems(items, text) {
   if (!state.search) return items;
-  return items.filter((item) => text(item).toLowerCase().includes(state.search));
+  const query = parseSearchQuery(state.search);
+  if (!query.groups.length) return items;
+  return items.filter((item) => matchesSearchQuery(item, text(item), query));
 }
 
 function filtered(items) {
   return items;
+}
+
+function parseSearchQuery(raw) {
+  const groups = String(raw || "")
+    .split(/\s+or\s+/i)
+    .map((part) => tokenizeSearch(part).map(parseSearchToken).filter((token) => token.value))
+    .filter((group) => group.length);
+  return { groups };
+}
+
+function tokenizeSearch(value) {
+  const tokens = [];
+  const pattern = /"([^"]+)"|'([^']+)'|(\S+)/g;
+  for (const match of String(value || "").matchAll(pattern)) {
+    tokens.push(match[1] || match[2] || match[3] || "");
+  }
+  return tokens;
+}
+
+function parseSearchToken(token) {
+  const match = String(token || "").match(/^([a-z_][a-z0-9_-]*):(.*)$/i);
+  if (!match) return { value: token.toLowerCase() };
+  return { field: match[1].toLowerCase(), value: match[2].toLowerCase() };
+}
+
+function matchesSearchQuery(item, textValue, query) {
+  const text = String(textValue || "").toLowerCase();
+  return query.groups.some((group) => group.every((term) => matchesSearchTerm(item, text, term)));
+}
+
+function matchesSearchTerm(item, text, term) {
+  if (!term.field) return text.includes(term.value);
+  const matched = matchesFieldSearch(item, term.field, term.value);
+  return matched || text.includes(`${term.field}:${term.value}`);
+}
+
+function matchesFieldSearch(item, field, value) {
+  if (field === "status") return matchesNumericSearch(item.status, value);
+  if (field === "severity") return severityFromStatus(item.status, item.severity).includes(value);
+  const candidates = fieldSearchValues(item, field).map((part) => String(part || "").toLowerCase()).filter(Boolean);
+  if (!candidates.length) return false;
+  return candidates.some((candidate) => matchesWildcardText(candidate, value));
+}
+
+function fieldSearchValues(item, field) {
+  const aliases = {
+    agent: ["user_agent", "sample", "family", "known_actor", "actor_type"],
+    browser: ["user_agent", "sample", "family"],
+    env: ["env", "environment"],
+    host: ["site_id", "host"],
+    ip: ["client_ip", "ip", "source_ip"],
+    method: ["method"],
+    path: ["path"],
+    project: ["site_id", "project", "site"],
+    site: ["site_id", "project", "site"],
+    ua: ["user_agent", "sample", "family", "known_actor", "actor_type"],
+  };
+  return (aliases[field] || [field]).map((key) => item?.[key]);
+}
+
+function matchesNumericSearch(actual, expression) {
+  const value = Number(actual);
+  if (!Number.isFinite(value)) return false;
+  const match = String(expression || "").match(/^(>=|<=|>|<|=)?(\d+)$/);
+  if (!match) return String(actual || "").toLowerCase().includes(String(expression || "").toLowerCase());
+  const expected = Number(match[2]);
+  const op = match[1] || "=";
+  if (op === ">=") return value >= expected;
+  if (op === "<=") return value <= expected;
+  if (op === ">") return value > expected;
+  if (op === "<") return value < expected;
+  return value === expected;
+}
+
+function severityFromStatus(status, severity = "") {
+  const explicit = String(severity || "").toLowerCase();
+  if (explicit) return explicit;
+  const code = Number(status);
+  if (code >= 500) return "critical error 5xx";
+  if (code >= 400) return "high warning error 4xx";
+  return "info ok";
+}
+
+function matchesWildcardText(candidate, pattern) {
+  const value = String(pattern || "");
+  if (!value.includes("*")) return candidate.includes(value);
+  const escaped = value.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*");
+  return new RegExp(`^${escaped}$`, "i").test(candidate);
 }
 
 async function handleAction(button) {
@@ -4213,26 +4303,27 @@ function queryGuideHTML() {
     <div class="guide-grid">
       <section>
         <h3>How Matching Works</h3>
-        <p>The search box filters the loaded access-log evidence for the selected range and project. It matches status, project, environment, source IP, HTTP method, path, and user-agent text.</p>
+        <p>The search box filters the loaded access-log evidence for the selected range and project. Plain words match visible event text. Field filters narrow specific values, and OR starts an alternate match group.</p>
       </section>
       <section>
         <h3>Useful Queries</h3>
         <div class="guide-examples">
-          <code>500</code>
-          <code>wp-login</code>
-          <code>GET /xmlrpc.php</code>
-          <code>167.103.5.57</code>
-          <code>firefox</code>
-          <code>example live</code>
+          <code>status:>=500</code>
+          <code>path:/wp-*</code>
+          <code>method:POST path:/xmlrpc.php</code>
+          <code>ip:167.103.5.57</code>
+          <code>agent:firefox</code>
+          <code>project:example env:live</code>
+          <code>status:>=400 OR path:/wp-*</code>
         </div>
       </section>
       <section>
         <h3>Field Hints</h3>
         ${facts([
-          ["Status", "Search 404, 403, 500, or any status code."],
-          ["Path", "Use exact fragments like /wp-login.php or admin-ajax."],
-          ["IP", "Paste a source IP to isolate its matching events."],
-          ["Agent", "Use browser, bot, crawler, or tool names from user-agent strings."],
+          ["Status", "Use status:404, status:>=400, status:<500."],
+          ["Path", "Use path:/wp-login.php or wildcards like path:/wp-*."],
+          ["IP", "Use ip: with a full source address."],
+          ["Agent", "Use agent:, ua:, or browser: for user-agent text."],
         ])}
       </section>
       <section>
