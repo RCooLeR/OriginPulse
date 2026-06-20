@@ -27,6 +27,7 @@ const alertHistoryLimit = 500;
 const alertRequestPageSize = 6;
 const userAgentDetailPageSize = 6;
 const securitySignalDetailPageSize = 6;
+const ipDetailPageSize = 6;
 const drawerHistoryLimit = 500;
 const analysisHistoryLimit = 500;
 
@@ -2988,6 +2989,10 @@ async function handleAction(button) {
         await loadSecuritySignalDetailPage(key, page);
         return;
       }
+      if (state.drawer.kind === "ip" && ["ipSites", "ipPaths", "ipURLHits", "ipAgents", "ipRequests"].includes(key) && state.drawer.data?.ip) {
+        await loadIPDetailPage(key, page);
+        return;
+      }
       state.drawer.pages[key] = Math.max(1, page);
       renderCurrentDrawer();
     }
@@ -3103,11 +3108,11 @@ function renderIPDetail(detail, summary = {}) {
   const intel = detail.stored_intel || {};
   const geo = detail.geoip || {};
   const asn = detail.asn || {};
-  const sites = drawerPage("ipSites", detail.sites || [], 5);
-  const paths = drawerPage("ipPaths", detail.top_paths || [], 6);
-  const urls = drawerPage("ipURLHits", detail.url_hits || [], 6);
-  const agents = drawerPage("ipAgents", detail.top_user_agents || [], 6);
-  const requests = drawerPage("ipRequests", detail.recent_requests || [], 8);
+  const sites = ipSectionPage(detail, "ipSites", detail.sites || [], "sites");
+  const paths = ipSectionPage(detail, "ipPaths", detail.top_paths || [], "top_paths");
+  const urls = ipSectionPage(detail, "ipURLHits", detail.url_hits || [], "url_hits");
+  const agents = ipSectionPage(detail, "ipAgents", detail.top_user_agents || [], "top_user_agents");
+  const requests = ipSectionPage(detail, "ipRequests", detail.recent_requests || [], "requests");
   return `
     ${miniMetrics([
       ["Total Requests", formatNumber(traffic.requests), "fa-arrow-trend-up"],
@@ -3176,6 +3181,16 @@ function renderIPDetail(detail, summary = {}) {
       ${drawerPager("ipRequests", requests)}
     </article>
   `;
+}
+
+function ipSectionPage(item, key, rows, prefix) {
+  const totalKey = `${prefix}_total`;
+  const limitKey = `${prefix}_limit`;
+  const offsetKey = `${prefix}_offset`;
+  if (item && Object.prototype.hasOwnProperty.call(item, totalKey)) {
+    return serverBackedPage(rows, Number(item[totalKey] || 0), Number(item[limitKey] || ipDetailPageSize), Number(item[offsetKey] || 0));
+  }
+  return drawerPage(key, rows, ipDetailPageSize);
 }
 
 function renderRequestDetail(item) {
@@ -3859,7 +3874,7 @@ async function openDrawer(kind, rawIndex, value) {
     const ip = value || item.ip || "";
     title = ip || "Source IP";
     try {
-      const detail = ip ? await fetchJSON(`/api/v1/investigate/ip/${encodeURIComponent(ip)}?${buildFilterQuery({ limit: drawerHistoryLimit })}`) : item;
+      const detail = ip ? await fetchJSON(`/api/v1/investigate/ip/${encodeURIComponent(ip)}?${ipDetailParams({ ip }, {})}`) : item;
       state.drawer = { kind, title, data: detail, summary: item, pages: {} };
       body = renderIPDetail(detail, item);
     } catch (error) {
@@ -4045,6 +4060,38 @@ async function loadSecuritySignalDetailPage(key, page) {
     signal: { ...(item.signal || item), ...(detail.signal || {}) },
   };
   state.drawer.data = merged;
+  renderCurrentDrawer();
+}
+
+function ipDetailParams(item, offsets = {}) {
+  return buildFilterQuery({
+    limit: ipDetailPageSize,
+    sites_offset: offsets.sites_offset ?? item.sites_offset ?? 0,
+    top_paths_offset: offsets.top_paths_offset ?? item.top_paths_offset ?? 0,
+    url_hits_offset: offsets.url_hits_offset ?? item.url_hits_offset ?? 0,
+    requests_offset: offsets.requests_offset ?? item.requests_offset ?? 0,
+    user_agents_offset: offsets.user_agents_offset ?? item.top_user_agents_offset ?? 0,
+  });
+}
+
+async function loadIPDetailPage(key, page) {
+  const item = state.drawer.data || {};
+  const limit = Math.max(1, Number(item.sites_limit || item.top_paths_limit || item.url_hits_limit || item.requests_limit || item.top_user_agents_limit || ipDetailPageSize));
+  const offset = (Math.max(1, Number(page || 1)) - 1) * limit;
+  const offsets = {
+    sites_offset: item.sites_offset || 0,
+    top_paths_offset: item.top_paths_offset || 0,
+    url_hits_offset: item.url_hits_offset || 0,
+    requests_offset: item.requests_offset || 0,
+    user_agents_offset: item.top_user_agents_offset || 0,
+  };
+  if (key === "ipSites") offsets.sites_offset = offset;
+  if (key === "ipPaths") offsets.top_paths_offset = offset;
+  if (key === "ipURLHits") offsets.url_hits_offset = offset;
+  if (key === "ipRequests") offsets.requests_offset = offset;
+  if (key === "ipAgents") offsets.user_agents_offset = offset;
+  const detail = await fetchJSON(`/api/v1/investigate/ip/${encodeURIComponent(item.ip)}?${ipDetailParams(item, offsets)}`);
+  state.drawer.data = { ...item, ...detail };
   renderCurrentDrawer();
 }
 

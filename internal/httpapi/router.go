@@ -333,12 +333,17 @@ func (api API) ipDetails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	detail, err := api.ipIntel.Details(r.Context(), ipintel.DetailOptions{
-		IP:     chi.URLParam(r, "ip"),
-		Range:  r.URL.Query().Get("range"),
-		Limit:  parseLimit(r, 50, ipintel.DetailMaxLimit),
-		SiteID: r.URL.Query().Get("site_id"),
-		From:   from,
-		To:     to,
+		IP:              chi.URLParam(r, "ip"),
+		Range:           r.URL.Query().Get("range"),
+		Limit:           parseLimit(r, 50, ipintel.DetailMaxLimit),
+		SiteID:          r.URL.Query().Get("site_id"),
+		SitesOffset:     parseNamedOffset(r, "sites_offset"),
+		TopPathsOffset:  parseNamedOffset(r, "top_paths_offset"),
+		URLHitsOffset:   parseNamedOffset(r, "url_hits_offset"),
+		RequestsOffset:  parseNamedOffset(r, "requests_offset"),
+		UserAgentOffset: parseNamedOffset(r, "user_agents_offset"),
+		From:            from,
+		To:              to,
 	})
 	if err != nil {
 		if errors.Is(err, ipintel.ErrInvalidIP) {
