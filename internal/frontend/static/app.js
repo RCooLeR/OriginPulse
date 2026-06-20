@@ -2318,7 +2318,7 @@ function securitySignalRow(item, index = 0) {
   const level = Number(item.risk_score || 0) >= 70 ? "critical" : "high";
   return `
     <div class="list-row">
-      <div><strong>${escapeHTML(label)}</strong><span>${linkifyIPs(meta)}</span></div>
+      <div><strong>${linkifyIPs(label)}</strong><span>${linkifyIPs(meta)}</span></div>
       <button class="button small" type="button" data-detail="security-signal" data-value="${escapeAttr(key)}">${escapeHTML(level)}</button>
     </div>
   `;
@@ -2470,7 +2470,7 @@ function renderUserAgentDetail(item) {
             <div><strong>${ipLink(row.ip || row.label)}</strong><span>${formatNumber(row.requests)} events / ${formatNumber(row.errors || ((row.status_4xx || 0) + (row.status_5xx || 0)))} errors</span></div>
             <b>${shortTime(row.last_seen || row.last_seen_at)}</b>
           </div>
-        `).join("") || empty("No related IPs in loaded evidence.")}</div>
+        `).join("") || empty("No related IPs in this range.")}</div>
         ${drawerPager("uaIPs", ipPage)}
       </article>
       <article class="detail-card">
@@ -2480,7 +2480,7 @@ function renderUserAgentDetail(item) {
             <div><strong>${escapeHTML(row.path || row.label || "/")}</strong><span>${formatNumber(row.requests)} events / ${formatNumber(row.errors || ((row.status_4xx || 0) + (row.status_5xx || 0)))} errors</span></div>
             <b>${row.bytes_sent !== undefined ? formatBytes(row.bytes_sent) : shortTime(row.last_seen)}</b>
           </div>
-        `).join("") || empty("No related paths in loaded evidence.")}</div>
+        `).join("") || empty("No related paths in this range.")}</div>
         ${drawerPager("uaPaths", pathPage)}
       </article>
     </section>
