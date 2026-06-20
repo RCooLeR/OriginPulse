@@ -3338,38 +3338,40 @@ function renderSiteDetail(item, scoped = {}) {
 }
 
 function renderSecuritySignalDetail(item) {
-  const relatedIPs = securityRelatedIPs(item);
-  const relatedRequests = securityRelatedRequests(item);
+  const signal = item.signal || item;
+  const relatedIPs = (item.related_ips || []).length ? item.related_ips : securityRelatedIPs(signal);
+  const relatedRequests = (item.related_requests || []).length ? item.related_requests : securityRelatedRequests(signal);
   const ipPage = drawerPage("securitySignalIPs", relatedIPs, 6);
   const requestPage = drawerPage("securitySignalRequests", relatedRequests, 6);
   return `
     ${miniMetrics([
-      ["Requests", formatNumber(item.requests), "fa-arrow-trend-up"],
-      ["Risk", formatNumber(item.risk_score), "fa-shield-halved"],
-      ["4xx", formatNumber(item.status_4xx), "fa-triangle-exclamation"],
-      ["5xx", formatNumber(item.status_5xx), "fa-bolt"],
+      ["Requests", formatNumber(signal.requests), "fa-arrow-trend-up"],
+      ["Risk", formatNumber(signal.risk_score), "fa-shield-halved"],
+      ["4xx", formatNumber(signal.status_4xx), "fa-triangle-exclamation"],
+      ["5xx", formatNumber(signal.status_5xx), "fa-bolt"],
     ])}
     <section class="detail-grid two">
       <article class="detail-card">
         <h3>Signal Context</h3>
         ${factsRich([
-          ["Type", escapeHTML(item.title || item.kind || "Security signal")],
-          ["Category", escapeHTML(item.category || item.rule_key || item.kind || "-")],
-          ["Project", escapeHTML(item.site_id || "-")],
-          ["Environment", escapeHTML(item.env || "-")],
-          ["Source IP", item.ip ? ipLink(item.ip) : "-"],
-          ["Path", escapeHTML(item.path || "-")],
+          ["Type", escapeHTML(signal.title || signal.kind || "Security signal")],
+          ["Category", escapeHTML(signal.category || signal.rule_key || signal.kind || "-")],
+          ["Project", escapeHTML(signal.site_id || "-")],
+          ["Environment", escapeHTML(signal.env || "-")],
+          ["Source IP", signal.ip ? ipLink(signal.ip) : "-"],
+          ["Path", escapeHTML(signal.path || "-")],
+          ["Evidence", escapeHTML(item.source || "loaded view")],
         ])}
       </article>
       <article class="detail-card">
         <h3>Evidence</h3>
         ${facts([
-          ["Method", item.method || "-"],
-          ["Match Reason", item.match_reason || item.category || "-"],
-          ["Sample Query", item.sample_query || "-"],
-          ["First Seen", shortTime(item.first_seen)],
-          ["Last Seen", shortTime(item.last_seen)],
-          ["Total IP Hits", formatNumber(item.total_ip_hits || item.requests || 0)],
+          ["Method", signal.method || "-"],
+          ["Match Reason", signal.match_reason || signal.category || "-"],
+          ["Sample Query", signal.sample_query || "-"],
+          ["First Seen", shortTime(signal.first_seen)],
+          ["Last Seen", shortTime(signal.last_seen)],
+          ["Total IP Hits", formatNumber(signal.total_ip_hits || signal.requests || 0)],
         ])}
       </article>
     </section>
@@ -3730,8 +3732,25 @@ async function openDrawer(kind, rawIndex, value) {
   } else if (kind === "security-signal") {
     const item = state.detailCache[value] || securitySignalRows()[index] || {};
     title = item.title || item.kind || "Security Signal";
-    state.drawer = { kind, title, data: item, summary: null, pages: {} };
-    body = renderSecuritySignalDetail(item);
+    const params = new URLSearchParams(buildFilterQuery({
+      limit: 50,
+      kind: item.kind || "",
+      category: item.category || "",
+      rule_key: item.rule_key || "",
+      env: item.env || "",
+      ip: item.ip || "",
+      method: item.method || "",
+      path: item.path || "",
+    }));
+    try {
+      const detail = await fetchJSON(`/api/v1/investigate/security-signal?${params}`);
+      const merged = { ...item, ...detail, signal: { ...item, ...(detail.signal || {}) } };
+      state.drawer = { kind, title, data: merged, summary: item, pages: {} };
+      body = renderSecuritySignalDetail(merged);
+    } catch (error) {
+      state.drawer = { kind, title, data: item, summary: null, pages: {} };
+      body = renderSecuritySignalDetail(item) + `<p class="form-error">${escapeHTML(error.message)}</p>`;
+    }
   } else if (kind === "alert") {
     const cached = state.detailCache[value] || (state.data.alerts || [])[index] || {};
     title = cached.title || cached.rule_key || "Alert";

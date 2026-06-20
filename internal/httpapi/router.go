@@ -142,6 +142,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/investigate/traffic", api.investigateTraffic)
 			r.Get("/investigate/ip/{ip}", api.ipDetails)
 			r.Get("/investigate/user-agent", api.userAgentDetails)
+			r.Get("/investigate/security-signal", api.securitySignalDetails)
 			r.Patch("/investigate/ip/{ip}/manual-intel", api.updateIPManualIntel)
 			r.Get("/alerts", api.openAlerts)
 			r.Get("/alerts/{id}", api.alertDetail)
@@ -389,6 +390,42 @@ func (api API) userAgentDetails(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "user_agent_details_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+func (api API) securitySignalDetails(w http.ResponseWriter, r *http.Request) {
+	if api.investigation == nil {
+		writeJSON(w, http.StatusOK, investigation.SecuritySignalDetail{DatabaseEnabled: false})
+		return
+	}
+
+	from, to, err := parseTimeFilters(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_time_window", err.Error())
+		return
+	}
+	detail, err := api.investigation.SecuritySignalDetails(r.Context(), investigation.SecuritySignalOptions{
+		Kind:     r.URL.Query().Get("kind"),
+		Category: r.URL.Query().Get("category"),
+		RuleKey:  r.URL.Query().Get("rule_key"),
+		SiteID:   r.URL.Query().Get("site_id"),
+		Env:      r.URL.Query().Get("env"),
+		IP:       r.URL.Query().Get("ip"),
+		Method:   r.URL.Query().Get("method"),
+		Path:     r.URL.Query().Get("path"),
+		Range:    r.URL.Query().Get("range"),
+		Limit:    parseLimit(r, 8, 50),
+		From:     from,
+		To:       to,
+	})
+	if err != nil {
+		if errors.Is(err, investigation.ErrSecuritySignalRequired) {
+			writeError(w, http.StatusBadRequest, "missing_security_signal", "security signal kind, category, path, or ip is required")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "security_signal_details_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
