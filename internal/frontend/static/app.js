@@ -438,7 +438,7 @@ function renderOverview() {
       </article>
       <article class="panel">
         <div class="panel-head">
-          <div><h2>Projects / Sites Overview</h2><p>Health sorted by current risk.</p></div>
+          <div><h2>Projects / Sites Overview</h2><p>Health sorted by current activity.</p></div>
           <button class="button small" type="button" data-action-route="sites" data-route="sites">${iconHTML("fa-arrow-up-right-from-square")}Open Sites</button>
         </div>
         ${overviewSitesTable(sites)}
@@ -471,7 +471,7 @@ function renderSites() {
     ])}
     <article class="panel">
       <div class="panel-head">
-        <div><h2>Projects / Sites</h2><p>Operational health, traffic, and current risk.</p></div>
+        <div><h2>Projects / Sites</h2><p>Operational health and traffic across configured projects.</p></div>
         <span class="pill">Table View</span>
       </div>
       ${sitesTable(rows)}
@@ -1298,15 +1298,13 @@ function sitesTable(rows) {
   return `
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Project / Site</th><th>Environment</th><th>Status</th><th>Requests</th><th>Error Rate</th><th>Risk</th><th></th></tr></thead>
+        <thead><tr><th>Project / Site</th><th>Status</th><th>Requests</th><th>Error Rate</th><th></th></tr></thead>
         <tbody>${rows.map((site, index) => `
           <tr>
             <td><span class="row-title"><strong>${escapeHTML(site.name)}</strong><span>${escapeHTML(site.id)}</span></span></td>
-            <td>${escapeHTML(site.envs)}</td>
             <td><span class="status ${site.health === "healthy" ? "good" : site.health === "critical" ? "bad" : "warn"}">${site.health}</span></td>
             <td>${formatNumber(site.requests)}</td>
             <td>${formatPercent(site.errorRate)}</td>
-            <td>${site.risk}</td>
             <td><button class="button small" type="button" data-detail="site" data-index="${index}" data-value="${escapeAttr(site.id)}">View</button></td>
           </tr>
         `).join("")}</tbody>
@@ -3289,10 +3287,14 @@ function renderSiteDetail(item, scoped = {}) {
   const scopedAnalysis = scoped.analysis || state.data.estateAnalysis || state.data.analysis || {};
   const scopedTraffic = scoped.traffic || state.data.estateTraffic || state.data.traffic || {};
   const matching = (scopedAnalysis.sites || []).filter((row) => !row.site_id || row.site_id === item.id);
-  const sitePaths = (scopedTraffic.top_paths || scopedAnalysis.slow_paths || []).filter((row) => !row.site_id || row.site_id === item.id).slice(0, 8);
-  const siteIPs = (scopedTraffic.top_ips || scopedAnalysis.source_ips || []).filter((row) => !row.site_id || row.site_id === item.id).slice(0, 8);
-  const siteEvents = (scopedTraffic.recent_errors || []).filter((row) => !row.site_id || row.site_id === item.id).slice(0, 8);
-  const siteAlerts = (state.data.alerts || []).filter((row) => row.site_id === item.id).slice(0, 8);
+  const sitePathRows = (scopedTraffic.top_paths || scopedAnalysis.slow_paths || []).filter((row) => !row.site_id || row.site_id === item.id);
+  const siteIPRows = (scopedTraffic.top_ips || scopedAnalysis.source_ips || []).filter((row) => !row.site_id || row.site_id === item.id);
+  const siteEvents = (scopedTraffic.recent_errors || []).filter((row) => !row.site_id || row.site_id === item.id);
+  const siteAlerts = (state.data.alerts || []).filter((row) => row.site_id === item.id);
+  const siteIncidents = siteAlerts.length ? siteAlerts : siteEvents;
+  const sitePaths = drawerPage("sitePaths", sitePathRows, 6);
+  const siteIPs = drawerPage("siteIPs", siteIPRows, 6);
+  const siteIncidentPage = drawerPage("siteIncidents", siteIncidents, 6);
   const total4xx = sum(matching, "status_4xx");
   const total5xx = sum(matching, "status_5xx");
   const totalBytes = sum(matching, "bytes_sent");
@@ -3328,22 +3330,25 @@ function renderSiteDetail(item, scoped = {}) {
     <section class="detail-grid two">
       <article class="detail-card">
         <h3>Top Paths</h3>
-        ${simpleRows(sitePaths, (row) => compactRow(row.path || "/", `${formatNumber(row.requests)} requests / ${formatNumber((row.status_4xx || 0) + (row.status_5xx || 0))} errors`, formatBytes(row.bytes_sent)))}
+        ${simpleRows(sitePaths.rows, (row) => compactRow(row.path || "/", `${formatNumber(row.requests)} requests / ${formatNumber((row.status_4xx || 0) + (row.status_5xx || 0))} errors`, formatBytes(row.bytes_sent)))}
+        ${drawerPager("sitePaths", sitePaths)}
       </article>
       <article class="detail-card">
         <h3>Source IPs</h3>
-        ${simpleRows(siteIPs, (row) => `
+        ${simpleRows(siteIPs.rows, (row) => `
           <div class="list-row">
             <div><strong>${row.ip ? ipLink(row.ip) : "-"}</strong><span>${formatNumber(row.requests)} requests / ${formatNumber((row.status_4xx || 0) + (row.status_5xx || 0))} errors</span></div>
             <b>${escapeHTML(row.country_code || row.actor_type || "")}</b>
           </div>
         `)}
+        ${drawerPager("siteIPs", siteIPs)}
       </article>
     </section>
     <section class="detail-grid two">
       <article class="detail-card">
         <h3>Recent Incidents</h3>
-        ${siteAlerts.length ? simpleRows(siteAlerts, (row) => alertRow(row)) : requestRows(siteEvents)}
+        ${siteAlerts.length ? simpleRows(siteIncidentPage.rows, (row) => alertRow(row)) : requestRows(siteIncidentPage.rows)}
+        ${drawerPager("siteIncidents", siteIncidentPage)}
       </article>
       <article class="detail-card">
         <h3>Actions</h3>
