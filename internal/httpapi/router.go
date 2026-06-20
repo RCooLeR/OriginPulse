@@ -141,6 +141,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/analysis/access-log", api.accessLogAnalysis)
 			r.Get("/investigate/traffic", api.investigateTraffic)
 			r.Get("/investigate/ip/{ip}", api.ipDetails)
+			r.Get("/investigate/user-agent", api.userAgentDetails)
 			r.Patch("/investigate/ip/{ip}/manual-intel", api.updateIPManualIntel)
 			r.Get("/alerts", api.openAlerts)
 			r.Get("/alerts/{id}", api.alertDetail)
@@ -344,6 +345,50 @@ func (api API) ipDetails(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "ip_details_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+func (api API) userAgentDetails(w http.ResponseWriter, r *http.Request) {
+	if api.investigation == nil {
+		writeJSON(w, http.StatusOK, investigation.UserAgentDetail{DatabaseEnabled: false})
+		return
+	}
+
+	from, to, err := parseTimeFilters(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_time_window", err.Error())
+		return
+	}
+	var id int64
+	rawID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if rawID != "" {
+		id, err = strconv.ParseInt(rawID, 10, 64)
+		if err != nil || id < 0 {
+			writeError(w, http.StatusBadRequest, "invalid_user_agent_id", "user-agent id must be a positive integer")
+			return
+		}
+	}
+	sample := r.URL.Query().Get("sample")
+	if sample == "" {
+		sample = r.URL.Query().Get("user_agent")
+	}
+	detail, err := api.investigation.UserAgentDetails(r.Context(), investigation.UserAgentOptions{
+		ID:     id,
+		Sample: sample,
+		Range:  r.URL.Query().Get("range"),
+		Limit:  parseLimit(r, 8, 50),
+		SiteID: r.URL.Query().Get("site_id"),
+		From:   from,
+		To:     to,
+	})
+	if err != nil {
+		if errors.Is(err, investigation.ErrUserAgentRequired) {
+			writeError(w, http.StatusBadRequest, "missing_user_agent", "user-agent id or sample is required")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "user_agent_details_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)

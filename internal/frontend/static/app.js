@@ -2428,19 +2428,22 @@ function userAgentGroupedRows(rows, keyFn) {
 }
 
 function renderUserAgentDetail(item) {
-  const sample = item.sample || item.user_agent || item.family || "Unknown";
-  const info = parseUserAgent({ ...item, sample });
-  const family = item.family || info.family;
-  const relatedRequests = userAgentRelatedRequests({ ...item, sample, family });
-  const relatedIPs = userAgentGroupedRows(relatedRequests, (row) => row.client_ip);
-  const relatedPaths = userAgentGroupedRows(relatedRequests, (row) => row.path || "/");
+  const agent = item.user_agent || item;
+  const traffic = item.traffic || {};
+  const sample = agent.sample || agent.user_agent || item.sample || item.family || "Unknown";
+  const info = parseUserAgent({ ...agent, sample });
+  const family = agent.family || info.family;
+  const relatedRequests = item.recent_requests || userAgentRelatedRequests({ ...agent, sample, family });
+  const relatedIPs = (item.top_ips || []).length ? item.top_ips : userAgentGroupedRows(relatedRequests, (row) => row.client_ip);
+  const relatedPaths = (item.top_paths || []).length ? item.top_paths : userAgentGroupedRows(relatedRequests, (row) => row.path || "/");
   const ipPage = drawerPage("uaIPs", relatedIPs, 6);
   const pathPage = drawerPage("uaPaths", relatedPaths, 6);
   const requestPage = drawerPage("uaRequests", relatedRequests, 6);
-  const errors = Number(item.status_4xx || 0) + Number(item.status_5xx || 0);
+  const requests = Number(traffic.requests || agent.requests || item.requests || relatedRequests.length || 0);
+  const errors = Number(traffic.status_4xx || agent.status_4xx || item.status_4xx || 0) + Number(traffic.status_5xx || agent.status_5xx || item.status_5xx || 0);
   return `
     ${miniMetrics([
-      ["Requests", formatNumber(item.requests || relatedRequests.length), "fa-arrow-trend-up"],
+      ["Requests", formatNumber(requests), "fa-arrow-trend-up"],
       ["Errors", formatNumber(errors || relatedRequests.filter((row) => Number(row.status || 0) >= 400).length), "fa-triangle-exclamation"],
       ["Related IPs", formatNumber(relatedIPs.length), "fa-network-wired"],
       ["Related Paths", formatNumber(relatedPaths.length), "fa-route"],
@@ -2456,16 +2459,19 @@ function renderUserAgentDetail(item) {
           ["OS", info.osLabel || "-"],
           ["Device", info.device || "-"],
           ["Engine", info.engine || "-"],
+          ["Evidence", item.source || "loaded view"],
         ])}
       </article>
       <article class="detail-card">
         <h3>Attribution</h3>
         ${facts([
           ["Family", family || "-"],
-          ["Known Actor", info.knownActor || item.known_actor || "-"],
-          ["Actor Type", item.actor_type || info.actorType || "-"],
+          ["Known Actor", info.knownActor || agent.known_actor || "-"],
+          ["Actor Type", agent.actor_type || info.actorType || "-"],
           ["Platform", info.platform || "-"],
-          ["Error Rate", formatPercent(ratio(errors, item.requests || relatedRequests.length))],
+          ["First Seen", shortTime(agent.first_seen || traffic.first_seen)],
+          ["Last Seen", shortTime(agent.last_seen || traffic.last_seen)],
+          ["Error Rate", formatPercent(ratio(errors, requests || relatedRequests.length))],
         ])}
       </article>
     </section>
@@ -2478,8 +2484,8 @@ function renderUserAgentDetail(item) {
         <div class="detail-card-head"><h3>Related IPs</h3><span>${formatNumber(ipPage.total)} rows</span></div>
         <div class="list">${ipPage.rows.map((row) => `
           <div class="list-row">
-            <div><strong>${ipLink(row.label)}</strong><span>${formatNumber(row.requests)} events / ${formatNumber(row.errors)} errors</span></div>
-            <b>${shortTime(row.last_seen)}</b>
+            <div><strong>${ipLink(row.ip || row.label)}</strong><span>${formatNumber(row.requests)} events / ${formatNumber(row.errors || ((row.status_4xx || 0) + (row.status_5xx || 0)))} errors</span></div>
+            <b>${shortTime(row.last_seen || row.last_seen_at)}</b>
           </div>
         `).join("") || empty("No related IPs in loaded evidence.")}</div>
         ${drawerPager("uaIPs", ipPage)}
@@ -2488,8 +2494,8 @@ function renderUserAgentDetail(item) {
         <div class="detail-card-head"><h3>Related Paths</h3><span>${formatNumber(pathPage.total)} rows</span></div>
         <div class="list">${pathPage.rows.map((row) => `
           <div class="list-row">
-            <div><strong>${escapeHTML(row.label || "/")}</strong><span>${formatNumber(row.requests)} events / ${formatNumber(row.errors)} errors</span></div>
-            <b>${shortTime(row.last_seen)}</b>
+            <div><strong>${escapeHTML(row.path || row.label || "/")}</strong><span>${formatNumber(row.requests)} events / ${formatNumber(row.errors || ((row.status_4xx || 0) + (row.status_5xx || 0)))} errors</span></div>
+            <b>${row.bytes_sent !== undefined ? formatBytes(row.bytes_sent) : shortTime(row.last_seen)}</b>
           </div>
         `).join("") || empty("No related paths in loaded evidence.")}</div>
         ${drawerPager("uaPaths", pathPage)}
@@ -3751,8 +3757,18 @@ async function openDrawer(kind, rawIndex, value) {
     const item = state.detailCache[value] || findUserAgentByValue(value) || {};
     const sample = item.sample || item.user_agent || item.family || "User Agent";
     title = parseUserAgent({ ...item, sample }).label || item.family || userAgentFamily(sample) || "User Agent";
-    state.drawer = { kind, title, data: item, summary: null, pages: {} };
-    body = renderUserAgentDetail(item);
+    const params = new URLSearchParams(buildFilterQuery({ limit: 50 }));
+    if (item.id) params.set("id", item.id);
+    if (sample && sample !== "User Agent") params.set("sample", sample);
+    try {
+      const detail = await fetchJSON(`/api/v1/investigate/user-agent?${params}`);
+      const merged = { ...item, ...detail, user_agent: { ...item, ...(detail.user_agent || {}) } };
+      state.drawer = { kind, title, data: merged, summary: item, pages: {} };
+      body = renderUserAgentDetail(merged);
+    } catch (error) {
+      state.drawer = { kind, title, data: item, summary: null, pages: {} };
+      body = renderUserAgentDetail(item) + `<p class="form-error">${escapeHTML(error.message)}</p>`;
+    }
   } else if (kind === "report") {
     const cached = state.detailCache[value] || allReports()[index] || {};
     title = reportTitle(cached);
