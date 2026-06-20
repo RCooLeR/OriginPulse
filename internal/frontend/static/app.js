@@ -3215,18 +3215,20 @@ function renderReportDetail(item) {
     <section class="detail-grid two report-detail-grid">
       <article class="detail-card">
         <div class="detail-card-head"><h3>Charts</h3><span>${formatNumber(charts.length)} charts</span></div>
-        <div class="report-chart-stack">${charts.length ? charts.map(reportChartCard).join("") : empty("No chart data stored with this report.")}</div>
+        <div class="report-chart-stack">${charts.length ? charts.map((chart, index) => reportChartCard(chart, index)).join("") : empty("No chart data stored with this report.")}</div>
       </article>
       <article class="detail-card">
         <div class="detail-card-head"><h3>Drilldowns</h3><span>${formatNumber(drilldowns.length)} sections</span></div>
-        <div class="report-drilldown-stack">${drilldowns.length ? drilldowns.map(reportDrilldownCard).join("") : empty("No drilldowns stored with this report.")}</div>
+        <div class="report-drilldown-stack">${drilldowns.length ? drilldowns.map((drill, index) => reportDrilldownCard(drill, index)).join("") : empty("No drilldowns stored with this report.")}</div>
       </article>
     </section>
   `;
 }
 
-function reportChartCard(chart) {
+function reportChartCard(chart, index = 0) {
   const points = chart.data || [];
+  const pageKey = `reportChart${index}Points`;
+  const page = drawerPage(pageKey, points, 6);
   const values = points.map((point) => Number(point.value || 0));
   const total = values.reduce((acc, value) => acc + value, 0);
   const peak = points.reduce((best, point) => Number(point.value || 0) > Number(best.value || 0) ? point : best, points[0] || {});
@@ -3241,30 +3243,34 @@ function reportChartCard(chart) {
         ["Total", escapeHTML(formatNumber(total))],
         ["Peak", peak.label ? `${linkifyIPs(peak.label)} / ${escapeHTML(formatNumber(peak.value))}` : "-"],
       ])}
-      <div class="list compact-list">${points.slice(0, 6).map((point) => `
+      <div class="list compact-list">${page.rows.map((point) => `
         <div class="list-row">
           <div><strong>${linkifyIPs(point.label || shortTime(point.timestamp) || "-")}</strong><span>${linkifyIPs(point.meta || chart.unit || "")}</span></div>
           <b>${formatNumber(point.value)}${point.secondary !== undefined ? ` / ${formatNumber(point.secondary)}` : ""}</b>
         </div>
       `).join("") || empty("No chart points.")}</div>
+      ${drawerPager(pageKey, page)}
     </section>
   `;
 }
 
-function reportDrilldownCard(drill) {
+function reportDrilldownCard(drill, index = 0) {
   const rows = drill.items || [];
+  const pageKey = `reportDrilldown${index}Rows`;
+  const page = drawerPage(pageKey, rows, 8);
   return `
     <section class="report-subcard">
       <div class="report-subcard-head">
         <strong>${escapeHTML(drill.title || drill.key || "Drilldown")}</strong>
         <span>${formatNumber(rows.length)} rows</span>
       </div>
-      <div class="list compact-list">${rows.slice(0, 8).map((row) => `
+      <div class="list compact-list">${page.rows.map((row) => `
         <div class="list-row">
           <div><strong>${reportDrilldownTitleHTML(row)}</strong><span>${reportDrilldownMetaHTML(row)}</span></div>
           <b>${escapeHTML(reportDrilldownValue(row))}</b>
         </div>
       `).join("") || empty("No drilldown rows.")}</div>
+      ${drawerPager(pageKey, page)}
     </section>
   `;
 }
