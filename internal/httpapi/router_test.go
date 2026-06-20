@@ -142,3 +142,22 @@ func TestParseLimitUsesDeeperDashboardDefaults(t *testing.T) {
 		})
 	}
 }
+
+func TestParseOffset(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want int
+	}{
+		{raw: "", want: 0},
+		{raw: "-5", want: 0},
+		{raw: "bogus", want: 0},
+		{raw: "24", want: 24},
+	}
+
+	for _, tt := range tests {
+		req := httptest.NewRequest("GET", "/?offset="+tt.raw, nil)
+		if got := parseOffset(req); got != tt.want {
+			t.Fatalf("parseOffset(%q) = %d, want %d", tt.raw, got, tt.want)
+		}
+	}
+}

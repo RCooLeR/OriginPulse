@@ -592,16 +592,21 @@ func (api API) refreshIPIntel(w http.ResponseWriter, r *http.Request) {
 
 func (api API) recentReports(w http.ResponseWriter, r *http.Request) {
 	if api.reports == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"reports": []reports.Report{}})
+		writeJSON(w, http.StatusOK, reports.CatalogResult{Reports: []reports.Report{}, ReportTypes: []string{}})
 		return
 	}
 
-	recentReports, err := api.reports.Recent(r.Context(), parseLimit(r, 100, reports.RecentMaxLimit), r.URL.Query().Get("site_id"))
+	catalog, err := api.reports.Catalog(r.Context(), reports.CatalogOptions{
+		Limit:      parseLimit(r, 100, reports.RecentMaxLimit),
+		Offset:     parseOffset(r),
+		SiteID:     r.URL.Query().Get("site_id"),
+		ReportType: r.URL.Query().Get("report_type"),
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "reports_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"reports": recentReports})
+	writeJSON(w, http.StatusOK, catalog)
 }
 
 func (api API) reportDetail(w http.ResponseWriter, r *http.Request) {
@@ -1623,6 +1628,15 @@ func parseLimit(r *http.Request, defaultLimit int, maxLimit int) int {
 		}
 	}
 	return defaultLimit
+}
+
+func parseOffset(r *http.Request) int {
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 0
 }
 
 func parseBool(value string) bool {

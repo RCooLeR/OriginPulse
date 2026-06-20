@@ -21,7 +21,7 @@ const routes = [
 
 const routeById = Object.fromEntries(routes.map((route) => [route.id, route]));
 const pathToRoute = Object.fromEntries(routes.map((route) => [route.path, route.id]));
-const reportCatalogLimit = 500;
+const reportCatalogPageSize = 8;
 const pulseHistoryLimit = 500;
 const alertHistoryLimit = 500;
 const drawerHistoryLimit = 500;
@@ -67,6 +67,7 @@ const state = {
     sites: [],
     alerts: [],
     reports: [],
+    reportCatalog: { total: 0, limit: reportCatalogPageSize, offset: 0, report_types: [] },
     jobs: [],
     credentials: {},
     collectorHealth: {},
@@ -178,12 +179,11 @@ function wireEvents() {
     resetPagination();
     render();
   });
-  document.addEventListener("change", (event) => {
+  document.addEventListener("change", async (event) => {
     const reportType = event.target.closest("[data-report-type-filter]");
     if (reportType) {
       state.reportType = reportType.value || "all";
-      state.pages.reportCatalog = 1;
-      render();
+      await loadReportCatalogPage(1);
     }
   });
   qs("#refreshButton").addEventListener("click", () => refreshAll());
@@ -224,7 +224,7 @@ async function refreshAll() {
       safeFetch(`/api/v1/investigate/traffic?${estateTrafficFilter}`, {}),
       safeFetch("/api/v1/sites", { sites: [] }),
       safeFetch(`/api/v1/alerts?limit=${alertHistoryLimit}`, { alerts: [] }),
-      safeFetch(`/api/v1/reports/recent?${buildFilterQuery({ limit: reportCatalogLimit })}`, { reports: [] }),
+      safeFetch(`/api/v1/reports/recent?${reportCatalogQuery(1)}`, { reports: [], total: 0, limit: reportCatalogPageSize, offset: 0, report_types: [] }),
       safeFetch(`/api/v1/system/jobs?limit=${pulseHistoryLimit}`, { jobs: [] }),
       safeFetch("/api/v1/system/credentials", {}),
       safeFetch(`/api/v1/system/collector-health?limit=${pulseHistoryLimit}`, {}),
@@ -247,6 +247,7 @@ async function refreshAll() {
       sites: sites.sites || [],
       alerts: alerts.alerts || [],
       reports: reports.reports || [],
+      reportCatalog: reportCatalogMeta(reports),
       jobs: jobs.jobs || [],
       credentials,
       collectorHealth,
@@ -905,18 +906,23 @@ function botSourceIPsPanel(rows) {
 }
 
 function renderReports() {
+  const catalog = state.data.reportCatalog || {};
   const all = filtered(searchItems(allReports(), reportSearchText));
-  const types = reportTypes(all);
+  const types = (catalog.report_types || []).length ? catalog.report_types : reportTypes(all);
   if (state.reportType !== "all" && !types.includes(state.reportType)) state.reportType = "all";
   const reports = state.reportType === "all" ? all : all.filter((item) => reportKind(item) === state.reportType);
-  const page = paginate(reports, state.pages.reportCatalog, 8);
+  const page = state.search
+    ? paginate(reports, state.pages.reportCatalog, reportCatalogPageSize)
+    : reportCatalogPage(reports, catalog);
   state.pages.reportCatalog = page.page;
   const selected = page.rows[0] || reports[0] || {};
+  const totalReports = state.search ? reports.length : Number(catalog.total ?? all.length);
+  const reportTypeCounts = catalog.report_type_counts || {};
   return `
     ${metricGrid([
-      metric("Reports", all.length, "fa-file-lines", "cyan"),
-      metric("Daily", all.filter((r) => reportKind(r).includes("daily")).length, "fa-calendar-day", "green"),
-      metric("Weekly", all.filter((r) => reportKind(r).includes("weekly")).length, "fa-calendar-week", "purple"),
+      metric("Reports", totalReports, "fa-file-lines", "cyan"),
+      metric("Daily", reportTypeCounts.daily ?? all.filter((r) => reportKind(r).includes("daily")).length, "fa-calendar-day", "green"),
+      metric("Weekly", reportTypeCounts.weekly ?? all.filter((r) => reportKind(r).includes("weekly")).length, "fa-calendar-week", "purple"),
       metric("Recent Alerts", state.data.alerts.length, "fa-bell", "red"),
     ])}
     <section class="layout-2">
@@ -2920,6 +2926,10 @@ async function handleAction(button) {
     const key = button.dataset.pageKey;
     const page = Number(button.dataset.page || 1);
     if (key && Number.isFinite(page)) {
+      if (key === "reportCatalog" && !state.search) {
+        await loadReportCatalogPage(page);
+        return;
+      }
       state.pages[key] = Math.max(1, page);
       render();
     }
@@ -2976,8 +2986,7 @@ async function handleAction(button) {
     return runButton(button, "Report generated", async () => {
       const report = await fetchJSON("/api/v1/reports/generate", { method: "POST", body: JSON.stringify({ range: state.range, site_id: state.siteID }) });
       state.localReports = [report, ...state.localReports].slice(0, 10);
-      const recent = await safeFetch(`/api/v1/reports/recent?${buildFilterQuery({ limit: reportCatalogLimit })}`, { reports: [] });
-      state.data.reports = recent.reports || [];
+      await loadReportCatalogPage(1);
       render();
     });
   }
@@ -4238,6 +4247,59 @@ function reportTitle(report) {
 
 function reportTypes(reports) {
   return unique(reports.map(reportKind)).sort((a, b) => a.localeCompare(b));
+}
+
+function reportCatalogQuery(page = state.pages.reportCatalog || 1) {
+  const safePage = Math.max(1, Number(page || 1));
+  const extra = {
+    limit: reportCatalogPageSize,
+    offset: (safePage - 1) * reportCatalogPageSize,
+  };
+  if (state.reportType && state.reportType !== "all") extra.report_type = state.reportType;
+  return buildFilterQuery(extra);
+}
+
+async function loadReportCatalogPage(page = state.pages.reportCatalog || 1) {
+  const safePage = Math.max(1, Number(page || 1));
+  const response = await safeFetch(`/api/v1/reports/recent?${reportCatalogQuery(safePage)}`, {
+    reports: [],
+    total: 0,
+    limit: reportCatalogPageSize,
+    offset: (safePage - 1) * reportCatalogPageSize,
+    report_types: state.data.reportCatalog?.report_types || [],
+  });
+  state.data.reports = response.reports || [];
+  state.data.reportCatalog = reportCatalogMeta(response);
+  state.pages.reportCatalog = reportCatalogPage(state.data.reports, state.data.reportCatalog).page;
+  render();
+}
+
+function reportCatalogMeta(response = {}) {
+  return {
+    total: Number(response.total || 0),
+    limit: Number(response.limit || reportCatalogPageSize),
+    offset: Number(response.offset || 0),
+    report_types: response.report_types || [],
+    report_type_counts: response.report_type_counts || {},
+  };
+}
+
+function reportCatalogPage(rows, catalog = {}) {
+  const pageSize = Number(catalog.limit || reportCatalogPageSize);
+  const total = Number(catalog.total ?? rows.length);
+  const offset = Number(catalog.offset || 0);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = clamp(Math.floor(offset / pageSize) + 1, 1, totalPages);
+  const visibleRows = rows.slice(0, pageSize);
+  return {
+    rows: visibleRows,
+    page,
+    pageSize,
+    total,
+    totalPages,
+    start: total ? offset + 1 : 0,
+    end: Math.min(total, offset + visibleRows.length),
+  };
 }
 
 function formatReportType(value) {

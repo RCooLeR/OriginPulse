@@ -29,6 +29,22 @@ var ErrNotFound = errors.New("report not found")
 
 const RecentMaxLimit = 500
 
+type CatalogOptions struct {
+	Limit      int
+	Offset     int
+	SiteID     string
+	ReportType string
+}
+
+type CatalogResult struct {
+	Reports          []Report       `json:"reports"`
+	Total            int            `json:"total"`
+	Limit            int            `json:"limit"`
+	Offset           int            `json:"offset"`
+	ReportTypes      []string       `json:"report_types"`
+	ReportTypeCounts map[string]int `json:"report_type_counts"`
+}
+
 type Options struct {
 	Range      string `json:"range"`
 	ReportType string `json:"report_type"`
@@ -176,14 +192,57 @@ func (s *Service) Generate(ctx context.Context, opts Options) (Report, error) {
 }
 
 func (s *Service) Recent(ctx context.Context, limit int, siteID string) ([]Report, error) {
-	if s.db == nil || !s.db.Enabled() {
-		return []Report{}, nil
+	catalog, err := s.Catalog(ctx, CatalogOptions{Limit: limit, SiteID: siteID})
+	return catalog.Reports, err
+}
+
+func (s *Service) Catalog(ctx context.Context, opts CatalogOptions) (CatalogResult, error) {
+	result := CatalogResult{
+		Reports:          []Report{},
+		Limit:            normalizeRecentLimit(opts.Limit),
+		Offset:           normalizeOffset(opts.Offset),
+		ReportTypes:      []string{},
+		ReportTypeCounts: map[string]int{},
 	}
-	limit = normalizeRecentLimit(limit)
-	siteID = strings.TrimSpace(siteID)
+	if s.db == nil || !s.db.Enabled() {
+		return result, nil
+	}
+	siteID := strings.TrimSpace(opts.SiteID)
+	reportType := strings.TrimSpace(opts.ReportType)
 	pool, err := s.db.Pool()
 	if err != nil {
-		return nil, err
+		return result, err
+	}
+
+	typeRows, err := pool.Query(ctx, `
+SELECT report_type, count(*)::int
+FROM llm_reports
+WHERE ($1 = '' OR site_id = $1 OR site_id IS NULL)
+GROUP BY report_type
+ORDER BY report_type`, siteID)
+	if err != nil {
+		return result, err
+	}
+	defer typeRows.Close()
+	for typeRows.Next() {
+		var value string
+		var count int
+		if err := typeRows.Scan(&value, &count); err != nil {
+			return result, err
+		}
+		result.ReportTypes = append(result.ReportTypes, value)
+		result.ReportTypeCounts[value] = count
+	}
+	if err := typeRows.Err(); err != nil {
+		return result, err
+	}
+
+	if err := pool.QueryRow(ctx, `
+SELECT count(*)::int
+FROM llm_reports
+WHERE ($1 = '' OR site_id = $1 OR site_id IS NULL)
+  AND ($2 = '' OR report_type = $2)`, siteID, reportType).Scan(&result.Total); err != nil {
+		return result, err
 	}
 
 	rows, err := pool.Query(ctx, `
@@ -198,14 +257,15 @@ SELECT id::text,
        created_at
 FROM llm_reports
 WHERE ($2 = '' OR site_id = $2 OR site_id IS NULL)
+  AND ($3 = '' OR report_type = $3)
 ORDER BY created_at DESC
-LIMIT $1`, limit, siteID)
+LIMIT $1 OFFSET $4`, result.Limit, siteID, reportType, result.Offset)
 	if err != nil {
-		return nil, err
+		return result, err
 	}
 	defer rows.Close()
 
-	reports := make([]Report, 0, limit)
+	reports := make([]Report, 0, result.Limit)
 	for rows.Next() {
 		var item Report
 		var summaryRaw string
@@ -220,7 +280,7 @@ LIMIT $1`, limit, siteID)
 			&item.OutputPreview,
 			&item.CreatedAt,
 		); err != nil {
-			return nil, err
+			return result, err
 		}
 		item.Stored = true
 		item.OllamaConfigured = true
@@ -231,7 +291,11 @@ LIMIT $1`, limit, siteID)
 		}
 		reports = append(reports, item)
 	}
-	return reports, rows.Err()
+	if err := rows.Err(); err != nil {
+		return result, err
+	}
+	result.Reports = reports
+	return result, nil
 }
 
 func normalizeRecentLimit(limit int) int {
@@ -242,6 +306,13 @@ func normalizeRecentLimit(limit int) int {
 		return RecentMaxLimit
 	}
 	return limit
+}
+
+func normalizeOffset(offset int) int {
+	if offset < 0 {
+		return 0
+	}
+	return offset
 }
 
 func (s *Service) Get(ctx context.Context, id string) (Report, error) {
