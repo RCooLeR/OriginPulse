@@ -43,6 +43,10 @@ const state = {
   siteID: new URLSearchParams(location.search).get("site_id") || "",
   search: "",
   reportType: "all",
+  pipeline: {
+    maxSegments: 100,
+    indexWorkers: 2,
+  },
   currentUser: null,
   loading: false,
   securityAnalysisLoading: false,
@@ -202,6 +206,11 @@ function wireEvents() {
     if (reportType) {
       state.reportType = reportType.value || "all";
       await loadReportCatalogPage(1);
+      return;
+    }
+    const pipelineField = event.target.closest("[data-pipeline-field]");
+    if (pipelineField) {
+      updatePipelineOption(pipelineField.dataset.pipelineField, pipelineField.value);
     }
   });
   qs("#refreshButton").addEventListener("click", () => refreshAll());
@@ -209,7 +218,9 @@ function wireEvents() {
     await fetchJSON("/api/v1/system/collect", { method: "POST" });
   }));
   qs("#pipelineButton").addEventListener("click", () => runButton(qs("#pipelineButton"), "Pipeline complete", async () => {
-    await fetchJSON("/api/v1/system/pipeline", { method: "POST", body: "{}" });
+    const result = await runPipelineRequest();
+    await refreshAll();
+    return pipelineResultMessage(result);
   }));
   qs("#logoutButton").addEventListener("click", logout);
   qs("#loginForm").addEventListener("submit", login);
@@ -1142,6 +1153,7 @@ function renderPulseLogs() {
         <div><h2>Log Parser & Ingestion</h2><p>Pipeline quality from combined segments and recent jobs.</p></div>
         <div class="toolbar">
           <button class="button small" type="button" data-action="refresh">${iconHTML("fa-rotate-right")}Refresh</button>
+          ${pipelineControls()}
           <button class="button small" type="button" data-action="run-pipeline">${iconHTML("fa-code-merge")}Run Pipeline</button>
           <button class="button small" type="button" data-action="run-backfill">${iconHTML("fa-database")}Backfill Batch</button>
           <button class="button small" type="button" data-action="run-archive-dry">${iconHTML("fa-box-archive")}Archive Check</button>
@@ -1310,6 +1322,39 @@ function pipelineStep(label, value, icon, color) {
       <div><strong>${escapeHTML(label)}</strong><small>${formatCompact(value)}</small></div>
     </div>
   `;
+}
+
+function pipelineControls() {
+  return `
+    <label class="number-control" title="Maximum pending combined segments to index in one run.">
+      <span>Segments</span>
+      <input type="number" min="1" max="5000" step="1" value="${escapeAttr(state.pipeline.maxSegments)}" data-pipeline-field="maxSegments" aria-label="Pipeline max segments">
+    </label>
+    <label class="number-control" title="Parallel index workers for independent pending segments.">
+      <span>Workers</span>
+      <input type="number" min="1" max="32" step="1" value="${escapeAttr(state.pipeline.indexWorkers)}" data-pipeline-field="indexWorkers" aria-label="Pipeline index workers">
+    </label>
+  `;
+}
+
+function updatePipelineOption(field, rawValue) {
+  const value = Math.floor(Number(rawValue || 0));
+  if (field === "maxSegments") state.pipeline.maxSegments = clamp(value || 100, 1, 5000);
+  if (field === "indexWorkers") state.pipeline.indexWorkers = clamp(value || 2, 1, 32);
+}
+
+async function runPipelineRequest() {
+  qsa("[data-pipeline-field]").forEach((field) => updatePipelineOption(field.dataset.pipelineField, field.value));
+  const body = {
+    max_segments: clamp(Math.floor(Number(state.pipeline.maxSegments || 100)), 1, 5000),
+    index_workers: clamp(Math.floor(Number(state.pipeline.indexWorkers || 2)), 1, 32),
+  };
+  return fetchJSON("/api/v1/system/pipeline", { method: "POST", body: JSON.stringify(body) });
+}
+
+function pipelineResultMessage(result = {}) {
+  const workers = state.pipeline.indexWorkers || 1;
+  return `${formatNumber(result.indexed_segments || 0)} segments indexed with ${formatNumber(workers)} worker${Number(workers) === 1 ? "" : "s"}`;
 }
 
 function pulseJobsPanel() {
@@ -3073,8 +3118,9 @@ async function handleAction(button) {
   if (action === "refresh") return refreshAll();
   if (action === "run-pipeline") {
     return runButton(button, "Pipeline complete", async () => {
-      await fetchJSON("/api/v1/system/pipeline", { method: "POST", body: "{}" });
+      const result = await runPipelineRequest();
       await refreshAll();
+      return pipelineResultMessage(result);
     });
   }
   if (action === "run-backfill") {

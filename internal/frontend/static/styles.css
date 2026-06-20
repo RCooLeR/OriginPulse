@@ -368,6 +368,31 @@ dd {
   min-width: 150px;
 }
 
+.number-control {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #06111f;
+}
+
+.number-control span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.number-control input {
+  width: 62px;
+  min-height: 24px;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  outline: none;
+}
+
 .live-pill {
   min-height: 38px;
   display: inline-flex;
