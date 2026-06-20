@@ -56,9 +56,34 @@ func TestDownloadGeoLite2CityMMDBRequiresCredentials(t *testing.T) {
 func TestUpdaterEnsureAndLoadReportsMissingDatabaseWithoutCredentials(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "GeoLite2-City.mmdb")
 	updater := NewUpdater(UpdaterConfig{DBPath: dbPath, DownloadURL: "http://example.invalid/db.tar.gz", HTTPTimeout: time.Second})
-	err := updater.EnsureAndLoad(t.Context(), NewManager(dbPath))
+	err := updater.ensureDatabase(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "GeoLite2 database is missing") {
-		t.Fatalf("EnsureAndLoad() error = %v, want missing database message", err)
+		t.Fatalf("ensureDatabase() error = %v, want missing database message", err)
+	}
+}
+
+func TestUpdaterEnsureDatabaseCopiesSeedBeforeDownload(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "runtime", "GeoLite2-City.mmdb")
+	seedPath := filepath.Join(dir, "seed", "GeoLite2-City.mmdb")
+	if err := os.MkdirAll(filepath.Dir(seedPath), 0o755); err != nil {
+		t.Fatalf("mkdir seed dir: %v", err)
+	}
+	payload := []byte("seed-mmdb")
+	if err := os.WriteFile(seedPath, payload, 0o644); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+
+	updater := NewUpdater(UpdaterConfig{DBPath: dbPath, SeedPath: seedPath, DownloadURL: "http://example.invalid/db.tar.gz", HTTPTimeout: time.Second})
+	if err := updater.ensureDatabase(t.Context()); err != nil {
+		t.Fatalf("ensureDatabase() error = %v", err)
+	}
+	got, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("read db: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("seeded payload = %q, want %q", got, payload)
 	}
 }
 

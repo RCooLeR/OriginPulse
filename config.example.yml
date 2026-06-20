@@ -101,6 +101,8 @@ geoip:
   enabled: true
   db_path_env: "GEOIP_DB_PATH"
   db_path: "./data/GeoLite2-City.mmdb"
+  seed_path_env: "GEOIP_SEED_PATH"
+  seed_path: "./assets/geoip/GeoLite2-City.mmdb"
   account_id_env: "MAXMIND_ACCOUNT_ID"
   license_key_env: "MAXMIND_LICENSE_KEY"
   download_url_env: "MAXMIND_GEOLITE2_CITY_URL"

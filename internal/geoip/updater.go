@@ -15,6 +15,7 @@ import (
 
 type UpdaterConfig struct {
 	DBPath           string
+	SeedPath         string
 	DownloadURL      string
 	AccountID        string
 	LicenseKey       string
@@ -32,16 +33,26 @@ func NewUpdater(cfg UpdaterConfig) *Updater {
 }
 
 func (u *Updater) EnsureAndLoad(ctx context.Context, mgr *Manager) error {
+	if err := u.ensureDatabase(ctx); err != nil {
+		return err
+	}
+	return mgr.Load()
+}
+
+func (u *Updater) ensureDatabase(ctx context.Context) error {
 	if _, err := os.Stat(u.cfg.DBPath); err == nil {
-		return mgr.Load()
+		return nil
+	}
+	if err := u.copySeedDatabase(); err == nil {
+		log.Info().Str("db_path", u.cfg.DBPath).Str("seed_path", u.cfg.SeedPath).Msg("geoip database seeded")
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, errSeedPathEmpty) {
+		return err
 	}
 	if strings.TrimSpace(u.cfg.AccountID) == "" || strings.TrimSpace(u.cfg.LicenseKey) == "" {
 		return errors.New("GeoLite2 database is missing and MAXMIND_ACCOUNT_ID/MAXMIND_LICENSE_KEY are not set")
 	}
-	if err := u.download(ctx); err != nil {
-		return err
-	}
-	return mgr.Load()
+	return u.download(ctx)
 }
 
 func (u *Updater) Run(ctx context.Context, mgr *Manager) {
@@ -117,6 +128,38 @@ func (u *Updater) download(ctx context.Context) error {
 	case err := <-done:
 		return err
 	}
+}
+
+var errSeedPathEmpty = errors.New("geoip seed path is empty")
+
+func (u *Updater) copySeedDatabase() error {
+	seedPath := strings.TrimSpace(u.cfg.SeedPath)
+	if seedPath == "" {
+		return errSeedPathEmpty
+	}
+	source, err := os.Open(seedPath)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	if err := os.MkdirAll(filepath.Dir(u.cfg.DBPath), 0o755); err != nil {
+		return err
+	}
+	tempPath := u.cfg.DBPath + ".tmp"
+	target, err := os.OpenFile(tempPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := target.ReadFrom(source); err != nil {
+		_ = target.Close()
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := target.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	return os.Rename(tempPath, u.cfg.DBPath)
 }
 
 func (u *Updater) headLastModified(ctx context.Context) (string, error) {

@@ -558,6 +558,7 @@ func setupGeoIP(ctx context.Context, cfg config.Config) (*geoip.Manager, *geoip.
 	manager := geoip.NewManager(cfg.GeoIPDBPath())
 	updater := geoip.NewUpdater(geoip.UpdaterConfig{
 		DBPath:           cfg.GeoIPDBPath(),
+		SeedPath:         cfg.GeoIPSeedPath(),
 		DownloadURL:      cfg.GeoIPDownloadURL(),
 		AccountID:        cfg.GeoIPAccountID(),
 		LicenseKey:       cfg.GeoIPLicenseKey(),

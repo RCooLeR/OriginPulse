@@ -8,3 +8,4 @@
 *.log
 *.tmp
 *.mmdb
+!/assets/geoip/GeoLite2-City.mmdb

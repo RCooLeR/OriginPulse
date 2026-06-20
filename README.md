@@ -84,7 +84,7 @@ originpulse check-config -config config.yml
 
 ## GeoIP / MaxMind
 
-OriginPulse can enrich IP intelligence with GeoLite2 City. On startup it loads `GEOIP_DB_PATH` or `geoip.db_path`; if the file is missing and `MAXMIND_ACCOUNT_ID` plus `MAXMIND_LICENSE_KEY` are set, it downloads `GeoLite2-City.mmdb` and refreshes it on `geoip.update_interval`.
+OriginPulse can enrich IP intelligence with GeoLite2 City. On startup it loads `GEOIP_DB_PATH` or `geoip.db_path`; if the file is missing, it first copies the bundled `geoip.seed_path` database into place. If no seed database is available and `MAXMIND_ACCOUNT_ID` plus `MAXMIND_LICENSE_KEY` are set, it downloads `GeoLite2-City.mmdb` and refreshes it on `geoip.update_interval`.
 
 Downloaded `.mmdb` files are runtime data and are ignored by git.
 

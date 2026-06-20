@@ -130,6 +130,8 @@ type GeoIPConfig struct {
 	Enabled          bool          `yaml:"enabled" json:"enabled"`
 	DBPath           string        `yaml:"db_path" json:"db_path"`
 	DBPathEnv        string        `yaml:"db_path_env" json:"db_path_env"`
+	SeedPath         string        `yaml:"seed_path" json:"seed_path"`
+	SeedPathEnv      string        `yaml:"seed_path_env" json:"seed_path_env"`
 	AccountID        string        `yaml:"account_id" json:"-"`
 	AccountIDEnv     string        `yaml:"account_id_env" json:"account_id_env"`
 	LicenseKey       string        `yaml:"license_key" json:"-"`
@@ -300,6 +302,8 @@ func Default() Config {
 			Enabled:          true,
 			DBPath:           "./data/GeoLite2-City.mmdb",
 			DBPathEnv:        "GEOIP_DB_PATH",
+			SeedPath:         "./assets/geoip/GeoLite2-City.mmdb",
+			SeedPathEnv:      "GEOIP_SEED_PATH",
 			AccountIDEnv:     "MAXMIND_ACCOUNT_ID",
 			LicenseKeyEnv:    "MAXMIND_LICENSE_KEY",
 			DownloadURL:      "https://download.maxmind.com/geoip/databases/GeoLite2-City/download?suffix=tar.gz",
@@ -583,6 +587,15 @@ func (c Config) GeoIPDBPath() string {
 	return c.absPath(c.GeoIP.DBPath)
 }
 
+func (c Config) GeoIPSeedPath() string {
+	if c.GeoIP.SeedPathEnv != "" {
+		if value := strings.TrimSpace(os.Getenv(c.GeoIP.SeedPathEnv)); value != "" {
+			return c.absPath(value)
+		}
+	}
+	return c.absPath(c.GeoIP.SeedPath)
+}
+
 func (c Config) GeoIPAccountID() string {
 	if c.GeoIP.AccountIDEnv != "" {
 		if value := strings.TrimSpace(os.Getenv(c.GeoIP.AccountIDEnv)); value != "" {
@@ -813,6 +826,12 @@ func (c *Config) normalize() {
 	}
 	if c.GeoIP.DBPathEnv == "" {
 		c.GeoIP.DBPathEnv = "GEOIP_DB_PATH"
+	}
+	if c.GeoIP.SeedPath == "" {
+		c.GeoIP.SeedPath = filepath.Join("assets", "geoip", "GeoLite2-City.mmdb")
+	}
+	if c.GeoIP.SeedPathEnv == "" {
+		c.GeoIP.SeedPathEnv = "GEOIP_SEED_PATH"
 	}
 	if c.GeoIP.AccountIDEnv == "" {
 		c.GeoIP.AccountIDEnv = "MAXMIND_ACCOUNT_ID"
