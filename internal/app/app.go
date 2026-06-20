@@ -85,7 +85,7 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		}
 	}
 
-	store := jobs.NewStore(200)
+	store := jobs.NewStore(200, storeDB)
 	rawFiles := pantheon.NewRawFileRepository(storeDB)
 	collector := pantheon.NewCollector(cfg, store, rawFiles)
 	segmentRepo := combiner.NewRepository(storeDB)

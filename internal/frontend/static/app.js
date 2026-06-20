@@ -27,6 +27,7 @@ const segmentPageSize = 10;
 const rawFilePageSize = 10;
 const archivePageSize = 8;
 const archiveImportPageSize = 8;
+const jobPageSize = 10;
 const pulseHistoryLimit = 500;
 const alertHistoryLimit = 500;
 const alertRequestPageSize = 6;
@@ -79,6 +80,7 @@ const state = {
     reportCatalog: { total: 0, limit: reportCatalogPageSize, offset: 0, report_types: [] },
     segmentCatalog: { total: 0, limit: segmentPageSize, offset: 0 },
     jobs: [],
+    jobCatalog: { total: 0, limit: jobPageSize, offset: 0 },
     credentials: {},
     collectorHealth: {},
     rawFileCatalog: { total: 0, limit: rawFilePageSize, offset: 0 },
@@ -238,7 +240,7 @@ async function refreshAll() {
       safeFetch("/api/v1/sites", { sites: [] }),
       safeFetch(`/api/v1/alerts?limit=${alertHistoryLimit}`, { alerts: [] }),
       safeFetch(`/api/v1/reports/recent?${reportCatalogQuery(1)}`, { reports: [], total: 0, limit: reportCatalogPageSize, offset: 0, report_types: [] }),
-      safeFetch(`/api/v1/system/jobs?limit=${pulseHistoryLimit}`, { jobs: [] }),
+      safeFetch(`/api/v1/system/jobs?${jobHistoryQuery(1)}`, { jobs: [], total: 0, limit: jobPageSize, offset: 0 }),
       safeFetch("/api/v1/system/credentials", {}),
       safeFetch(`/api/v1/system/collector-health?${rawFileHistoryQuery(1)}`, {}),
       safeFetch("/api/v1/system/retention", {}),
@@ -262,6 +264,7 @@ async function refreshAll() {
       reports: reports.reports || [],
       reportCatalog: reportCatalogMeta(reports),
       jobs: jobs.jobs || [],
+      jobCatalog: jobCatalogMeta(jobs),
       credentials,
       collectorHealth,
       rawFileCatalog: rawFileCatalogMeta(collectorHealth.raw_files || {}),
@@ -1245,13 +1248,13 @@ function pipelineStep(label, value, icon, color) {
 
 function pulseJobsPanel() {
   const rows = filtered(searchItems(state.data.jobs || [], (item) => `${item.type || ""} ${item.status || ""} ${item.message || ""}`));
-  const page = paginate(rows, state.pages.pulseJobs, 10);
+  const page = state.search ? paginate(rows, state.pages.pulseJobs, 10) : jobPage(rows, state.data.jobCatalog);
   state.pages.pulseJobs = page.page;
   return `
     <article class="panel">
       <div class="panel-head">
         <div><h2>Jobs</h2><p>Recent background work and scheduler activity.</p></div>
-        <span class="pill">${formatNumber(rows.length)} jobs</span>
+        <span class="pill">${formatNumber(page.total)} jobs</span>
       </div>
       ${jobsTable(page.rows)}
       ${pager("pulseJobs", page)}
@@ -3001,6 +3004,10 @@ async function handleAction(button) {
         await loadArchiveImportPage(page);
         return;
       }
+      if (key === "pulseJobs" && !state.search) {
+        await loadJobPage(page);
+        return;
+      }
       state.pages[key] = Math.max(1, page);
       render();
     }
@@ -4659,6 +4666,40 @@ function archiveImportCatalogMeta(response = {}) {
 
 function archiveImportPage(rows, catalog = {}) {
   return serverBackedPage(rows, Number(catalog.total ?? rows.length), Number(catalog.limit || archiveImportPageSize), Number(catalog.offset || 0));
+}
+
+function jobHistoryQuery(page = state.pages.pulseJobs || 1) {
+  const safePage = Math.max(1, Number(page || 1));
+  return new URLSearchParams({
+    limit: String(jobPageSize),
+    offset: String((safePage - 1) * jobPageSize),
+  }).toString();
+}
+
+async function loadJobPage(page = state.pages.pulseJobs || 1) {
+  const safePage = Math.max(1, Number(page || 1));
+  const response = await safeFetch(`/api/v1/system/jobs?${jobHistoryQuery(safePage)}`, {
+    jobs: [],
+    total: 0,
+    limit: jobPageSize,
+    offset: (safePage - 1) * jobPageSize,
+  });
+  state.data.jobs = response.jobs || [];
+  state.data.jobCatalog = jobCatalogMeta(response);
+  state.pages.pulseJobs = jobPage(state.data.jobs, state.data.jobCatalog).page;
+  render();
+}
+
+function jobCatalogMeta(response = {}) {
+  return {
+    total: Number(response.total || 0),
+    limit: Number(response.limit || jobPageSize),
+    offset: Number(response.offset || 0),
+  };
+}
+
+function jobPage(rows, catalog = {}) {
+  return serverBackedPage(rows, Number(catalog.total ?? rows.length), Number(catalog.limit || jobPageSize), Number(catalog.offset || 0));
 }
 
 function reportCatalogMeta(response = {}) {

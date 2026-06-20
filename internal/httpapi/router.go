@@ -832,9 +832,7 @@ func (api API) credentials(w http.ResponseWriter, r *http.Request) {
 
 func (api API) recentJobs(w http.ResponseWriter, r *http.Request) {
 	limit := parseLimit(r, 100, 500)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"jobs": api.jobs.Recent(limit),
-	})
+	writeJSON(w, http.StatusOK, api.jobs.RecentPage(limit, parseOffset(r)))
 }
 
 func (api API) collectorHealth(w http.ResponseWriter, r *http.Request) {
