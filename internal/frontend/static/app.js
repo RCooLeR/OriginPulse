@@ -23,6 +23,7 @@ const routeById = Object.fromEntries(routes.map((route) => [route.id, route]));
 const pathToRoute = Object.fromEntries(routes.map((route) => [route.path, route.id]));
 const reportCatalogPageSize = 8;
 const notificationPageSize = 8;
+const segmentPageSize = 10;
 const pulseHistoryLimit = 500;
 const alertHistoryLimit = 500;
 const alertRequestPageSize = 6;
@@ -73,6 +74,7 @@ const state = {
     alerts: [],
     reports: [],
     reportCatalog: { total: 0, limit: reportCatalogPageSize, offset: 0, report_types: [] },
+    segmentCatalog: { total: 0, limit: segmentPageSize, offset: 0 },
     jobs: [],
     credentials: {},
     collectorHealth: {},
@@ -241,7 +243,7 @@ async function refreshAll() {
       safeFetch(`/api/v1/notifications?${notificationHistoryQuery(1)}`, {}),
       safeFetch("/api/v1/notifications/web-push/public-key", {}),
       safeFetch("/api/v1/users", { users: [] }),
-      safeFetch(`/api/v1/system/segments?limit=${pulseHistoryLimit}`, { segments: [] }),
+      safeFetch(`/api/v1/system/segments?${segmentHistoryQuery(1)}`, { segments: [], total: 0, limit: segmentPageSize, offset: 0 }),
     ]);
     state.data = {
       overview,
@@ -265,6 +267,7 @@ async function refreshAll() {
       webPush,
       users: users.users || [],
       segments: segments.segments || [],
+      segmentCatalog: segmentCatalogMeta(segments),
     };
     render();
     void ensureRouteData();
@@ -1249,13 +1252,13 @@ function pulseJobsPanel() {
 
 function pulseSegmentsPanel() {
   const rows = filtered(searchItems(state.data.segments || [], (item) => `${item.log_type || ""} ${item.status || ""} ${item.path || ""} ${item.bucket_ts || item.bucket_start || ""}`));
-  const page = paginate(rows, state.pages.pulseSegments, 10);
+  const page = state.search ? paginate(rows, state.pages.pulseSegments, 10) : segmentPage(rows, state.data.segmentCatalog);
   state.pages.pulseSegments = page.page;
   return `
     <article class="panel">
       <div class="panel-head">
         <div><h2>Indexed Segments</h2><p>Combined files registered for indexing.</p></div>
-        <span class="pill">${formatNumber(rows.length)} segments</span>
+        <span class="pill">${formatNumber(page.total)} segments</span>
       </div>
       ${segmentsTable(page.rows)}
       ${pager("pulseSegments", page)}
@@ -2973,6 +2976,10 @@ async function handleAction(button) {
         await loadNotificationPage(page, key);
         return;
       }
+      if (key === "pulseSegments" && !state.search) {
+        await loadSegmentPage(page);
+        return;
+      }
       state.pages[key] = Math.max(1, page);
       render();
     }
@@ -4498,6 +4505,40 @@ function notificationPage(rows, page = 1) {
     return serverBackedPage(rows, Number(status.recent_total || 0), Number(status.recent_limit || notificationPageSize), Number(status.recent_offset || 0));
   }
   return paginate(rows, page, notificationPageSize);
+}
+
+function segmentHistoryQuery(page = state.pages.pulseSegments || 1) {
+  const safePage = Math.max(1, Number(page || 1));
+  return new URLSearchParams({
+    limit: String(segmentPageSize),
+    offset: String((safePage - 1) * segmentPageSize),
+  }).toString();
+}
+
+async function loadSegmentPage(page = state.pages.pulseSegments || 1) {
+  const safePage = Math.max(1, Number(page || 1));
+  const response = await safeFetch(`/api/v1/system/segments?${segmentHistoryQuery(safePage)}`, {
+    segments: [],
+    total: 0,
+    limit: segmentPageSize,
+    offset: (safePage - 1) * segmentPageSize,
+  });
+  state.data.segments = response.segments || [];
+  state.data.segmentCatalog = segmentCatalogMeta(response);
+  state.pages.pulseSegments = segmentPage(state.data.segments, state.data.segmentCatalog).page;
+  render();
+}
+
+function segmentCatalogMeta(response = {}) {
+  return {
+    total: Number(response.total || 0),
+    limit: Number(response.limit || segmentPageSize),
+    offset: Number(response.offset || 0),
+  };
+}
+
+function segmentPage(rows, catalog = {}) {
+  return serverBackedPage(rows, Number(catalog.total ?? rows.length), Number(catalog.limit || segmentPageSize), Number(catalog.offset || 0));
 }
 
 function reportCatalogMeta(response = {}) {

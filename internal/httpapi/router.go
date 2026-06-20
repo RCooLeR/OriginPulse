@@ -1264,12 +1264,12 @@ func (api API) collectionPlan(w http.ResponseWriter, r *http.Request) {
 
 func (api API) recentSegments(w http.ResponseWriter, r *http.Request) {
 	limit := parseLimit(r, 100, combiner.RecentSegmentsMaxLimit)
-	segments, err := api.segments.RecentSegments(r.Context(), limit)
+	page, err := api.segments.RecentSegmentsPage(r.Context(), limit, parseOffset(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "segments_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"segments": segments})
+	writeJSON(w, http.StatusOK, page)
 }
 
 func (api API) combineNow(w http.ResponseWriter, r *http.Request) {

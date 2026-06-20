@@ -31,6 +31,13 @@ type SegmentManifest struct {
 	Indexed     bool       `json:"indexed"`
 }
 
+type SegmentPage struct {
+	Segments []SegmentManifest `json:"segments"`
+	Total    int               `json:"total"`
+	Limit    int               `json:"limit"`
+	Offset   int               `json:"offset"`
+}
+
 type Repository struct {
 	db *db.Store
 }
@@ -134,14 +141,25 @@ SET bucket_end = EXCLUDED.bucket_end,
 }
 
 func (r *Repository) RecentSegments(ctx context.Context, limit int) ([]SegmentManifest, error) {
-	if !r.Enabled() {
-		return []SegmentManifest{}, nil
-	}
+	page, err := r.RecentSegmentsPage(ctx, limit, 0)
+	return page.Segments, err
+}
+
+func (r *Repository) RecentSegmentsPage(ctx context.Context, limit int, offset int) (SegmentPage, error) {
 	limit = normalizeRecentSegmentsLimit(limit)
+	offset = normalizeRecentSegmentsOffset(offset)
+	out := SegmentPage{Segments: []SegmentManifest{}, Limit: limit, Offset: offset}
+	if !r.Enabled() {
+		return out, nil
+	}
 
 	pool, err := r.db.Pool()
 	if err != nil {
-		return nil, err
+		return out, err
+	}
+
+	if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM combined_segments`).Scan(&out.Total); err != nil {
+		return out, err
 	}
 
 	rows, err := pool.Query(ctx, `
@@ -149,9 +167,9 @@ SELECT id::text, log_type, bucket_start, bucket_end, path, coalesce(sha256, ''),
        line_count, min_ts, max_ts, status, indexed_at, indexed_at IS NOT NULL
 FROM combined_segments
 ORDER BY bucket_start DESC, log_type
-LIMIT $1`, limit)
+LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
 	defer rows.Close()
 
@@ -172,11 +190,12 @@ LIMIT $1`, limit)
 			&segment.IndexedAt,
 			&segment.Indexed,
 		); err != nil {
-			return nil, err
+			return out, err
 		}
 		segments = append(segments, segment)
 	}
-	return segments, rows.Err()
+	out.Segments = segments
+	return out, rows.Err()
 }
 
 func normalizeRecentSegmentsLimit(limit int) int {
@@ -187,6 +206,13 @@ func normalizeRecentSegmentsLimit(limit int) int {
 		return RecentSegmentsMaxLimit
 	}
 	return limit
+}
+
+func normalizeRecentSegmentsOffset(offset int) int {
+	if offset < 0 {
+		return 0
+	}
+	return offset
 }
 
 func (r *Repository) PendingIndexSegments(ctx context.Context, limit int) ([]SegmentManifest, error) {
