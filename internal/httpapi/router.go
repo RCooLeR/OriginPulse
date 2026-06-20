@@ -174,6 +174,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/system/archive-imports", api.recentArchiveImports)
 			r.Get("/system/archive-coverage", api.archiveCoverageReport)
 			r.Get("/system/storage", api.storageAuditReport)
+			r.Get("/system/fast-read-audit", api.fastReadAuditReport)
 			r.Get("/system/collection-plan", api.collectionPlan)
 			r.Get("/system/segments", api.recentSegments)
 			r.Post("/system/collect", api.collectNow)
@@ -1099,6 +1100,26 @@ func (api API) storageAuditReport(w http.ResponseWriter, r *http.Request) {
 	report, err := api.storageAudit.Audit(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_audit_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
+func (api API) fastReadAuditReport(w http.ResponseWriter, r *http.Request) {
+	if api.reports == nil || !api.reports.Enabled() {
+		writeJSON(w, http.StatusOK, reports.FastReadAudit{})
+		return
+	}
+	report, err := api.reports.FastReadAudit(r.Context(), reports.FastReadAuditOptions{
+		Range:  r.URL.Query().Get("range"),
+		SiteID: r.URL.Query().Get("site_id"),
+	})
+	if err != nil {
+		if errors.Is(err, db.ErrUnavailable) {
+			writeJSON(w, http.StatusOK, reports.FastReadAudit{})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "fast_read_audit_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, report)

@@ -110,6 +110,21 @@ func TestStorageAuditUnavailableReportKeepsConfiguredRetentionPolicy(t *testing.
 	}
 }
 
+func TestFastReadAuditReportsEmptyWhenServiceMissing(t *testing.T) {
+	api := API{}
+	rec := httptest.NewRecorder()
+
+	api.fastReadAuditReport(rec, httptest.NewRequest("GET", "/api/v1/system/fast-read-audit?range=7d", nil))
+
+	var audit reports.FastReadAudit
+	if err := json.NewDecoder(rec.Body).Decode(&audit); err != nil {
+		t.Fatalf("decode fast-read audit: %v", err)
+	}
+	if audit.Range != "" || audit.FullRangeEvents != 0 || audit.ExpectedRawRangeAggregations {
+		t.Fatalf("audit = %#v, want empty unavailable audit", audit)
+	}
+}
+
 func TestGeoIPStatusReportsDisabledWhenUpdaterMissing(t *testing.T) {
 	cfg := config.Default()
 	cfg.GeoIP.Enabled = false

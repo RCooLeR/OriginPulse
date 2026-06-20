@@ -93,6 +93,7 @@ const state = {
     rawFileCatalog: { total: 0, limit: rawFilePageSize, offset: 0 },
     retention: {},
     storage: {},
+    fastReadAudit: {},
     archives: [],
     archiveCatalog: { total: 0, limit: archivePageSize, offset: 0 },
     archiveImports: [],
@@ -243,7 +244,7 @@ async function refreshAll() {
     const analysisFilter = buildFilterQuery({ limit: analysisHistoryLimit });
     const estateKey = buildFilterQuery({ limit: analysisHistoryLimit }, { includeSite: false });
     const analysisRequest = safeFetch(`/api/v1/analysis/access-log?${analysisFilter}`, {}, 30000);
-    const [overview, analysis, traffic, sites, alerts, reports, jobs, credentials, geoip, collectorHealth, retention, storage, archives, archiveImports, archiveCoverage, notifications, webPush, users, segments] = await Promise.all([
+    const [overview, analysis, traffic, sites, alerts, reports, jobs, credentials, geoip, collectorHealth, retention, storage, fastReadAudit, archives, archiveImports, archiveCoverage, notifications, webPush, users, segments] = await Promise.all([
       safeFetch(`/api/v1/dashboard/overview?${filter}`, {}),
       analysisRequest,
       safeFetch(`/api/v1/investigate/traffic?${buildFilterQuery({ limit: analysisHistoryLimit })}`, {}),
@@ -256,6 +257,7 @@ async function refreshAll() {
       safeFetch(`/api/v1/system/collector-health?${rawFileHistoryQuery(1)}`, {}),
       safeFetch("/api/v1/system/retention", {}),
       safeFetch("/api/v1/system/storage", {}),
+      safeFetch(`/api/v1/system/fast-read-audit?${filter}`, {}),
       safeFetch(`/api/v1/system/archives?${archiveHistoryQuery(1)}`, { archives: [], total: 0, limit: archivePageSize, offset: 0 }),
       safeFetch(`/api/v1/system/archive-imports?${archiveImportHistoryQuery(1)}`, { imports: [], total: 0, limit: archiveImportPageSize, offset: 0 }),
       safeFetch(`/api/v1/system/archive-coverage?${filter}`, { archives: [], active_temporary_imports: [] }),
@@ -282,6 +284,7 @@ async function refreshAll() {
       rawFileCatalog: rawFileCatalogMeta(collectorHealth.raw_files || {}),
       retention,
       storage,
+      fastReadAudit,
       archives: archives.archives || [],
       archiveCatalog: archiveCatalogMeta(archives),
       archiveImports: archiveImports.imports || [],
@@ -1189,11 +1192,14 @@ function storageReadinessPanel(storage) {
   const archives = storage.archives || {};
   const dimensions = storage.dimensions || {};
   const temporary = storage.temporary_imports || {};
+  const fast = state.data.fastReadAudit || {};
+  const fastKnown = Boolean(fast.range || fast.since || fast.until);
+  const fastReady = fastKnown && fast.dimension_rollups_ready !== false && fast.status_rollups_ready !== false && !fast.expected_raw_range_aggregations;
   return `
     <article class="panel">
       <div class="panel-head">
         <div><h2>Storage Readiness</h2><p>Hot events, rollups, archives, and retention posture.</p></div>
-        <span class="pill">${readiness.backfill_ready && readiness.temporary_clean && readiness.hot_events_within_window ? "Ready" : "Needs work"}</span>
+        <span class="pill">${readiness.backfill_ready && readiness.temporary_clean && readiness.hot_events_within_window && fastReady ? "Ready" : "Needs work"}</span>
       </div>
       <div class="panel-body layout-4 compact-grid">
         ${facts([
@@ -1219,6 +1225,32 @@ function storageReadinessPanel(storage) {
           ["Pending daily", formatNumber(archives.pending_daily_groups)],
           ["Pending weekly", formatNumber(archives.pending_weekly_groups)],
           ["Temporary facts", formatNumber(temporary.imported_facts)],
+        ])}
+      </div>
+      <div class="panel-body layout-4 compact-grid">
+        ${facts([
+          ["Fast reads", fastKnown ? (fastReady ? "Rollup backed" : "Raw fallback") : "Unavailable"],
+          ["Dimension rollups", yesNo(fast.dimension_rollups_ready)],
+          ["Status rollups", yesNo(fast.status_rollups_ready)],
+          ["Raw range aggregation", yesNo(fast.expected_raw_range_aggregations)],
+        ])}
+        ${facts([
+          ["Full range events", formatNumber(fast.full_range_events)],
+          ["Minute edge rows", formatNumber(fast.minute_edge_events)],
+          ["Hour edge rows", formatNumber(fast.hour_edge_events)],
+          ["Unbackfilled rows", formatNumber(fast.unbackfilled_full_hour_events)],
+        ])}
+        ${facts([
+          ["Error fact rows", formatNumber(fast.recent_error_fact_rows)],
+          ["Error raw gaps", formatNumber(fast.recent_error_raw_gap_rows)],
+          ["Security facts", formatNumber(fast.security_probe_fact_rows)],
+          ["Expected raw edge", formatNumber(fast.expected_raw_edge_rows)],
+        ])}
+        ${facts([
+          ["Overview source", fast.overview_source || "-"],
+          ["Analysis source", fast.access_analysis_source || "-"],
+          ["Traffic source", fast.traffic_source || "-"],
+          ["Recent errors", fast.recent_errors_source || "-"],
         ])}
       </div>
     </article>
