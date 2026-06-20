@@ -1196,8 +1196,8 @@ function storageReadinessPanel(storage) {
   const dimensions = storage.dimensions || {};
   const temporary = storage.temporary_imports || {};
   const fast = state.data.fastReadAudit || {};
-  const fastKnown = Boolean(fast.range || fast.since || fast.until);
-  const fastReady = fastKnown && fast.dimension_rollups_ready !== false && fast.status_rollups_ready !== false && !fast.expected_raw_range_aggregations;
+  const fastStatus = fastReadiness();
+  const fastReady = fastStatus.known && fastStatus.ready;
   return `
     <article class="panel">
       <div class="panel-head">
@@ -1232,7 +1232,7 @@ function storageReadinessPanel(storage) {
       </div>
       <div class="panel-body layout-4 compact-grid">
         ${facts([
-          ["Fast reads", fastKnown ? (fastReady ? "Rollup backed" : "Raw fallback") : "Unavailable"],
+          ["Fast reads", fastStatus.known ? (fastReady ? "Rollup backed" : "Raw fallback") : "Unavailable"],
           ["Dimension rollups", yesNo(fast.dimension_rollups_ready)],
           ["Status rollups", yesNo(fast.status_rollups_ready)],
           ["Raw range aggregation", yesNo(fast.expected_raw_range_aggregations)],
@@ -5059,6 +5059,7 @@ function readinessBanner() {
   const overview = state.data.overview || {};
   const analytics = overview.analytics || {};
   const coverage = state.data.archiveCoverage || {};
+  const fast = fastReadiness();
   const fetchErrors = state.fetchErrors || [];
   const hasRequests = Number(analytics.requests || state.data.analysis?.totals?.requests || 0) > 0;
   const messages = [];
@@ -5080,6 +5081,9 @@ function readinessBanner() {
     }
   } else if (!hasRequests) {
     messages.push(`No indexed requests in ${activeRangeLabel()}. Run pipeline/backfill, or choose a range that overlaps indexed hot data.`);
+  } else if (fast.known && !fast.ready) {
+    messages.push(`${activeRangeLabel()} is visible, but some dashboard reads are using raw event fallbacks instead of rollups. ${fast.rawFallbackSources.length ? `Raw fallback: ${fast.rawFallbackSources.join(", ")}.` : ""}`);
+    actions.push(`<button class="button small" type="button" data-route="pulse">${iconHTML("fa-wave-pulse")}Pulse Logs</button>`);
   }
   if (!messages.length) return "";
   return `
@@ -5092,6 +5096,22 @@ function readinessBanner() {
       </div>
     </article>
   `;
+}
+
+function fastReadiness() {
+  const audit = state.data.fastReadAudit || {};
+  const known = Boolean(audit.range || audit.since || audit.until);
+  const rawFallbackSources = [
+    ["overview", audit.overview_source],
+    ["analysis", audit.access_analysis_source],
+    ["traffic", audit.traffic_source],
+    ["recent errors", audit.recent_errors_source],
+  ].filter(([, source]) => /raw|event/i.test(String(source || ""))).map(([label]) => label);
+  return {
+    known,
+    ready: known && audit.dimension_rollups_ready !== false && audit.status_rollups_ready !== false && !audit.expected_raw_range_aggregations && rawFallbackSources.length === 0,
+    rawFallbackSources,
+  };
 }
 
 function normalizeSeverity(value) {
