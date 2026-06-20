@@ -1414,13 +1414,18 @@ function issueRow(item, index = 0) {
 
 function alertRow(item, index = 0) {
   const sev = normalizeSeverity(item.severity);
-  const meta = [item.site_id, item.env, item.actor_value, shortTime(item.last_seen_at)].filter(Boolean).join(" / ");
+  const meta = [
+    escapeHTML(item.site_id || ""),
+    escapeHTML(item.env || ""),
+    alertActorLink(item),
+    escapeHTML(shortTime(item.last_seen_at)),
+  ].filter((part) => part && part !== "-").join(" / ");
   const alertKey = cacheDetail("alert", item, item.id || `${item.rule_key || ""}:${item.actor_type || ""}:${item.actor_value || ""}:${index}`);
   return `
     <div class="list-row">
       <div>
         <strong>${escapeHTML(item.title || item.rule_key || "Alert")}</strong>
-        <span>${linkifyIPs(meta)}</span>
+        <span>${meta || "-"}</span>
       </div>
       <button class="button small" type="button" data-detail="alert" data-value="${escapeAttr(alertKey)}">${escapeHTML(sev)}</button>
     </div>
@@ -2179,6 +2184,7 @@ function renderAlertDetail(item) {
       <h3>Actions</h3>
       <div class="toolbar inline-toolbar">
         ${item.actor_type === "ip" && item.actor_value ? `<button class="button small" type="button" data-detail="ip" data-value="${escapeAttr(item.actor_value)}">${iconHTML("fa-location-crosshairs")}Open IP</button>` : ""}
+        ${isUserAgentActor(item.actor_type) && item.actor_value ? `<button class="button small" type="button" data-detail="user-agent" data-value="${escapeAttr(cacheDetail("user-agent", { sample: item.actor_value }, item.actor_value))}">${iconHTML("fa-robot")}Open User Agent</button>` : ""}
         <button class="button small" type="button" data-route="logs">${iconHTML("fa-rectangle-list")}Live Logs</button>
         <button class="button small" type="button" data-route="security">${iconHTML("fa-shield-halved")}Security</button>
         <button class="button small" type="button" data-route="reports">${iconHTML("fa-file-lines")}Reports</button>
@@ -2234,7 +2240,12 @@ function renderAlertRuleDetail(item) {
 
 function alertActorLink(item) {
   if (item.actor_type === "ip" && item.actor_value) return ipLink(item.actor_value);
+  if (isUserAgentActor(item.actor_type) && item.actor_value) return userAgentLink(item.actor_value);
   return escapeHTML([item.actor_type, item.actor_value].filter(Boolean).join(" / ") || "-");
+}
+
+function isUserAgentActor(actorType) {
+  return /^(user_agent|user-agent|ua)$/i.test(String(actorType || ""));
 }
 
 function alertPeerAlerts(item) {
@@ -2254,7 +2265,7 @@ function alertRelatedRequests(item) {
     if (item.env && event.env && event.env !== item.env) return false;
     if (actorType === "ip" && actor && event.client_ip === actor) return true;
     if (actorType === "path" && actor && event.path === actor) return true;
-    if (actorType === "user_agent" && actor && event.user_agent === actor) return true;
+    if (isUserAgentActor(actorType) && actor && event.user_agent === actor) return true;
     if (actor && (event.path === actor || event.client_ip === actor || event.user_agent === actor)) return true;
     if (item.rule_key && /5xx/.test(item.rule_key) && Number(event.status || 0) >= 500 && summary.includes(event.path || "")) return true;
     if (item.rule_key && /4xx/.test(item.rule_key) && Number(event.status || 0) >= 400 && Number(event.status || 0) < 500 && summary.includes(event.path || "")) return true;
