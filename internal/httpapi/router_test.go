@@ -187,6 +187,16 @@ func TestParseNamedOffset(t *testing.T) {
 		t.Fatalf("parseNamedOffset(top_ip_offset) = %d, want 42", got)
 	}
 
+	req = httptest.NewRequest("GET", "/?offset=10&top_ip_offset=42", nil)
+	if got := parseNamedOffset(req, "top_ip_offset"); got != 42 {
+		t.Fatalf("parseNamedOffset(named with generic offset) = %d, want 42", got)
+	}
+
+	req = httptest.NewRequest("GET", "/?offset=10", nil)
+	if got := parseNamedOffset(req, "top_ip_offset"); got != 10 {
+		t.Fatalf("parseNamedOffset(generic fallback) = %d, want 10", got)
+	}
+
 	req = httptest.NewRequest("GET", "/?top_ip_offset=-1", nil)
 	if got := parseNamedOffset(req, "top_ip_offset"); got != 0 {
 		t.Fatalf("parseNamedOffset(negative) = %d, want 0", got)

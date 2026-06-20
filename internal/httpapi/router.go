@@ -1677,16 +1677,16 @@ func parseOffset(r *http.Request) int {
 }
 
 func parseNamedOffset(r *http.Request, name string) int {
-	if raw := r.URL.Query().Get("offset"); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
-			return parsed
-		}
-	}
 	if name != "offset" {
 		if raw := r.URL.Query().Get(name); raw != "" {
 			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
 				return parsed
 			}
+		}
+	}
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			return parsed
 		}
 	}
 	return 0
