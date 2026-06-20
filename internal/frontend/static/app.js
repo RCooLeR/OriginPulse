@@ -23,6 +23,7 @@ const routeById = Object.fromEntries(routes.map((route) => [route.id, route]));
 const pathToRoute = Object.fromEntries(routes.map((route) => [route.path, route.id]));
 const reportCatalogLimit = 500;
 const pulseHistoryLimit = 500;
+const alertHistoryLimit = 500;
 
 const state = {
   route: pathToRoute[location.pathname] || "overview",
@@ -217,7 +218,7 @@ async function refreshAll() {
       safeFetch(`/api/v1/investigate/traffic?${buildFilterQuery({ limit: 80 })}`, {}),
       safeFetch(`/api/v1/investigate/traffic?${estateTrafficFilter}`, {}),
       safeFetch("/api/v1/sites", { sites: [] }),
-      safeFetch("/api/v1/alerts?limit=100", { alerts: [] }),
+      safeFetch(`/api/v1/alerts?limit=${alertHistoryLimit}`, { alerts: [] }),
       safeFetch(`/api/v1/reports/recent?${buildFilterQuery({ limit: reportCatalogLimit })}`, { reports: [] }),
       safeFetch(`/api/v1/system/jobs?limit=${pulseHistoryLimit}`, { jobs: [] }),
       safeFetch("/api/v1/system/credentials", {}),
@@ -3774,7 +3775,7 @@ async function openDrawer(kind, rawIndex, value) {
     let item = cached;
     if (cached.id) {
       try {
-        const detail = await fetchJSON(`/api/v1/alerts/${encodeURIComponent(cached.id)}?limit=50`);
+        const detail = await fetchJSON(`/api/v1/alerts/${encodeURIComponent(cached.id)}?limit=${alertHistoryLimit}`);
         item = { ...(detail.alert || cached), requests: detail.requests || [] };
         state.detailCache[value] = item;
       } catch (error) {

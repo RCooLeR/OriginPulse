@@ -17,6 +17,11 @@ import (
 
 var ErrNotFound = errors.New("alert not found")
 
+const (
+	RecentMaxLimit = 500
+	DetailMaxLimit = 500
+)
+
 type Options struct {
 	Range string
 	Limit int
@@ -83,9 +88,7 @@ func (s *Service) Open(ctx context.Context, limit int) ([]Alert, error) {
 	if !s.Enabled() {
 		return []Alert{}, nil
 	}
-	if limit <= 0 || limit > 100 {
-		limit = 25
-	}
+	limit = normalizeRecentLimit(limit)
 
 	pool, err := s.db.Pool()
 	if err != nil {
@@ -136,9 +139,7 @@ func (s *Service) Get(ctx context.Context, id string, limit int) (Detail, error)
 	if id == "" {
 		return Detail{}, ErrNotFound
 	}
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
+	limit = normalizeDetailLimit(limit)
 	pool, err := s.db.Pool()
 	if err != nil {
 		return Detail{}, err
@@ -812,6 +813,26 @@ func normalizeLimit(limit int) int {
 	}
 	if limit > 500 {
 		return 500
+	}
+	return limit
+}
+
+func normalizeRecentLimit(limit int) int {
+	if limit <= 0 {
+		return 25
+	}
+	if limit > RecentMaxLimit {
+		return RecentMaxLimit
+	}
+	return limit
+}
+
+func normalizeDetailLimit(limit int) int {
+	if limit <= 0 {
+		return 50
+	}
+	if limit > DetailMaxLimit {
+		return DetailMaxLimit
 	}
 	return limit
 }

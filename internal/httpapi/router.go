@@ -491,7 +491,7 @@ func (api API) openAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	openAlerts, err := api.alerts.Open(r.Context(), parseLimit(r, 25, 100))
+	openAlerts, err := api.alerts.Open(r.Context(), parseLimit(r, 100, alerts.RecentMaxLimit))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "alerts_failed", err.Error())
 		return
@@ -504,7 +504,7 @@ func (api API) alertDetail(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, alerts.Detail{})
 		return
 	}
-	detail, err := api.alerts.Get(r.Context(), chi.URLParam(r, "id"), parseLimit(r, 50, 100))
+	detail, err := api.alerts.Get(r.Context(), chi.URLParam(r, "id"), parseLimit(r, 100, alerts.DetailMaxLimit))
 	if errors.Is(err, alerts.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "alert_not_found", "alert not found")
 		return
