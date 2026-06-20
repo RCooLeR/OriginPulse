@@ -34,3 +34,33 @@ func TestAnalyzeTool(t *testing.T) {
 		t.Fatalf("bot/tool = %v/%v, want false/true", got.IsBot, got.IsTool)
 	}
 }
+
+func TestAnalyzeMobileSafari(t *testing.T) {
+	got := Analyze("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1", 20)
+	if got.Family != "Safari" || got.BrowserFamily != "Safari" || got.BrowserVersion != "17.5" {
+		t.Fatalf("browser = %q/%q/%q, want Safari/Safari/17.5", got.Family, got.BrowserFamily, got.BrowserVersion)
+	}
+	if got.OSFamily != "iOS" || got.OSVersion != "17.5" || got.DeviceFamily != "Mobile" {
+		t.Fatalf("os/device = %q %q %q, want iOS 17.5 Mobile", got.OSFamily, got.OSVersion, got.DeviceFamily)
+	}
+}
+
+func TestAnalyzeEdgeBrowser(t *testing.T) {
+	got := Analyze("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.2592.87", 20)
+	if got.Family != "Microsoft Edge" || got.BrowserFamily != "Microsoft Edge" || got.BrowserVersion != "126.0.2592" {
+		t.Fatalf("browser = %q/%q/%q, want Microsoft Edge/Microsoft Edge/126.0.2592", got.Family, got.BrowserFamily, got.BrowserVersion)
+	}
+	if got.ActorType != "browser" || got.IsBot || got.IsTool {
+		t.Fatalf("actor/bot/tool = %q/%v/%v, want browser/false/false", got.ActorType, got.IsBot, got.IsTool)
+	}
+}
+
+func TestAnalyzePythonRequestsTool(t *testing.T) {
+	got := Analyze("python-requests/2.32.3", 5)
+	if got.Family != "python-requests" || got.ActorType != "tool" || got.BrowserVersion != "2.32.3" {
+		t.Fatalf("tool = %q/%q/%q, want python-requests/tool/2.32.3", got.Family, got.ActorType, got.BrowserVersion)
+	}
+	if !got.IsTool || got.IsBot {
+		t.Fatalf("tool/bot = %v/%v, want true/false", got.IsTool, got.IsBot)
+	}
+}
