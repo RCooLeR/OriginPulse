@@ -25,6 +25,7 @@ const reportCatalogPageSize = 8;
 const pulseHistoryLimit = 500;
 const alertHistoryLimit = 500;
 const alertRequestPageSize = 6;
+const userAgentDetailPageSize = 6;
 const drawerHistoryLimit = 500;
 const analysisHistoryLimit = 500;
 
@@ -2224,22 +2225,26 @@ function renderAlertDetail(item) {
 
 function alertRequestPage(item, requests) {
   if (item && Object.prototype.hasOwnProperty.call(item, "request_total")) {
-    const limit = Math.max(1, Number(item.request_limit || alertRequestPageSize));
-    const total = Math.max(0, Number(item.request_total || 0));
-    const offset = Math.max(0, Number(item.request_offset || 0));
-    const totalPages = Math.max(1, Math.ceil(total / limit));
-    const page = clamp(Math.floor(offset / limit) + 1, 1, totalPages);
-    return {
-      rows: requests,
-      page,
-      pageSize: limit,
-      total,
-      totalPages,
-      start: total ? offset + 1 : 0,
-      end: Math.min(total, offset + requests.length),
-    };
+    return serverBackedPage(requests, Number(item.request_total || 0), Number(item.request_limit || alertRequestPageSize), Number(item.request_offset || 0));
   }
   return drawerPage("alertRequests", requests, alertRequestPageSize);
+}
+
+function serverBackedPage(rows, totalValue, limitValue, offsetValue) {
+  const limit = Math.max(1, Number(limitValue || 1));
+  const total = Math.max(0, Number(totalValue || 0));
+  const offset = Math.max(0, Number(offsetValue || 0));
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const page = clamp(Math.floor(offset / limit) + 1, 1, totalPages);
+  return {
+    rows,
+    page,
+    pageSize: limit,
+    total,
+    totalPages,
+    start: total ? offset + 1 : 0,
+    end: Math.min(total, offset + rows.length),
+  };
 }
 
 function renderAlertRuleDetail(item) {
@@ -2479,17 +2484,17 @@ function renderUserAgentDetail(item) {
   const relatedRequests = item.recent_requests || userAgentRelatedRequests({ ...agent, sample, family });
   const relatedIPs = (item.top_ips || []).length ? item.top_ips : userAgentGroupedRows(relatedRequests, (row) => row.client_ip);
   const relatedPaths = (item.top_paths || []).length ? item.top_paths : userAgentGroupedRows(relatedRequests, (row) => row.path || "/");
-  const ipPage = drawerPage("uaIPs", relatedIPs, 6);
-  const pathPage = drawerPage("uaPaths", relatedPaths, 6);
-  const requestPage = drawerPage("uaRequests", relatedRequests, 6);
+  const ipPage = userAgentSectionPage(item, "uaIPs", relatedIPs, "top_ips");
+  const pathPage = userAgentSectionPage(item, "uaPaths", relatedPaths, "top_paths");
+  const requestPage = userAgentSectionPage(item, "uaRequests", relatedRequests, "requests");
   const requests = Number(traffic.requests || agent.requests || item.requests || relatedRequests.length || 0);
   const errors = Number(traffic.status_4xx || agent.status_4xx || item.status_4xx || 0) + Number(traffic.status_5xx || agent.status_5xx || item.status_5xx || 0);
   return `
     ${miniMetrics([
       ["Requests", formatNumber(requests), "fa-arrow-trend-up"],
       ["Errors", formatNumber(errors || relatedRequests.filter((row) => Number(row.status || 0) >= 400).length), "fa-triangle-exclamation"],
-      ["Related IPs", formatNumber(relatedIPs.length), "fa-network-wired"],
-      ["Related Paths", formatNumber(relatedPaths.length), "fa-route"],
+      ["Related IPs", formatNumber(ipPage.total), "fa-network-wired"],
+      ["Related Paths", formatNumber(pathPage.total), "fa-route"],
     ])}
     <section class="detail-grid two">
       <article class="detail-card">
@@ -2550,6 +2555,16 @@ function renderUserAgentDetail(item) {
       ${drawerPager("uaRequests", requestPage)}
     </article>
   `;
+}
+
+function userAgentSectionPage(item, key, rows, prefix) {
+  const totalKey = `${prefix}_total`;
+  const limitKey = `${prefix}_limit`;
+  const offsetKey = `${prefix}_offset`;
+  if (item && Object.prototype.hasOwnProperty.call(item, totalKey)) {
+    return serverBackedPage(rows, Number(item[totalKey] || 0), Number(item[limitKey] || userAgentDetailPageSize), Number(item[offsetKey] || 0));
+  }
+  return drawerPage(key, rows, userAgentDetailPageSize);
 }
 
 function incidentRows() {
@@ -2962,6 +2977,10 @@ async function handleAction(button) {
     if (key && Number.isFinite(page)) {
       if (key === "alertRequests" && state.drawer.kind === "alert" && state.drawer.data?.id) {
         await loadAlertRequestPage(page);
+        return;
+      }
+      if (state.drawer.kind === "user-agent" && ["uaIPs", "uaPaths", "uaRequests"].includes(key) && state.drawer.data) {
+        await loadUserAgentDetailPage(key, page);
         return;
       }
       state.drawer.pages[key] = Math.max(1, page);
@@ -3900,9 +3919,7 @@ async function openDrawer(kind, rawIndex, value) {
     const item = state.detailCache[value] || findUserAgentByValue(value) || {};
     const sample = item.sample || item.user_agent || item.family || "User Agent";
     title = parseUserAgent({ ...item, sample }).label || item.family || userAgentFamily(sample) || "User Agent";
-    const params = new URLSearchParams(buildFilterQuery({ limit: drawerHistoryLimit }));
-    if (item.id) params.set("id", item.id);
-    if (sample && sample !== "User Agent") params.set("sample", sample);
+    const params = userAgentDetailParams({ ...item, sample }, { top_ip_offset: 0, top_path_offset: 0, request_offset: 0 });
     try {
       const detail = await fetchJSON(`/api/v1/investigate/user-agent?${params}`);
       const merged = { ...item, ...detail, user_agent: { ...item, ...(detail.user_agent || {}) } };
@@ -3949,6 +3966,42 @@ async function loadAlertRequestPage(page) {
   };
   state.drawer.data = merged;
   state.detailCache[`alert:${item.id}`] = merged;
+  renderCurrentDrawer();
+}
+
+function userAgentDetailParams(item, offsets = {}) {
+  const agent = item.user_agent || item || {};
+  const sample = agent.sample || agent.user_agent || item.sample || item.family || "";
+  const params = new URLSearchParams(buildFilterQuery({
+    limit: userAgentDetailPageSize,
+    top_ip_offset: offsets.top_ip_offset ?? item.top_ips_offset ?? 0,
+    top_path_offset: offsets.top_path_offset ?? item.top_paths_offset ?? 0,
+    request_offset: offsets.request_offset ?? item.requests_offset ?? 0,
+  }));
+  if (agent.id || item.id) params.set("id", agent.id || item.id);
+  if (sample && sample !== "User Agent") params.set("sample", sample);
+  return params;
+}
+
+async function loadUserAgentDetailPage(key, page) {
+  const item = state.drawer.data || {};
+  const limit = Math.max(1, Number(item.top_ips_limit || item.top_paths_limit || item.requests_limit || userAgentDetailPageSize));
+  const offset = (Math.max(1, Number(page || 1)) - 1) * limit;
+  const offsets = {
+    top_ip_offset: item.top_ips_offset || 0,
+    top_path_offset: item.top_paths_offset || 0,
+    request_offset: item.requests_offset || 0,
+  };
+  if (key === "uaIPs") offsets.top_ip_offset = offset;
+  if (key === "uaPaths") offsets.top_path_offset = offset;
+  if (key === "uaRequests") offsets.request_offset = offset;
+  const detail = await fetchJSON(`/api/v1/investigate/user-agent?${userAgentDetailParams(item, offsets)}`);
+  const merged = {
+    ...item,
+    ...detail,
+    user_agent: { ...(item.user_agent || {}), ...(detail.user_agent || {}) },
+  };
+  state.drawer.data = merged;
   renderCurrentDrawer();
 }
 

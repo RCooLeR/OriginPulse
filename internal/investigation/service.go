@@ -578,6 +578,13 @@ func normalizeLimit(limit int) int {
 	return limit
 }
 
+func normalizeOffset(offset int) int {
+	if offset < 0 {
+		return 0
+	}
+	return offset
+}
+
 func timelineBucketSeconds(duration time.Duration) int {
 	switch {
 	case duration <= 3*time.Hour:

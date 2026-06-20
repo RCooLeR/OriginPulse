@@ -376,13 +376,16 @@ func (api API) userAgentDetails(w http.ResponseWriter, r *http.Request) {
 		sample = r.URL.Query().Get("user_agent")
 	}
 	detail, err := api.investigation.UserAgentDetails(r.Context(), investigation.UserAgentOptions{
-		ID:     id,
-		Sample: sample,
-		Range:  r.URL.Query().Get("range"),
-		Limit:  parseLimit(r, 50, investigation.DetailMaxLimit),
-		SiteID: r.URL.Query().Get("site_id"),
-		From:   from,
-		To:     to,
+		ID:            id,
+		Sample:        sample,
+		Range:         r.URL.Query().Get("range"),
+		Limit:         parseLimit(r, 50, investigation.DetailMaxLimit),
+		SiteID:        r.URL.Query().Get("site_id"),
+		TopIPOffset:   parseNamedOffset(r, "top_ip_offset"),
+		TopPathOffset: parseNamedOffset(r, "top_path_offset"),
+		RequestOffset: parseNamedOffset(r, "request_offset"),
+		From:          from,
+		To:            to,
 	})
 	if err != nil {
 		if errors.Is(err, investigation.ErrUserAgentRequired) {
@@ -1631,9 +1634,20 @@ func parseLimit(r *http.Request, defaultLimit int, maxLimit int) int {
 }
 
 func parseOffset(r *http.Request) int {
+	return parseNamedOffset(r, "offset")
+}
+
+func parseNamedOffset(r *http.Request, name string) int {
 	if raw := r.URL.Query().Get("offset"); raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
 			return parsed
+		}
+	}
+	if name != "offset" {
+		if raw := r.URL.Query().Get(name); raw != "" {
+			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+				return parsed
+			}
 		}
 	}
 	return 0

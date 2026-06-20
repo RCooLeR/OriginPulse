@@ -16,13 +16,16 @@ import (
 var ErrUserAgentRequired = errors.New("user agent id or sample is required")
 
 type UserAgentOptions struct {
-	ID     int64
-	Sample string
-	Range  string
-	Limit  int
-	SiteID string
-	From   time.Time
-	To     time.Time
+	ID            int64
+	Sample        string
+	Range         string
+	Limit         int
+	SiteID        string
+	TopIPOffset   int
+	TopPathOffset int
+	RequestOffset int
+	From          time.Time
+	To            time.Time
 }
 
 type UserAgentDetail struct {
@@ -35,8 +38,17 @@ type UserAgentDetail struct {
 	UserAgent       UserAgentRecord  `json:"user_agent"`
 	Traffic         UserAgentTraffic `json:"traffic"`
 	TopIPs          []IPSummary      `json:"top_ips"`
+	TopIPsTotal     int              `json:"top_ips_total"`
+	TopIPsLimit     int              `json:"top_ips_limit"`
+	TopIPsOffset    int              `json:"top_ips_offset"`
 	TopPaths        []PathSummary    `json:"top_paths"`
+	TopPathsTotal   int              `json:"top_paths_total"`
+	TopPathsLimit   int              `json:"top_paths_limit"`
+	TopPathsOffset  int              `json:"top_paths_offset"`
 	RecentRequests  []EventSummary   `json:"recent_requests"`
+	RequestsTotal   int              `json:"requests_total"`
+	RequestsLimit   int              `json:"requests_limit"`
+	RequestsOffset  int              `json:"requests_offset"`
 	Source          string           `json:"source"`
 }
 
@@ -69,6 +81,9 @@ type UserAgentTraffic struct {
 
 func (s *Service) UserAgentDetails(ctx context.Context, opts UserAgentOptions) (UserAgentDetail, error) {
 	limit := normalizeLimit(opts.Limit)
+	topIPOffset := normalizeOffset(opts.TopIPOffset)
+	topPathOffset := normalizeOffset(opts.TopPathOffset)
+	requestOffset := normalizeOffset(opts.RequestOffset)
 	now := time.Now().UTC()
 	since, until, label, err := resolveWindow(now, opts.Range, opts.From, opts.To)
 	sample := strings.TrimSpace(opts.Sample)
@@ -81,8 +96,14 @@ func (s *Service) UserAgentDetails(ctx context.Context, opts UserAgentOptions) (
 		DatabaseEnabled: s.Enabled(),
 		UserAgent:       UserAgentRecord{ID: opts.ID, Sample: sample},
 		TopIPs:          []IPSummary{},
+		TopIPsLimit:     limit,
+		TopIPsOffset:    topIPOffset,
 		TopPaths:        []PathSummary{},
+		TopPathsLimit:   limit,
+		TopPathsOffset:  topPathOffset,
 		RecentRequests:  []EventSummary{},
+		RequestsLimit:   limit,
+		RequestsOffset:  requestOffset,
 	}
 	if err != nil {
 		return out, err
@@ -110,7 +131,7 @@ func (s *Service) UserAgentDetails(ctx context.Context, opts UserAgentOptions) (
 		if err := loadUserAgentTrafficFromRollups(ctx, pool, &out); err != nil {
 			return out, err
 		}
-		if err := loadUserAgentTopIPsFromRollups(ctx, pool, &out, limit); err != nil {
+		if err := loadUserAgentTopIPsFromRollups(ctx, pool, &out, limit, topIPOffset); err != nil {
 			return out, err
 		}
 	} else {
@@ -118,14 +139,14 @@ func (s *Service) UserAgentDetails(ctx context.Context, opts UserAgentOptions) (
 		if err := loadUserAgentTrafficFromRaw(ctx, pool, &out); err != nil {
 			return out, err
 		}
-		if err := loadUserAgentTopIPsFromRaw(ctx, pool, &out, limit); err != nil {
+		if err := loadUserAgentTopIPsFromRaw(ctx, pool, &out, limit, topIPOffset); err != nil {
 			return out, err
 		}
 	}
-	if err := loadUserAgentTopPathsFromRaw(ctx, pool, &out, limit); err != nil {
+	if err := loadUserAgentTopPathsFromRaw(ctx, pool, &out, limit, topPathOffset); err != nil {
 		return out, err
 	}
-	if err := loadUserAgentRecentRequests(ctx, pool, &out, limit); err != nil {
+	if err := loadUserAgentRecentRequests(ctx, pool, &out, limit, requestOffset); err != nil {
 		return out, err
 	}
 	return out, nil
@@ -278,7 +299,7 @@ FROM combined`, out.Since, out.Until, out.SiteID, out.UserAgent.ID, out.UserAgen
 	).Scan(&out.Traffic.Requests, &out.Traffic.Status4xx, &out.Traffic.Status5xx, &out.Traffic.BytesSent, &out.Traffic.FirstSeen, &out.Traffic.LastSeen)
 }
 
-func loadUserAgentTopIPsFromRaw(ctx context.Context, pool *pgxpool.Pool, out *UserAgentDetail, limit int) error {
+func loadUserAgentTopIPsFromRaw(ctx context.Context, pool *pgxpool.Pool, out *UserAgentDetail, limit int, offset int) error {
 	rows, err := pool.Query(ctx, `
 SELECT host(e.client_ip),
        count(*)::bigint,
@@ -290,7 +311,8 @@ SELECT host(e.client_ip),
        coalesce(ii.risk_score, -1),
        coalesce(ii.actor_type, ''),
        coalesce(ii.known_actor, ''),
-       coalesce(ii.reverse_dns, '')
+       coalesce(ii.reverse_dns, ''),
+       count(*) OVER()::int
 FROM access_events e
 LEFT JOIN ip_intel ii ON ii.ip = e.client_ip
 WHERE e.ts >= $1 AND e.ts < $2
@@ -299,15 +321,15 @@ WHERE e.ts >= $1 AND e.ts < $2
   AND (($4::bigint > 0 AND e.user_agent_id = $4) OR ($5 <> '' AND left(coalesce(e.user_agent, ''), 300) = $5))
 GROUP BY e.client_ip, ii.risk_score, ii.actor_type, ii.known_actor, ii.reverse_dns
 ORDER BY count(*) DESC
-LIMIT $6`, out.Since, out.Until, out.SiteID, out.UserAgent.ID, out.UserAgent.Sample, limit)
+LIMIT $6 OFFSET $7`, out.Since, out.Until, out.SiteID, out.UserAgent.ID, out.UserAgent.Sample, limit, offset)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	return scanUserAgentIPRows(rows, &out.TopIPs)
+	return scanUserAgentIPRowsWithTotal(rows, &out.TopIPs, &out.TopIPsTotal)
 }
 
-func loadUserAgentTopIPsFromRollups(ctx context.Context, pool *pgxpool.Pool, out *UserAgentDetail, limit int) error {
+func loadUserAgentTopIPsFromRollups(ctx context.Context, pool *pgxpool.Pool, out *UserAgentDetail, limit int, offset int) error {
 	fullStart, fullEnd, _ := rollups.FullHourRange(out.Since, out.Until)
 	rows, err := pool.Query(ctx, `
 WITH rollup_rows AS (
@@ -367,16 +389,36 @@ SELECT host(g.ip),
        coalesce(ii.risk_score, -1),
        coalesce(ii.actor_type, ''),
        coalesce(ii.known_actor, ''),
-       coalesce(ii.reverse_dns, '')
+       coalesce(ii.reverse_dns, ''),
+       count(*) OVER()::int
 FROM grouped g
 LEFT JOIN ip_intel ii ON ii.ip = g.ip
 ORDER BY g.requests DESC
-LIMIT $8`, out.Since, out.Until, out.SiteID, out.UserAgent.ID, out.UserAgent.Sample, fullStart, fullEnd, limit)
+LIMIT $8 OFFSET $9`, out.Since, out.Until, out.SiteID, out.UserAgent.ID, out.UserAgent.Sample, fullStart, fullEnd, limit, offset)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	return scanUserAgentIPRows(rows, &out.TopIPs)
+	return scanUserAgentIPRowsWithTotal(rows, &out.TopIPs, &out.TopIPsTotal)
+}
+
+func scanUserAgentIPRowsWithTotal(rows pgx.Rows, out *[]IPSummary, total *int) error {
+	for rows.Next() {
+		var item IPSummary
+		var riskScore int
+		var rowTotal int
+		if err := rows.Scan(&item.IP, &item.Requests, &item.Status4xx, &item.Status5xx, &item.BytesSent, &item.FirstSeen, &item.LastSeen, &riskScore, &item.ActorType, &item.KnownActor, &item.ReverseDNS, &rowTotal); err != nil {
+			return err
+		}
+		if rowTotal > *total {
+			*total = rowTotal
+		}
+		if riskScore >= 0 {
+			item.RiskScore = &riskScore
+		}
+		*out = append(*out, item)
+	}
+	return rows.Err()
 }
 
 func scanUserAgentIPRows(rows pgx.Rows, out *[]IPSummary) error {
@@ -394,35 +436,40 @@ func scanUserAgentIPRows(rows pgx.Rows, out *[]IPSummary) error {
 	return rows.Err()
 }
 
-func loadUserAgentTopPathsFromRaw(ctx context.Context, pool *pgxpool.Pool, out *UserAgentDetail, limit int) error {
+func loadUserAgentTopPathsFromRaw(ctx context.Context, pool *pgxpool.Pool, out *UserAgentDetail, limit int, offset int) error {
 	rows, err := pool.Query(ctx, `
 SELECT coalesce(path, '') AS path,
        count(*)::bigint,
        count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint,
        count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint,
-       coalesce(sum(bytes_sent), 0)::bigint
+       coalesce(sum(bytes_sent), 0)::bigint,
+       count(*) OVER()::int
 FROM access_events
 WHERE ts >= $1 AND ts < $2
   AND ($3 = '' OR site_id = $3)
   AND (($4::bigint > 0 AND user_agent_id = $4) OR ($5 <> '' AND left(coalesce(user_agent, ''), 300) = $5))
 GROUP BY coalesce(path, '')
 ORDER BY count(*) DESC
-LIMIT $6`, out.Since, out.Until, out.SiteID, out.UserAgent.ID, out.UserAgent.Sample, limit)
+LIMIT $6 OFFSET $7`, out.Since, out.Until, out.SiteID, out.UserAgent.ID, out.UserAgent.Sample, limit, offset)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var item PathSummary
-		if err := rows.Scan(&item.Path, &item.Requests, &item.Status4xx, &item.Status5xx, &item.BytesSent); err != nil {
+		var rowTotal int
+		if err := rows.Scan(&item.Path, &item.Requests, &item.Status4xx, &item.Status5xx, &item.BytesSent, &rowTotal); err != nil {
 			return err
+		}
+		if rowTotal > out.TopPathsTotal {
+			out.TopPathsTotal = rowTotal
 		}
 		out.TopPaths = append(out.TopPaths, item)
 	}
 	return rows.Err()
 }
 
-func loadUserAgentRecentRequests(ctx context.Context, pool *pgxpool.Pool, out *UserAgentDetail, limit int) error {
+func loadUserAgentRecentRequests(ctx context.Context, pool *pgxpool.Pool, out *UserAgentDetail, limit int, offset int) error {
 	rows, err := pool.Query(ctx, `
 SELECT ts,
        site_id,
@@ -435,21 +482,26 @@ SELECT ts,
        coalesce(bytes_sent, 0),
        coalesce(referer, ''),
        left(coalesce(user_agent, ''), 300),
-       coalesce(container_id, '')
+       coalesce(container_id, ''),
+       count(*) OVER()::int
 FROM access_events
 WHERE ts >= $1 AND ts < $2
   AND ($3 = '' OR site_id = $3)
   AND (($4::bigint > 0 AND user_agent_id = $4) OR ($5 <> '' AND left(coalesce(user_agent, ''), 300) = $5))
 ORDER BY ts DESC
-LIMIT $6`, out.Since, out.Until, out.SiteID, out.UserAgent.ID, out.UserAgent.Sample, limit)
+LIMIT $6 OFFSET $7`, out.Since, out.Until, out.SiteID, out.UserAgent.ID, out.UserAgent.Sample, limit, offset)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var item EventSummary
-		if err := rows.Scan(&item.TS, &item.SiteID, &item.Env, &item.ClientIP, &item.Method, &item.Path, &item.Query, &item.Status, &item.BytesSent, &item.Referer, &item.UserAgent, &item.ContainerID); err != nil {
+		var rowTotal int
+		if err := rows.Scan(&item.TS, &item.SiteID, &item.Env, &item.ClientIP, &item.Method, &item.Path, &item.Query, &item.Status, &item.BytesSent, &item.Referer, &item.UserAgent, &item.ContainerID, &rowTotal); err != nil {
 			return err
+		}
+		if rowTotal > out.RequestsTotal {
+			out.RequestsTotal = rowTotal
 		}
 		out.RecentRequests = append(out.RecentRequests, item)
 	}

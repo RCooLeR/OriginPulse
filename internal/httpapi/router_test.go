@@ -161,3 +161,15 @@ func TestParseOffset(t *testing.T) {
 		}
 	}
 }
+
+func TestParseNamedOffset(t *testing.T) {
+	req := httptest.NewRequest("GET", "/?top_ip_offset=42", nil)
+	if got := parseNamedOffset(req, "top_ip_offset"); got != 42 {
+		t.Fatalf("parseNamedOffset(top_ip_offset) = %d, want 42", got)
+	}
+
+	req = httptest.NewRequest("GET", "/?top_ip_offset=-1", nil)
+	if got := parseNamedOffset(req, "top_ip_offset"); got != 0 {
+		t.Fatalf("parseNamedOffset(negative) = %d, want 0", got)
+	}
+}
