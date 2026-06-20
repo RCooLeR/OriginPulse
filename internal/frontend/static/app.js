@@ -2562,12 +2562,14 @@ function parseUserAgent(agent) {
   const known = item.known_actor || "";
   const bot = detectBot(sample, known);
   const tool = detectTool(sample);
-  const browser = detectBrowser(sample);
-  const os = detectOS(sample);
+  const browser = item.browser_family ? { name: item.browser_family, version: item.browser_version || "" } : detectBrowser(sample);
+  const os = item.os_family
+    ? { name: item.os_family, version: item.os_version || "", label: `${item.os_family}${item.os_version ? ` ${item.os_version}` : ""}`, platform: item.os_family }
+    : detectOS(sample);
   const engine = detectEngine(sample);
   const app = !bot && !tool && !browser.name ? detectApp(sample) : null;
-  const isBot = Boolean(bot || /crawler|bot|spider/i.test(item.actor_type || item.family || ""));
-  const isTool = Boolean(tool || /tool|script|scanner/i.test(item.actor_type || item.family || ""));
+  const isBot = Boolean(item.is_bot || bot || /crawler|bot|spider/i.test(item.actor_type || item.family || ""));
+  const isTool = Boolean(item.is_tool || tool || /tool|script|scanner/i.test(item.actor_type || item.family || ""));
   const name = bot?.name || tool?.name || browser.name || app?.name || readableToken(item.family || sample);
   const version = bot?.version || tool?.version || browser.version || app?.version || "";
   const actorType = isBot ? "crawler" : isTool ? "tool" : item.actor_type || (browser.name ? "browser" : "unknown");
@@ -2590,7 +2592,7 @@ function parseUserAgent(agent) {
     osVersion: os.version,
     osLabel: os.label,
     platform: os.platform,
-    device: detectDevice(sample, os.name, isBot, isTool),
+    device: item.device_family || detectDevice(sample, os.name, isBot, isTool),
     engine,
     classification,
     actorType,

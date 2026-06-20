@@ -80,3 +80,25 @@ func TestClassifyUserAgent(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyUserAgentAnalysisKeepsStoredMetadata(t *testing.T) {
+	item := UserAgentSummary{
+		Sample:         "Mozilla/5.0 AppleWebKit/537.36 Chrome/126.0 Safari/537.36",
+		BrowserFamily:  "Chrome",
+		BrowserVersion: "126.0",
+		OSFamily:       "Windows",
+		OSVersion:      "10/11",
+		DeviceFamily:   "Desktop",
+		ActorType:      "browser",
+		Requests:       42,
+	}
+
+	applyUserAgentAnalysis(&item)
+
+	if item.Family != "Chrome" || item.BrowserFamily != "Chrome" || item.OSFamily != "Windows" {
+		t.Fatalf("metadata = family %q browser %q os %q, want Chrome/Chrome/Windows", item.Family, item.BrowserFamily, item.OSFamily)
+	}
+	if item.ActorType != "browser" || item.DeviceFamily != "Desktop" {
+		t.Fatalf("actor/device = %q/%q, want browser/Desktop", item.ActorType, item.DeviceFamily)
+	}
+}

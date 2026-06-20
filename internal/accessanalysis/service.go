@@ -131,8 +131,15 @@ type SourceIPSummary struct {
 type UserAgentSummary struct {
 	Sample           string    `json:"sample"`
 	Family           string    `json:"family"`
+	BrowserFamily    string    `json:"browser_family,omitempty"`
+	BrowserVersion   string    `json:"browser_version,omitempty"`
+	OSFamily         string    `json:"os_family,omitempty"`
+	OSVersion        string    `json:"os_version,omitempty"`
+	DeviceFamily     string    `json:"device_family,omitempty"`
 	ActorType        string    `json:"actor_type"`
 	KnownActor       string    `json:"known_actor,omitempty"`
+	IsBot            bool      `json:"is_bot"`
+	IsTool           bool      `json:"is_tool"`
 	Requests         int64     `json:"requests"`
 	UniqueIPs        int64     `json:"unique_ips"`
 	Status4xx        int64     `json:"status_4xx"`
@@ -235,13 +242,16 @@ func (s *Service) Analyze(ctx context.Context, opts Options) (Report, error) {
 	includeAdminProbes := opts.IncludeSecurity || opts.IncludeAdminProbes
 	includeInjectionProbes := opts.IncludeSecurity || opts.IncludeInjectionProbes
 	includeTorSources := opts.IncludeSecurity || opts.IncludeTorSources
-	started := time.Now()
-	rollupsReady, err := rollups.DimensionRollupsReady(ctx, pool, report.Since, report.Until, report.SiteID)
-	recordTiming("dimension_rollups_ready", started)
-	if err != nil {
-		return report, err
-	}
 	if opts.SecurityOnly {
+		rollupsReady := false
+		if includeTorSources {
+			started := time.Now()
+			rollupsReady, err = rollups.DimensionRollupsReady(ctx, pool, report.Since, report.Until, report.SiteID)
+			recordTiming("dimension_rollups_ready", started)
+			if err != nil {
+				return report, err
+			}
+		}
 		if includeAdminProbes {
 			if err := timed("admin_probes", func() error { return s.loadAdminProbes(ctx, &report, limit) }); err != nil {
 				return report, err
@@ -262,6 +272,13 @@ func (s *Service) Analyze(ctx context.Context, opts Options) (Report, error) {
 		}
 		sortIssues(report.Issues)
 		return report, nil
+	}
+
+	started := time.Now()
+	rollupsReady, err := rollups.DimensionRollupsReady(ctx, pool, report.Since, report.Until, report.SiteID)
+	recordTiming("dimension_rollups_ready", started)
+	if err != nil {
+		return report, err
 	}
 
 	if err := timed("totals", func() error { return loadTotals(ctx, pool, &report, rollupsReady) }); err != nil {
@@ -982,7 +999,16 @@ func (s *Service) loadUserAgents(ctx context.Context, report *Report, limit int,
 		return loadUserAgentsFromRollups(ctx, pool, report, limit)
 	}
 	rows, err := pool.Query(ctx, `
-SELECT left(coalesce(e.user_agent, ''), 300),
+SELECT left(coalesce(max(d.user_agent), max(e.user_agent), ''), 300),
+       coalesce(max(d.browser_family), ''),
+       coalesce(max(d.browser_version), ''),
+       coalesce(max(d.os_family), ''),
+       coalesce(max(d.os_version), ''),
+       coalesce(max(d.device_family), ''),
+       coalesce(max(d.actor_type), ''),
+       coalesce(max(d.known_actor), ''),
+       coalesce(bool_or(d.is_bot), false),
+       coalesce(bool_or(d.is_tool), false),
        count(*)::bigint,
        count(DISTINCT e.client_ip)::bigint,
        count(*) FILTER (WHERE e.status >= 400 AND e.status < 500)::bigint,
@@ -993,8 +1019,9 @@ SELECT left(coalesce(e.user_agent, ''), 300),
        max(e.ts)
 FROM access_events e
 LEFT JOIN ip_intel ii ON ii.ip = e.client_ip
+LEFT JOIN dim_user_agents d ON d.user_agent_hash = e.user_agent_hash
 WHERE e.ts >= $1 AND e.ts < $2 AND ($3 = '' OR e.site_id = $3)
-GROUP BY e.user_agent_hash, left(coalesce(e.user_agent, ''), 300)
+GROUP BY e.user_agent_hash
 ORDER BY count(*) DESC
 LIMIT $4`, report.Since, report.Until, report.SiteID, limit)
 	if err != nil {
@@ -1006,6 +1033,15 @@ LIMIT $4`, report.Since, report.Until, report.SiteID, limit)
 		var item UserAgentSummary
 		if err := rows.Scan(
 			&item.Sample,
+			&item.BrowserFamily,
+			&item.BrowserVersion,
+			&item.OSFamily,
+			&item.OSVersion,
+			&item.DeviceFamily,
+			&item.ActorType,
+			&item.KnownActor,
+			&item.IsBot,
+			&item.IsTool,
 			&item.Requests,
 			&item.UniqueIPs,
 			&item.Status4xx,
@@ -1017,8 +1053,7 @@ LIMIT $4`, report.Since, report.Until, report.SiteID, limit)
 		); err != nil {
 			return err
 		}
-		analysis := useragent.Analyze(item.Sample, item.Requests)
-		item.Family, item.ActorType, item.KnownActor, item.RiskScore = analysis.Family, analysis.ActorType, analysis.KnownActor, analysis.RiskScore
+		applyUserAgentAnalysis(&item)
 		item.VerifiedSource = item.VerifiedIPs > 0 && item.VerifiedRequests > 0
 		item.Status4xxRate = ratio(item.Status4xx, item.Requests)
 		item.Status5xxRate = ratio(item.Status5xx, item.Requests)
@@ -1120,6 +1155,15 @@ agent_ip_stats AS (
   GROUP BY rows.agent_key
 )
 SELECT t.sample,
+       coalesce(d.browser_family, ''),
+       coalesce(d.browser_version, ''),
+       coalesce(d.os_family, ''),
+       coalesce(d.os_version, ''),
+       coalesce(d.device_family, ''),
+       coalesce(d.actor_type, ''),
+       coalesce(d.known_actor, ''),
+       coalesce(d.is_bot, false),
+       coalesce(d.is_tool, false),
        t.requests,
        coalesce(s.unique_ips, 0)::bigint,
        t.status_4xx,
@@ -1129,6 +1173,7 @@ SELECT t.sample,
        t.first_seen_at,
        t.last_seen_at
 FROM top_agents t
+LEFT JOIN dim_user_agents d ON d.id = t.user_agent_id
 LEFT JOIN agent_ip_stats s ON s.agent_key = t.agent_key
 ORDER BY t.requests DESC`, report.Since, report.Until, report.SiteID, limit, fullStart, fullEnd)
 	if err != nil {
@@ -1140,6 +1185,15 @@ ORDER BY t.requests DESC`, report.Since, report.Until, report.SiteID, limit, ful
 		var item UserAgentSummary
 		if err := rows.Scan(
 			&item.Sample,
+			&item.BrowserFamily,
+			&item.BrowserVersion,
+			&item.OSFamily,
+			&item.OSVersion,
+			&item.DeviceFamily,
+			&item.ActorType,
+			&item.KnownActor,
+			&item.IsBot,
+			&item.IsTool,
 			&item.Requests,
 			&item.UniqueIPs,
 			&item.Status4xx,
@@ -1151,14 +1205,48 @@ ORDER BY t.requests DESC`, report.Since, report.Until, report.SiteID, limit, ful
 		); err != nil {
 			return err
 		}
-		analysis := useragent.Analyze(item.Sample, item.Requests)
-		item.Family, item.ActorType, item.KnownActor, item.RiskScore = analysis.Family, analysis.ActorType, analysis.KnownActor, analysis.RiskScore
+		applyUserAgentAnalysis(&item)
 		item.VerifiedSource = item.VerifiedIPs > 0 && item.VerifiedRequests > 0
 		item.Status4xxRate = ratio(item.Status4xx, item.Requests)
 		item.Status5xxRate = ratio(item.Status5xx, item.Requests)
 		report.UserAgents = append(report.UserAgents, item)
 	}
 	return rows.Err()
+}
+
+func applyUserAgentAnalysis(item *UserAgentSummary) {
+	analysis := useragent.Analyze(item.Sample, item.Requests)
+	if item.Family == "" {
+		if item.BrowserFamily != "" {
+			item.Family = item.BrowserFamily
+		} else {
+			item.Family = analysis.Family
+		}
+	}
+	if item.ActorType == "" {
+		item.ActorType = analysis.ActorType
+	}
+	if item.KnownActor == "" {
+		item.KnownActor = analysis.KnownActor
+	}
+	if item.BrowserFamily == "" {
+		item.BrowserFamily = analysis.BrowserFamily
+	}
+	if item.BrowserVersion == "" {
+		item.BrowserVersion = analysis.BrowserVersion
+	}
+	if item.OSFamily == "" {
+		item.OSFamily = analysis.OSFamily
+	}
+	if item.OSVersion == "" {
+		item.OSVersion = analysis.OSVersion
+	}
+	if item.DeviceFamily == "" {
+		item.DeviceFamily = analysis.DeviceFamily
+	}
+	item.IsBot = item.IsBot || analysis.IsBot
+	item.IsTool = item.IsTool || analysis.IsTool
+	item.RiskScore = analysis.RiskScore
 }
 
 func (s *Service) loadSlowPaths(ctx context.Context, report *Report, limit int, rollupsReady bool) error {
