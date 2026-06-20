@@ -118,3 +118,23 @@ func TestNormalizeRawFileRecentLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeRawFileRecentOffset(t *testing.T) {
+	tests := []struct {
+		name   string
+		offset int
+		want   int
+	}{
+		{name: "default", offset: 0, want: 0},
+		{name: "negative", offset: -1, want: 0},
+		{name: "keeps requested", offset: 75, want: 75},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeRawFileRecentOffset(tt.offset); got != tt.want {
+				t.Fatalf("normalizeRawFileRecentOffset(%d) = %d, want %d", tt.offset, got, tt.want)
+			}
+		})
+	}
+}

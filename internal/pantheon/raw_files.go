@@ -40,6 +40,13 @@ type RawFileSummary struct {
 	DownloadedAt *time.Time `json:"downloaded_at,omitempty"`
 }
 
+type RawFilePage struct {
+	Recent []RawFileSummary `json:"recent"`
+	Total  int              `json:"total"`
+	Limit  int              `json:"limit"`
+	Offset int              `json:"offset"`
+}
+
 type RawFileRepository struct {
 	db *db.Store
 }
@@ -161,14 +168,25 @@ func (r *RawFileRepository) Stats(ctx context.Context) (map[string]int64, error)
 }
 
 func (r *RawFileRepository) Recent(ctx context.Context, limit int) ([]RawFileSummary, error) {
-	if !r.Enabled() {
-		return []RawFileSummary{}, nil
-	}
+	page, err := r.RecentPage(ctx, limit, 0)
+	return page.Recent, err
+}
+
+func (r *RawFileRepository) RecentPage(ctx context.Context, limit int, offset int) (RawFilePage, error) {
 	limit = normalizeRawFileRecentLimit(limit)
+	offset = normalizeRawFileRecentOffset(offset)
+	out := RawFilePage{Recent: []RawFileSummary{}, Limit: limit, Offset: offset}
+	if !r.Enabled() {
+		return out, nil
+	}
 
 	pool, err := r.db.Pool()
 	if err != nil {
-		return nil, err
+		return out, err
+	}
+
+	if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM raw_files`).Scan(&out.Total); err != nil {
+		return out, err
 	}
 
 	rows, err := pool.Query(ctx, `
@@ -177,9 +195,9 @@ SELECT site_id, env, container_id, log_type, remote_path, coalesce(remote_size, 
        last_seen_at, downloaded_at
 FROM raw_files
 ORDER BY last_seen_at DESC
-LIMIT $1`, limit)
+LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
 	defer rows.Close()
 
@@ -201,11 +219,12 @@ LIMIT $1`, limit)
 			&file.LastSeenAt,
 			&file.DownloadedAt,
 		); err != nil {
-			return nil, err
+			return out, err
 		}
 		files = append(files, file)
 	}
-	return files, rows.Err()
+	out.Recent = files
+	return out, rows.Err()
 }
 
 func normalizeRawFileRecentLimit(limit int) int {
@@ -216,6 +235,13 @@ func normalizeRawFileRecentLimit(limit int) int {
 		return RawFileRecentMaxLimit
 	}
 	return limit
+}
+
+func normalizeRawFileRecentOffset(offset int) int {
+	if offset < 0 {
+		return 0
+	}
+	return offset
 }
 
 func (r *RawFileRepository) upsert(ctx context.Context, file RawFile) error {

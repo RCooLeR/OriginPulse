@@ -844,7 +844,7 @@ func (api API) collectorHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	recent, err := api.rawFiles.Recent(r.Context(), parseLimit(r, 100, pantheon.RawFileRecentMaxLimit))
+	recent, err := api.rawFiles.RecentPage(r.Context(), parseLimit(r, 100, pantheon.RawFileRecentMaxLimit), parseOffset(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "collector_health_failed", err.Error())
 		return
@@ -854,7 +854,10 @@ func (api API) collectorHealth(w http.ResponseWriter, r *http.Request) {
 		"database_configured": api.db != nil && api.db.Enabled(),
 		"raw_files": map[string]any{
 			"stats":  stats,
-			"recent": recent,
+			"recent": recent.Recent,
+			"total":  recent.Total,
+			"limit":  recent.Limit,
+			"offset": recent.Offset,
 		},
 	})
 }

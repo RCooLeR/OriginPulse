@@ -24,6 +24,7 @@ const pathToRoute = Object.fromEntries(routes.map((route) => [route.path, route.
 const reportCatalogPageSize = 8;
 const notificationPageSize = 8;
 const segmentPageSize = 10;
+const rawFilePageSize = 10;
 const pulseHistoryLimit = 500;
 const alertHistoryLimit = 500;
 const alertRequestPageSize = 6;
@@ -78,6 +79,7 @@ const state = {
     jobs: [],
     credentials: {},
     collectorHealth: {},
+    rawFileCatalog: { total: 0, limit: rawFilePageSize, offset: 0 },
     retention: {},
     storage: {},
     archives: [],
@@ -234,7 +236,7 @@ async function refreshAll() {
       safeFetch(`/api/v1/reports/recent?${reportCatalogQuery(1)}`, { reports: [], total: 0, limit: reportCatalogPageSize, offset: 0, report_types: [] }),
       safeFetch(`/api/v1/system/jobs?limit=${pulseHistoryLimit}`, { jobs: [] }),
       safeFetch("/api/v1/system/credentials", {}),
-      safeFetch(`/api/v1/system/collector-health?limit=${pulseHistoryLimit}`, {}),
+      safeFetch(`/api/v1/system/collector-health?${rawFileHistoryQuery(1)}`, {}),
       safeFetch("/api/v1/system/retention", {}),
       safeFetch("/api/v1/system/storage", {}),
       safeFetch(`/api/v1/system/archives?limit=${pulseHistoryLimit}`, { archives: [] }),
@@ -258,6 +260,7 @@ async function refreshAll() {
       jobs: jobs.jobs || [],
       credentials,
       collectorHealth,
+      rawFileCatalog: rawFileCatalogMeta(collectorHealth.raw_files || {}),
       retention,
       storage,
       archives: archives.archives || [],
@@ -1268,13 +1271,13 @@ function pulseSegmentsPanel() {
 
 function pulseRawFilesPanel(rows) {
   const filteredRows = filtered(searchItems(rows || [], (item) => `${item.site_id || ""} ${item.env || ""} ${item.container_id || ""} ${item.log_type || ""} ${item.remote_path || ""} ${item.status || ""}`));
-  const page = paginate(filteredRows, state.pages.pulseRawFiles, 10);
+  const page = state.search ? paginate(filteredRows, state.pages.pulseRawFiles, 10) : rawFilePage(rows || [], state.data.rawFileCatalog);
   state.pages.pulseRawFiles = page.page;
   return `
     <article class="panel">
       <div class="panel-head">
         <div><h2>Raw File Activity</h2><p>Recently discovered or downloaded source files.</p></div>
-        <span class="pill">${formatNumber(filteredRows.length)} files</span>
+        <span class="pill">${formatNumber(page.total)} files</span>
       </div>
       ${rawFilesTable(page.rows)}
       ${pager("pulseRawFiles", page)}
@@ -2980,6 +2983,10 @@ async function handleAction(button) {
         await loadSegmentPage(page);
         return;
       }
+      if (key === "pulseRawFiles" && !state.search) {
+        await loadRawFilePage(page);
+        return;
+      }
       state.pages[key] = Math.max(1, page);
       render();
     }
@@ -4539,6 +4546,37 @@ function segmentCatalogMeta(response = {}) {
 
 function segmentPage(rows, catalog = {}) {
   return serverBackedPage(rows, Number(catalog.total ?? rows.length), Number(catalog.limit || segmentPageSize), Number(catalog.offset || 0));
+}
+
+function rawFileHistoryQuery(page = state.pages.pulseRawFiles || 1) {
+  const safePage = Math.max(1, Number(page || 1));
+  return new URLSearchParams({
+    limit: String(rawFilePageSize),
+    offset: String((safePage - 1) * rawFilePageSize),
+  }).toString();
+}
+
+async function loadRawFilePage(page = state.pages.pulseRawFiles || 1) {
+  const safePage = Math.max(1, Number(page || 1));
+  const response = await safeFetch(`/api/v1/system/collector-health?${rawFileHistoryQuery(safePage)}`, {
+    raw_files: { recent: [], total: 0, limit: rawFilePageSize, offset: (safePage - 1) * rawFilePageSize },
+  });
+  state.data.collectorHealth = response;
+  state.data.rawFileCatalog = rawFileCatalogMeta(response.raw_files || {});
+  state.pages.pulseRawFiles = rawFilePage(response.raw_files?.recent || [], state.data.rawFileCatalog).page;
+  render();
+}
+
+function rawFileCatalogMeta(rawFiles = {}) {
+  return {
+    total: Number(rawFiles.total || 0),
+    limit: Number(rawFiles.limit || rawFilePageSize),
+    offset: Number(rawFiles.offset || 0),
+  };
+}
+
+function rawFilePage(rows, catalog = {}) {
+  return serverBackedPage(rows, Number(catalog.total ?? rows.length), Number(catalog.limit || rawFilePageSize), Number(catalog.offset || 0));
 }
 
 function reportCatalogMeta(response = {}) {
