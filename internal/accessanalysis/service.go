@@ -1226,7 +1226,7 @@ ORDER BY t.requests DESC`, report.Since, report.Until, report.SiteID, limit, ful
 
 func applyUserAgentAnalysis(item *UserAgentSummary) {
 	analysis := useragent.Analyze(item.Sample, item.Requests)
-	if item.Family == "" {
+	if item.Family == "" || isGenericUserAgentFamily(item.Family, item.ActorType) {
 		if item.BrowserFamily != "" {
 			item.Family = item.BrowserFamily
 		} else {
@@ -1259,6 +1259,15 @@ func applyUserAgentAnalysis(item *UserAgentSummary) {
 	if item.RiskScore <= 0 {
 		item.RiskScore = analysis.RiskScore
 	}
+}
+
+func isGenericUserAgentFamily(family string, actorType string) bool {
+	switch strings.ToLower(strings.TrimSpace(family)) {
+	case "", "unknown", "browser", "tool", "crawler", "bot":
+		return true
+	}
+	normalizedActor := strings.ToLower(strings.TrimSpace(actorType))
+	return normalizedActor != "" && strings.EqualFold(strings.TrimSpace(family), normalizedActor)
 }
 
 func (s *Service) loadSlowPaths(ctx context.Context, report *Report, limit int, rollupsReady bool) error {

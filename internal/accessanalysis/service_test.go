@@ -107,6 +107,21 @@ func TestApplyUserAgentAnalysisKeepsStoredMetadata(t *testing.T) {
 	}
 }
 
+func TestApplyUserAgentAnalysisReplacesGenericFamily(t *testing.T) {
+	item := UserAgentSummary{
+		Sample:    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.127 Safari/537.36",
+		Family:    "browser",
+		ActorType: "browser",
+		Requests:  42,
+	}
+
+	applyUserAgentAnalysis(&item)
+
+	if item.Family != "Chrome" || item.BrowserFamily != "Chrome" || item.BrowserVersion != "126.0.6478" {
+		t.Fatalf("metadata = family %q browser %q version %q, want Chrome/Chrome/126.0.6478", item.Family, item.BrowserFamily, item.BrowserVersion)
+	}
+}
+
 func TestNormalizeLimitAllowsDeeperPaginatedLists(t *testing.T) {
 	tests := []struct {
 		name  string

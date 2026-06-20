@@ -3692,7 +3692,9 @@ function reportDrilldownTitle(row) {
 
 function reportDrilldownTitleHTML(row) {
   if (row.kind === "user_agent" && (row.meta || row.user_agent || row.label)) {
-    return userAgentLink({ family: row.label, sample: row.meta || row.user_agent || row.label }, row.label || row.meta || "User Agent");
+    const agent = { family: row.label, sample: row.meta || row.user_agent || row.label, actor_type: row.category, known_actor: row.known_actor };
+    const info = parseUserAgent(agent);
+    return userAgentLink(agent, info.label || row.label || row.meta || "User Agent");
   }
   return linkifyIPs(reportDrilldownTitle(row));
 }
