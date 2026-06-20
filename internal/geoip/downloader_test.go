@@ -87,6 +87,53 @@ func TestUpdaterEnsureDatabaseCopiesSeedBeforeDownload(t *testing.T) {
 	}
 }
 
+func TestUpdaterStatusReportsSeedAndCredentials(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "runtime", "GeoLite2-City.mmdb")
+	seedPath := filepath.Join(dir, "seed", "GeoLite2-City.mmdb")
+	lastModifiedPath := filepath.Join(dir, "GeoLite2-City.lastmod")
+	if err := os.MkdirAll(filepath.Dir(seedPath), 0o755); err != nil {
+		t.Fatalf("mkdir seed dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir db dir: %v", err)
+	}
+	if err := os.WriteFile(seedPath, []byte("seed"), 0o644); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	if err := os.WriteFile(dbPath, []byte("database"), 0o644); err != nil {
+		t.Fatalf("write db: %v", err)
+	}
+	if err := os.WriteFile(lastModifiedPath, []byte("Sat, 20 Jun 2026 10:00:00 GMT"), 0o600); err != nil {
+		t.Fatalf("write last modified: %v", err)
+	}
+
+	updater := NewUpdater(UpdaterConfig{
+		DBPath:           dbPath,
+		SeedPath:         seedPath,
+		DownloadURL:      "https://download.maxmind.test/GeoLite2-City.tar.gz",
+		AccountID:        "acct",
+		LicenseKey:       "license",
+		Interval:         time.Hour,
+		LastModifiedPath: lastModifiedPath,
+		HTTPTimeout:      time.Second,
+	})
+
+	status := updater.Status(true, nil)
+	if !status.Enabled || !status.DatabaseExists || !status.SeedExists {
+		t.Fatalf("status readiness = enabled:%v db:%v seed:%v, want all true", status.Enabled, status.DatabaseExists, status.SeedExists)
+	}
+	if status.DatabaseBytes != int64(len("database")) {
+		t.Fatalf("DatabaseBytes = %d, want %d", status.DatabaseBytes, len("database"))
+	}
+	if !status.MaxMindCredentialsConfigured || !status.DownloadConfigured {
+		t.Fatalf("download readiness = credentials:%v download:%v, want true/true", status.MaxMindCredentialsConfigured, status.DownloadConfigured)
+	}
+	if status.LastModified == "" || status.UpdateInterval != time.Hour.String() {
+		t.Fatalf("status last_modified/update_interval = %q/%q", status.LastModified, status.UpdateInterval)
+	}
+}
+
 func geoLiteArchive(t *testing.T, name string, payload []byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer

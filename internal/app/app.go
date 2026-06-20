@@ -165,6 +165,8 @@ func (r *Runtime) RunServer(ctx context.Context) error {
 		AccessAnalysis:  r.accessAnalysis,
 		Investigation:   r.investigation,
 		IPIntel:         r.ipIntel,
+		GeoIP:           r.geoIP,
+		GeoIPUpdater:    r.geoIPUpdater,
 		Alerts:          r.alerts,
 		Reports:         r.reports,
 		Notifications:   r.notifications,

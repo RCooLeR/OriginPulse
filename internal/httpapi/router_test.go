@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"originpulse/internal/alerts"
 	"originpulse/internal/combiner"
 	"originpulse/internal/config"
+	"originpulse/internal/geoip"
 	"originpulse/internal/investigation"
 	"originpulse/internal/ipintel"
 	"originpulse/internal/notifications"
@@ -105,6 +107,23 @@ func TestStorageAuditUnavailableReportKeepsConfiguredRetentionPolicy(t *testing.
 	}
 	if report.Retention.TemporaryImportMaxAge != cfg.Retention.TemporaryImportMaxAge.String() {
 		t.Fatalf("TemporaryImportMaxAge = %q, want %q", report.Retention.TemporaryImportMaxAge, cfg.Retention.TemporaryImportMaxAge)
+	}
+}
+
+func TestGeoIPStatusReportsDisabledWhenUpdaterMissing(t *testing.T) {
+	cfg := config.Default()
+	cfg.GeoIP.Enabled = false
+	api := API{cfg: cfg}
+	rec := httptest.NewRecorder()
+
+	api.geoIPStatus(rec, httptest.NewRequest("GET", "/api/v1/system/geoip", nil))
+
+	var status geoip.Status
+	if err := json.NewDecoder(rec.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.Enabled || status.Loaded {
+		t.Fatalf("status = enabled:%v loaded:%v, want disabled/unloaded", status.Enabled, status.Loaded)
 	}
 }
 

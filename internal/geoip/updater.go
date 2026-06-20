@@ -28,8 +28,56 @@ type Updater struct {
 	cfg UpdaterConfig
 }
 
+type Status struct {
+	Enabled                      bool       `json:"enabled"`
+	Loaded                       bool       `json:"loaded"`
+	DatabasePath                 string     `json:"database_path,omitempty"`
+	DatabaseExists               bool       `json:"database_exists"`
+	DatabaseBytes                int64      `json:"database_bytes,omitempty"`
+	DatabaseModifiedAt           *time.Time `json:"database_modified_at,omitempty"`
+	SeedPath                     string     `json:"seed_path,omitempty"`
+	SeedExists                   bool       `json:"seed_exists"`
+	MaxMindCredentialsConfigured bool       `json:"maxmind_credentials_configured"`
+	DownloadConfigured           bool       `json:"download_configured"`
+	UpdateInterval               string     `json:"update_interval,omitempty"`
+	LastModifiedPath             string     `json:"last_modified_path,omitempty"`
+	LastModified                 string     `json:"last_modified,omitempty"`
+}
+
 func NewUpdater(cfg UpdaterConfig) *Updater {
 	return &Updater{cfg: cfg}
+}
+
+func (u *Updater) Status(enabled bool, mgr *Manager) Status {
+	if u == nil {
+		return Status{Enabled: enabled, Loaded: mgr != nil && mgr.Loaded()}
+	}
+
+	status := Status{
+		Enabled:                      enabled,
+		Loaded:                       mgr != nil && mgr.Loaded(),
+		DatabasePath:                 u.cfg.DBPath,
+		SeedPath:                     u.cfg.SeedPath,
+		MaxMindCredentialsConfigured: strings.TrimSpace(u.cfg.AccountID) != "" && strings.TrimSpace(u.cfg.LicenseKey) != "",
+		DownloadConfigured:           strings.TrimSpace(u.cfg.DownloadURL) != "",
+		UpdateInterval:               u.cfg.Interval.String(),
+		LastModifiedPath:             u.cfg.LastModifiedPath,
+	}
+	if info, err := os.Stat(u.cfg.DBPath); err == nil {
+		modified := info.ModTime().UTC()
+		status.DatabaseExists = true
+		status.DatabaseBytes = info.Size()
+		status.DatabaseModifiedAt = &modified
+	}
+	if _, err := os.Stat(u.cfg.SeedPath); err == nil {
+		status.SeedExists = true
+	}
+	if u.cfg.LastModifiedPath != "" {
+		if raw, err := os.ReadFile(u.cfg.LastModifiedPath); err == nil {
+			status.LastModified = strings.TrimSpace(string(raw))
+		}
+	}
+	return status
 }
 
 func (u *Updater) EnsureAndLoad(ctx context.Context, mgr *Manager) error {

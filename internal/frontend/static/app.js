@@ -82,6 +82,7 @@ const state = {
     jobs: [],
     jobCatalog: { total: 0, limit: jobPageSize, offset: 0 },
     credentials: {},
+    geoip: {},
     collectorHealth: {},
     rawFileCatalog: { total: 0, limit: rawFilePageSize, offset: 0 },
     retention: {},
@@ -231,7 +232,7 @@ async function refreshAll() {
     const estateAnalysisRequest = analysisFilter === estateAnalysisFilter
       ? analysisRequest
       : safeFetch(`/api/v1/analysis/access-log?${estateAnalysisFilter}`, {}, 30000);
-    const [overview, analysis, estateAnalysis, traffic, estateTraffic, sites, alerts, reports, jobs, credentials, collectorHealth, retention, storage, archives, archiveImports, archiveCoverage, notifications, webPush, users, segments] = await Promise.all([
+    const [overview, analysis, estateAnalysis, traffic, estateTraffic, sites, alerts, reports, jobs, credentials, geoip, collectorHealth, retention, storage, archives, archiveImports, archiveCoverage, notifications, webPush, users, segments] = await Promise.all([
       safeFetch(`/api/v1/dashboard/overview?${filter}`, {}),
       analysisRequest,
       estateAnalysisRequest,
@@ -242,6 +243,7 @@ async function refreshAll() {
       safeFetch(`/api/v1/reports/recent?${reportCatalogQuery(1)}`, { reports: [], total: 0, limit: reportCatalogPageSize, offset: 0, report_types: [] }),
       safeFetch(`/api/v1/system/jobs?${jobHistoryQuery(1)}`, { jobs: [], total: 0, limit: jobPageSize, offset: 0 }),
       safeFetch("/api/v1/system/credentials", {}),
+      safeFetch("/api/v1/system/geoip", {}),
       safeFetch(`/api/v1/system/collector-health?${rawFileHistoryQuery(1)}`, {}),
       safeFetch("/api/v1/system/retention", {}),
       safeFetch("/api/v1/system/storage", {}),
@@ -266,6 +268,7 @@ async function refreshAll() {
       jobs: jobs.jobs || [],
       jobCatalog: jobCatalogMeta(jobs),
       credentials,
+      geoip,
       collectorHealth,
       rawFileCatalog: rawFileCatalogMeta(collectorHealth.raw_files || {}),
       retention,
@@ -1029,6 +1032,7 @@ function renderAlerts() {
 function renderSettings() {
   const credentials = state.data.credentials.summary || {};
   const retention = state.data.retention || {};
+  const geoip = state.data.geoip || {};
   return `
     <section class="layout-3">
       <article class="panel">
@@ -1058,6 +1062,17 @@ function renderSettings() {
           ["Expired imports", formatNumber(retention.temporary_imports_matched)],
           ["Expired imported events", formatNumber(retention.temporary_events_matched)],
           ["Raw dir", state.data.overview.raw_dir || "-"],
+        ])}</div>
+      </article>
+      <article class="panel">
+        <div class="panel-head"><div><h2>GeoIP</h2><p>MaxMind enrichment readiness.</p></div></div>
+        <div class="panel-body">${facts([
+          ["Enabled", yesNo(geoip.enabled)],
+          ["Loaded", yesNo(geoip.loaded)],
+          ["Runtime DB", geoip.database_exists ? formatBytes(geoip.database_bytes) : "Missing"],
+          ["Bundled seed", yesNo(geoip.seed_exists)],
+          ["MaxMind download", geoip.maxmind_credentials_configured && geoip.download_configured ? "Configured" : geoip.seed_exists ? "Seed fallback" : "Missing"],
+          ["Updated", shortTime(geoip.database_modified_at)],
         ])}</div>
       </article>
     </section>
@@ -2120,11 +2135,13 @@ function chartLegend(items) {
 
 function systemPanel() {
   const configured = state.data.overview.database_configured;
+  const geoip = state.data.geoip || {};
   return `
     <article class="panel">
       <div class="panel-head"><div><h2>System Health</h2><p>Collector and storage readiness.</p></div></div>
       <div class="panel-body">${facts([
         ["Database", configured ? "Configured" : "Not configured"],
+        ["GeoIP", geoip.enabled ? (geoip.loaded ? "Loaded" : geoip.seed_exists ? "Seed ready" : "Missing") : "Disabled"],
         ["Collection", state.data.overview.collection_enabled ? "Enabled" : "Manual"],
         ["Machine token", state.data.overview.machine_token ? "Ready" : "Missing"],
         ["SSH key", state.data.overview.ssh_key ? "Ready" : "Missing"],

@@ -26,6 +26,7 @@ import (
 	"originpulse/internal/config"
 	"originpulse/internal/db"
 	"originpulse/internal/frontend"
+	"originpulse/internal/geoip"
 	"originpulse/internal/indexer"
 	"originpulse/internal/investigation"
 	"originpulse/internal/ipintel"
@@ -52,6 +53,8 @@ type Dependencies struct {
 	AccessAnalysis  *accessanalysis.Service
 	Investigation   *investigation.Service
 	IPIntel         *ipintel.Service
+	GeoIP           *geoip.Manager
+	GeoIPUpdater    *geoip.Updater
 	Alerts          *alerts.Service
 	Reports         *reports.Service
 	Notifications   *notifications.Service
@@ -79,6 +82,8 @@ type API struct {
 	accessAnalysis  *accessanalysis.Service
 	investigation   *investigation.Service
 	ipIntel         *ipintel.Service
+	geoIP           *geoip.Manager
+	geoIPUpdater    *geoip.Updater
 	alerts          *alerts.Service
 	reports         *reports.Service
 	notifications   *notifications.Service
@@ -108,6 +113,8 @@ func NewRouter(deps Dependencies) http.Handler {
 		accessAnalysis:  deps.AccessAnalysis,
 		investigation:   deps.Investigation,
 		ipIntel:         deps.IPIntel,
+		geoIP:           deps.GeoIP,
+		geoIPUpdater:    deps.GeoIPUpdater,
 		alerts:          deps.Alerts,
 		reports:         deps.Reports,
 		notifications:   deps.Notifications,
@@ -159,6 +166,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Delete("/notifications/web-push/subscribe", api.unsubscribeWebPush)
 			r.Get("/sites", api.listSites)
 			r.Get("/system/credentials", api.credentials)
+			r.Get("/system/geoip", api.geoIPStatus)
 			r.Get("/system/collector-health", api.collectorHealth)
 			r.Get("/system/jobs", api.recentJobs)
 			r.Get("/system/retention", api.retentionDryRun)
@@ -828,6 +836,17 @@ func (api API) credentials(w http.ResponseWriter, r *http.Request) {
 			"machine_token": "Optional for this first log downloader; required later if OriginPulse uses Terminus to discover sites or manage Pantheon resources.",
 		},
 	})
+}
+
+func (api API) geoIPStatus(w http.ResponseWriter, r *http.Request) {
+	if api.geoIPUpdater == nil {
+		writeJSON(w, http.StatusOK, geoip.Status{
+			Enabled: api.cfg.GeoIP.Enabled,
+			Loaded:  api.geoIP != nil && api.geoIP.Loaded(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, api.geoIPUpdater.Status(api.cfg.GeoIP.Enabled, api.geoIP))
 }
 
 func (api API) recentJobs(w http.ResponseWriter, r *http.Request) {
