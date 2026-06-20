@@ -12,31 +12,39 @@ import (
 var ErrSecuritySignalRequired = errors.New("security signal kind, category, path, or ip is required")
 
 type SecuritySignalOptions struct {
-	Kind     string
-	Category string
-	RuleKey  string
-	SiteID   string
-	Env      string
-	IP       string
-	Method   string
-	Path     string
-	Range    string
-	Limit    int
-	From     time.Time
-	To       time.Time
+	Kind                 string
+	Category             string
+	RuleKey              string
+	SiteID               string
+	Env                  string
+	IP                   string
+	Method               string
+	Path                 string
+	Range                string
+	Limit                int
+	RelatedIPOffset      int
+	RelatedRequestOffset int
+	From                 time.Time
+	To                   time.Time
 }
 
 type SecuritySignalDetail struct {
-	Range           string               `json:"range"`
-	SiteID          string               `json:"site_id,omitempty"`
-	Since           time.Time            `json:"since"`
-	Until           time.Time            `json:"until"`
-	GeneratedAt     time.Time            `json:"generated_at"`
-	DatabaseEnabled bool                 `json:"database_enabled"`
-	Signal          SecuritySignalRecord `json:"signal"`
-	RelatedIPs      []IPSummary          `json:"related_ips"`
-	RelatedRequests []EventSummary       `json:"related_requests"`
-	Source          string               `json:"source"`
+	Range                 string               `json:"range"`
+	SiteID                string               `json:"site_id,omitempty"`
+	Since                 time.Time            `json:"since"`
+	Until                 time.Time            `json:"until"`
+	GeneratedAt           time.Time            `json:"generated_at"`
+	DatabaseEnabled       bool                 `json:"database_enabled"`
+	Signal                SecuritySignalRecord `json:"signal"`
+	RelatedIPs            []IPSummary          `json:"related_ips"`
+	RelatedIPsTotal       int                  `json:"related_ips_total"`
+	RelatedIPsLimit       int                  `json:"related_ips_limit"`
+	RelatedIPsOffset      int                  `json:"related_ips_offset"`
+	RelatedRequests       []EventSummary       `json:"related_requests"`
+	RelatedRequestsTotal  int                  `json:"related_requests_total"`
+	RelatedRequestsLimit  int                  `json:"related_requests_limit"`
+	RelatedRequestsOffset int                  `json:"related_requests_offset"`
+	Source                string               `json:"source"`
 }
 
 type SecuritySignalRecord struct {
@@ -62,6 +70,8 @@ type SecuritySignalRecord struct {
 
 func (s *Service) SecuritySignalDetails(ctx context.Context, opts SecuritySignalOptions) (SecuritySignalDetail, error) {
 	limit := normalizeLimit(opts.Limit)
+	relatedIPOffset := normalizeOffset(opts.RelatedIPOffset)
+	relatedRequestOffset := normalizeOffset(opts.RelatedRequestOffset)
 	now := time.Now().UTC()
 	since, until, label, err := resolveWindow(now, opts.Range, opts.From, opts.To)
 	kind := normalizeSecurityKind(opts.Kind)
@@ -82,8 +92,12 @@ func (s *Service) SecuritySignalDetails(ctx context.Context, opts SecuritySignal
 			Method:   strings.TrimSpace(opts.Method),
 			Path:     strings.TrimSpace(opts.Path),
 		},
-		RelatedIPs:      []IPSummary{},
-		RelatedRequests: []EventSummary{},
+		RelatedIPs:            []IPSummary{},
+		RelatedIPsLimit:       limit,
+		RelatedIPsOffset:      relatedIPOffset,
+		RelatedRequests:       []EventSummary{},
+		RelatedRequestsLimit:  limit,
+		RelatedRequestsOffset: relatedRequestOffset,
 	}
 	if err != nil {
 		return out, err
@@ -104,10 +118,10 @@ func (s *Service) SecuritySignalDetails(ctx context.Context, opts SecuritySignal
 		if err := loadTorSignalSummary(ctx, pool, &out); err != nil {
 			return out, err
 		}
-		if err := loadTorSignalIPs(ctx, pool, &out, limit); err != nil {
+		if err := loadTorSignalIPs(ctx, pool, &out, limit, relatedIPOffset); err != nil {
 			return out, err
 		}
-		if err := loadTorSignalRequests(ctx, pool, &out, limit); err != nil {
+		if err := loadTorSignalRequests(ctx, pool, &out, limit, relatedRequestOffset); err != nil {
 			return out, err
 		}
 		return out, nil
@@ -117,10 +131,10 @@ func (s *Service) SecuritySignalDetails(ctx context.Context, opts SecuritySignal
 	if err := loadProbeSignalSummary(ctx, pool, &out); err != nil {
 		return out, err
 	}
-	if err := loadProbeSignalIPs(ctx, pool, &out, limit); err != nil {
+	if err := loadProbeSignalIPs(ctx, pool, &out, limit, relatedIPOffset); err != nil {
 		return out, err
 	}
-	if err := loadProbeSignalRequests(ctx, pool, &out, limit); err != nil {
+	if err := loadProbeSignalRequests(ctx, pool, &out, limit, relatedRequestOffset); err != nil {
 		return out, err
 	}
 	return out, nil
@@ -183,7 +197,7 @@ LEFT JOIN ip_totals ON ip_totals.client_ip = f.client_ip`, out.Since, out.Until,
 	)
 }
 
-func loadProbeSignalIPs(ctx context.Context, pool *pgxpool.Pool, out *SecuritySignalDetail, limit int) error {
+func loadProbeSignalIPs(ctx context.Context, pool *pgxpool.Pool, out *SecuritySignalDetail, limit int, offset int) error {
 	rows, err := pool.Query(ctx, `
 SELECT host(f.client_ip),
        count(*)::bigint AS requests,
@@ -195,7 +209,8 @@ SELECT host(f.client_ip),
        coalesce(ii.risk_score, -1),
        coalesce(ii.actor_type, ''),
        coalesce(ii.known_actor, ''),
-       coalesce(ii.reverse_dns, '')
+       coalesce(ii.reverse_dns, ''),
+       count(*) OVER()::int
 FROM security_probe_events f
 LEFT JOIN access_events e ON e.id = f.event_id
 LEFT JOIN ip_intel ii ON ii.ip = f.client_ip
@@ -210,15 +225,15 @@ WHERE f.ts >= $1 AND f.ts < $2
   AND f.client_ip IS NOT NULL
 GROUP BY f.client_ip, ii.risk_score, ii.actor_type, ii.known_actor, ii.reverse_dns
 ORDER BY count(*) DESC, max(f.ts) DESC
-LIMIT $10`, out.Since, out.Until, out.Signal.Kind, firstNonEmpty(out.Signal.Category, out.Signal.RuleKey), out.Signal.SiteID, out.Signal.Env, out.Signal.IP, out.Signal.Method, out.Signal.Path, limit)
+LIMIT $10 OFFSET $11`, out.Since, out.Until, out.Signal.Kind, firstNonEmpty(out.Signal.Category, out.Signal.RuleKey), out.Signal.SiteID, out.Signal.Env, out.Signal.IP, out.Signal.Method, out.Signal.Path, limit, offset)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	return scanUserAgentIPRows(rows, &out.RelatedIPs)
+	return scanUserAgentIPRowsWithTotal(rows, &out.RelatedIPs, &out.RelatedIPsTotal)
 }
 
-func loadProbeSignalRequests(ctx context.Context, pool *pgxpool.Pool, out *SecuritySignalDetail, limit int) error {
+func loadProbeSignalRequests(ctx context.Context, pool *pgxpool.Pool, out *SecuritySignalDetail, limit int, offset int) error {
 	rows, err := pool.Query(ctx, `
 SELECT f.ts,
        f.site_id,
@@ -231,7 +246,8 @@ SELECT f.ts,
        coalesce(e.bytes_sent, 0),
        coalesce(e.referer, ''),
        left(coalesce(e.user_agent, ''), 300),
-       coalesce(e.container_id, '')
+       coalesce(e.container_id, ''),
+       count(*) OVER()::int
 FROM security_probe_events f
 LEFT JOIN access_events e ON e.id = f.event_id
 WHERE f.ts >= $1 AND f.ts < $2
@@ -243,15 +259,19 @@ WHERE f.ts >= $1 AND f.ts < $2
   AND ($8 = '' OR coalesce(f.method, '') = $8)
   AND ($9 = '' OR coalesce(f.path, '') = $9)
 ORDER BY f.ts DESC
-LIMIT $10`, out.Since, out.Until, out.Signal.Kind, firstNonEmpty(out.Signal.Category, out.Signal.RuleKey), out.Signal.SiteID, out.Signal.Env, out.Signal.IP, out.Signal.Method, out.Signal.Path, limit)
+LIMIT $10 OFFSET $11`, out.Since, out.Until, out.Signal.Kind, firstNonEmpty(out.Signal.Category, out.Signal.RuleKey), out.Signal.SiteID, out.Signal.Env, out.Signal.IP, out.Signal.Method, out.Signal.Path, limit, offset)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var item EventSummary
-		if err := rows.Scan(&item.TS, &item.SiteID, &item.Env, &item.ClientIP, &item.Method, &item.Path, &item.Query, &item.Status, &item.BytesSent, &item.Referer, &item.UserAgent, &item.ContainerID); err != nil {
+		var rowTotal int
+		if err := rows.Scan(&item.TS, &item.SiteID, &item.Env, &item.ClientIP, &item.Method, &item.Path, &item.Query, &item.Status, &item.BytesSent, &item.Referer, &item.UserAgent, &item.ContainerID, &rowTotal); err != nil {
 			return err
+		}
+		if rowTotal > out.RelatedRequestsTotal {
+			out.RelatedRequestsTotal = rowTotal
 		}
 		out.RelatedRequests = append(out.RelatedRequests, item)
 	}
@@ -283,7 +303,7 @@ WHERE e.ts >= $1 AND e.ts < $2
   AND ($5 = '' OR host(e.client_ip) = $5)`, out.Since, out.Until, out.Signal.SiteID, out.Signal.Env, out.Signal.IP).Scan(&out.Signal.SiteID, &out.Signal.Env, &out.Signal.IP, &out.Signal.Requests, &out.Signal.Status4xx, &out.Signal.Status5xx, &out.Signal.FirstSeen, &out.Signal.LastSeen, &out.Signal.RiskScore)
 }
 
-func loadTorSignalIPs(ctx context.Context, pool *pgxpool.Pool, out *SecuritySignalDetail, limit int) error {
+func loadTorSignalIPs(ctx context.Context, pool *pgxpool.Pool, out *SecuritySignalDetail, limit int, offset int) error {
 	rows, err := pool.Query(ctx, `
 SELECT host(e.client_ip),
        count(*)::bigint,
@@ -295,7 +315,8 @@ SELECT host(e.client_ip),
        coalesce(ii.risk_score, 70),
        coalesce(ii.actor_type, 'tor'),
        coalesce(ii.known_actor, ''),
-       coalesce(ii.reverse_dns, '')
+       coalesce(ii.reverse_dns, ''),
+       count(*) OVER()::int
 FROM access_events e
 JOIN ip_intel ii ON ii.ip = e.client_ip
 WHERE e.ts >= $1 AND e.ts < $2
@@ -305,15 +326,15 @@ WHERE e.ts >= $1 AND e.ts < $2
   AND ($5 = '' OR host(e.client_ip) = $5)
 GROUP BY e.client_ip, ii.risk_score, ii.actor_type, ii.known_actor, ii.reverse_dns
 ORDER BY count(*) DESC, max(e.ts) DESC
-LIMIT $6`, out.Since, out.Until, out.Signal.SiteID, out.Signal.Env, out.Signal.IP, limit)
+LIMIT $6 OFFSET $7`, out.Since, out.Until, out.Signal.SiteID, out.Signal.Env, out.Signal.IP, limit, offset)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	return scanUserAgentIPRows(rows, &out.RelatedIPs)
+	return scanUserAgentIPRowsWithTotal(rows, &out.RelatedIPs, &out.RelatedIPsTotal)
 }
 
-func loadTorSignalRequests(ctx context.Context, pool *pgxpool.Pool, out *SecuritySignalDetail, limit int) error {
+func loadTorSignalRequests(ctx context.Context, pool *pgxpool.Pool, out *SecuritySignalDetail, limit int, offset int) error {
 	rows, err := pool.Query(ctx, `
 SELECT e.ts,
        e.site_id,
@@ -326,7 +347,8 @@ SELECT e.ts,
        coalesce(e.bytes_sent, 0),
        coalesce(e.referer, ''),
        left(coalesce(e.user_agent, ''), 300),
-       coalesce(e.container_id, '')
+       coalesce(e.container_id, ''),
+       count(*) OVER()::int
 FROM access_events e
 JOIN ip_intel ii ON ii.ip = e.client_ip
 WHERE e.ts >= $1 AND e.ts < $2
@@ -335,15 +357,19 @@ WHERE e.ts >= $1 AND e.ts < $2
   AND ($4 = '' OR e.env = $4)
   AND ($5 = '' OR host(e.client_ip) = $5)
 ORDER BY e.ts DESC
-LIMIT $6`, out.Since, out.Until, out.Signal.SiteID, out.Signal.Env, out.Signal.IP, limit)
+LIMIT $6 OFFSET $7`, out.Since, out.Until, out.Signal.SiteID, out.Signal.Env, out.Signal.IP, limit, offset)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var item EventSummary
-		if err := rows.Scan(&item.TS, &item.SiteID, &item.Env, &item.ClientIP, &item.Method, &item.Path, &item.Query, &item.Status, &item.BytesSent, &item.Referer, &item.UserAgent, &item.ContainerID); err != nil {
+		var rowTotal int
+		if err := rows.Scan(&item.TS, &item.SiteID, &item.Env, &item.ClientIP, &item.Method, &item.Path, &item.Query, &item.Status, &item.BytesSent, &item.Referer, &item.UserAgent, &item.ContainerID, &rowTotal); err != nil {
 			return err
+		}
+		if rowTotal > out.RelatedRequestsTotal {
+			out.RelatedRequestsTotal = rowTotal
 		}
 		out.RelatedRequests = append(out.RelatedRequests, item)
 	}

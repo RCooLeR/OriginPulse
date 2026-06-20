@@ -26,6 +26,7 @@ const pulseHistoryLimit = 500;
 const alertHistoryLimit = 500;
 const alertRequestPageSize = 6;
 const userAgentDetailPageSize = 6;
+const securitySignalDetailPageSize = 6;
 const drawerHistoryLimit = 500;
 const analysisHistoryLimit = 500;
 
@@ -2983,6 +2984,10 @@ async function handleAction(button) {
         await loadUserAgentDetailPage(key, page);
         return;
       }
+      if (state.drawer.kind === "security-signal" && ["securitySignalIPs", "securitySignalRequests"].includes(key) && state.drawer.data) {
+        await loadSecuritySignalDetailPage(key, page);
+        return;
+      }
       state.drawer.pages[key] = Math.max(1, page);
       renderCurrentDrawer();
     }
@@ -3437,8 +3442,8 @@ function renderSecuritySignalDetail(item) {
   const signal = item.signal || item;
   const relatedIPs = (item.related_ips || []).length ? item.related_ips : securityRelatedIPs(signal);
   const relatedRequests = (item.related_requests || []).length ? item.related_requests : securityRelatedRequests(signal);
-  const ipPage = drawerPage("securitySignalIPs", relatedIPs, 6);
-  const requestPage = drawerPage("securitySignalRequests", relatedRequests, 6);
+  const ipPage = securitySignalSectionPage(item, "securitySignalIPs", relatedIPs, "related_ips");
+  const requestPage = securitySignalSectionPage(item, "securitySignalRequests", relatedRequests, "related_requests");
   return `
     ${miniMetrics([
       ["Requests", formatNumber(signal.requests), "fa-arrow-trend-up"],
@@ -3487,6 +3492,16 @@ function renderSecuritySignalDetail(item) {
       ${drawerPager("securitySignalRequests", requestPage)}
     </article>
   `;
+}
+
+function securitySignalSectionPage(item, key, rows, prefix) {
+  const totalKey = `${prefix}_total`;
+  const limitKey = `${prefix}_limit`;
+  const offsetKey = `${prefix}_offset`;
+  if (item && Object.prototype.hasOwnProperty.call(item, totalKey)) {
+    return serverBackedPage(rows, Number(item[totalKey] || 0), Number(item[limitKey] || securitySignalDetailPageSize), Number(item[offsetKey] || 0));
+  }
+  return drawerPage(key, rows, securitySignalDetailPageSize);
 }
 
 function miniMetrics(items) {
@@ -3872,16 +3887,7 @@ async function openDrawer(kind, rawIndex, value) {
   } else if (kind === "security-signal") {
     const item = state.detailCache[value] || securitySignalRows()[index] || {};
     title = item.title || item.kind || "Security Signal";
-    const params = new URLSearchParams(buildFilterQuery({
-      limit: drawerHistoryLimit,
-      kind: item.kind || "",
-      category: item.category || "",
-      rule_key: item.rule_key || "",
-      env: item.env || "",
-      ip: item.ip || "",
-      method: item.method || "",
-      path: item.path || "",
-    }));
+    const params = securitySignalDetailParams(item, { related_ip_offset: 0, related_request_offset: 0 });
     try {
       const detail = await fetchJSON(`/api/v1/investigate/security-signal?${params}`);
       const merged = { ...item, ...detail, signal: { ...item, ...(detail.signal || {}) } };
@@ -4000,6 +4006,43 @@ async function loadUserAgentDetailPage(key, page) {
     ...item,
     ...detail,
     user_agent: { ...(item.user_agent || {}), ...(detail.user_agent || {}) },
+  };
+  state.drawer.data = merged;
+  renderCurrentDrawer();
+}
+
+function securitySignalDetailParams(item, offsets = {}) {
+  const signal = item.signal || item || {};
+  return new URLSearchParams(buildFilterQuery({
+    limit: securitySignalDetailPageSize,
+    kind: signal.kind || item.kind || "",
+    category: signal.category || item.category || "",
+    rule_key: signal.rule_key || item.rule_key || "",
+    site_id: signal.site_id || item.site_id || "",
+    env: signal.env || item.env || "",
+    ip: signal.ip || item.ip || "",
+    method: signal.method || item.method || "",
+    path: signal.path || item.path || "",
+    related_ip_offset: offsets.related_ip_offset ?? item.related_ips_offset ?? 0,
+    related_request_offset: offsets.related_request_offset ?? item.related_requests_offset ?? 0,
+  }));
+}
+
+async function loadSecuritySignalDetailPage(key, page) {
+  const item = state.drawer.data || {};
+  const limit = Math.max(1, Number(item.related_ips_limit || item.related_requests_limit || securitySignalDetailPageSize));
+  const offset = (Math.max(1, Number(page || 1)) - 1) * limit;
+  const offsets = {
+    related_ip_offset: item.related_ips_offset || 0,
+    related_request_offset: item.related_requests_offset || 0,
+  };
+  if (key === "securitySignalIPs") offsets.related_ip_offset = offset;
+  if (key === "securitySignalRequests") offsets.related_request_offset = offset;
+  const detail = await fetchJSON(`/api/v1/investigate/security-signal?${securitySignalDetailParams(item, offsets)}`);
+  const merged = {
+    ...item,
+    ...detail,
+    signal: { ...(item.signal || item), ...(detail.signal || {}) },
   };
   state.drawer.data = merged;
   renderCurrentDrawer();

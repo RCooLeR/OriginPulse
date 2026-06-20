@@ -37,4 +37,10 @@ func TestSecuritySignalDetailsDisabledDatabaseReturnsShell(t *testing.T) {
 	if detail.Signal.IP != "203.0.113.10" {
 		t.Fatalf("ip = %q, want 203.0.113.10", detail.Signal.IP)
 	}
+	if detail.RelatedIPsLimit != 10 || detail.RelatedRequestsLimit != 10 {
+		t.Fatalf("limits = %d/%d, want 10/10", detail.RelatedIPsLimit, detail.RelatedRequestsLimit)
+	}
+	if detail.RelatedIPsOffset != 0 || detail.RelatedRequestsOffset != 0 {
+		t.Fatalf("offsets = %d/%d, want 0/0", detail.RelatedIPsOffset, detail.RelatedRequestsOffset)
+	}
 }

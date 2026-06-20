@@ -410,18 +410,20 @@ func (api API) securitySignalDetails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	detail, err := api.investigation.SecuritySignalDetails(r.Context(), investigation.SecuritySignalOptions{
-		Kind:     r.URL.Query().Get("kind"),
-		Category: r.URL.Query().Get("category"),
-		RuleKey:  r.URL.Query().Get("rule_key"),
-		SiteID:   r.URL.Query().Get("site_id"),
-		Env:      r.URL.Query().Get("env"),
-		IP:       r.URL.Query().Get("ip"),
-		Method:   r.URL.Query().Get("method"),
-		Path:     r.URL.Query().Get("path"),
-		Range:    r.URL.Query().Get("range"),
-		Limit:    parseLimit(r, 50, investigation.DetailMaxLimit),
-		From:     from,
-		To:       to,
+		Kind:                 r.URL.Query().Get("kind"),
+		Category:             r.URL.Query().Get("category"),
+		RuleKey:              r.URL.Query().Get("rule_key"),
+		SiteID:               r.URL.Query().Get("site_id"),
+		Env:                  r.URL.Query().Get("env"),
+		IP:                   r.URL.Query().Get("ip"),
+		Method:               r.URL.Query().Get("method"),
+		Path:                 r.URL.Query().Get("path"),
+		Range:                r.URL.Query().Get("range"),
+		Limit:                parseLimit(r, 50, investigation.DetailMaxLimit),
+		RelatedIPOffset:      parseNamedOffset(r, "related_ip_offset"),
+		RelatedRequestOffset: parseNamedOffset(r, "related_request_offset"),
+		From:                 from,
+		To:                   to,
 	})
 	if err != nil {
 		if errors.Is(err, investigation.ErrSecuritySignalRequired) {
