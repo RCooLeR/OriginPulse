@@ -101,6 +101,16 @@ injection_candidates AS MATERIALIZED (
          path_norm LIKE '% and 1=1%' OR query_norm LIKE '% and 1=1%' OR
          path_norm LIKE '%+or+1%3d%' OR query_norm LIKE '%+or+1%3d%' OR
          path_norm LIKE '%+and+1%3d%' OR query_norm LIKE '%+and+1%3d%' OR
+         path_norm LIKE '%+or+1=1%' OR query_norm LIKE '%+or+1=1%' OR
+         path_norm LIKE '%+and+1=1%' OR query_norm LIKE '%+and+1=1%' OR
+         path_norm LIKE '%20or%201=1%' OR query_norm LIKE '%20or%201=1%' OR
+         path_norm LIKE '%20or%201%3d1%' OR query_norm LIKE '%20or%201%3d1%' OR
+         path_norm LIKE '%20and%201=1%' OR query_norm LIKE '%20and%201=1%' OR
+         path_norm LIKE '%20and%201%3d1%' OR query_norm LIKE '%20and%201%3d1%' OR
+         path_norm LIKE '%09or%091=1%' OR query_norm LIKE '%09or%091=1%' OR
+         path_norm LIKE '%09or%091%3d1%' OR query_norm LIKE '%09or%091%3d1%' OR
+         path_norm LIKE '%09and%091=1%' OR query_norm LIKE '%09and%091=1%' OR
+         path_norm LIKE '%09and%091%3d1%' OR query_norm LIKE '%09and%091%3d1%' OR
          path_norm LIKE '%--%' OR query_norm LIKE '%--%' OR
          path_norm LIKE '%/*%' OR query_norm LIKE '%/*%' OR
          path_norm LIKE '%2d%2d%' OR query_norm LIKE '%2d%2d%' OR
@@ -133,6 +143,9 @@ injection_flagged AS (
                  (target LIKE '%;select%' OR target LIKE '%3bselect%' OR target ~ '(^|[^a-z0-9_])select(%20|\+|[[:space:]])+[^&]{0,240}(%20|\+|[[:space:]])+from([^a-z0-9_]|$)') OR
                  target LIKE '%information_schema%' OR target LIKE '%sleep(%' OR target LIKE '%benchmark(%' OR target LIKE '%extractvalue(%' OR target LIKE '%updatexml(%' OR target LIKE '%concat(%' OR
                  target LIKE '% or 1=1%' OR target LIKE '% and 1=1%' OR target LIKE '%+or+1%3d%' OR target LIKE '%+and+1%3d%' OR
+                 target LIKE '%+or+1=1%' OR target LIKE '%+and+1=1%' OR
+                 target LIKE '%20or%201=1%' OR target LIKE '%20or%201%3d1%' OR target LIKE '%20and%201=1%' OR target LIKE '%20and%201%3d1%' OR
+                 target LIKE '%09or%091=1%' OR target LIKE '%09or%091%3d1%' OR target LIKE '%09and%091=1%' OR target LIKE '%09and%091%3d1%' OR
                  position('%25%27%20or%20' in target) > 0 OR position('%27%20or%20' in target) > 0 OR position('%27+or+' in target) > 0 OR
                   ((target LIKE '%--%' OR position('%2d%2d' in target) > 0 OR target LIKE '%/*%' OR position('%2f%2a' in target) > 0 OR position('%2f**' in target) > 0) AND
                   (target LIKE '%select%' OR target LIKE '%union%' OR target LIKE '%information_schema%' OR target LIKE '%concat(%' OR target LIKE '%sleep(%' OR target LIKE '%benchmark(%' OR target LIKE '%extractvalue(%' OR target LIKE '%updatexml(%'))) THEN 'sql_injection'
@@ -148,6 +161,7 @@ injection_flagged AS (
            WHEN target LIKE '%sleep(%' OR target LIKE '%benchmark(%' THEN 'time_delay_function'
            WHEN target LIKE '%extractvalue(%' OR target LIKE '%updatexml(%' OR target LIKE '%concat(%' THEN 'sql_function'
            WHEN target LIKE '% or 1=1%' OR target LIKE '% and 1=1%' OR target LIKE '%+or+1%3d%' OR target LIKE '%+and+1%3d%' OR position('%25%27%20or%20' in target) > 0 OR position('%27%20or%20' in target) > 0 OR position('%27+or+' in target) > 0 THEN 'tautology'
+           WHEN target LIKE '%+or+1=1%' OR target LIKE '%+and+1=1%' OR target LIKE '%20or%201=1%' OR target LIKE '%20or%201%3d1%' OR target LIKE '%20and%201=1%' OR target LIKE '%20and%201%3d1%' OR target LIKE '%09or%091=1%' OR target LIKE '%09or%091%3d1%' OR target LIKE '%09and%091=1%' OR target LIKE '%09and%091%3d1%' THEN 'tautology'
            WHEN (target LIKE '%--%' OR position('%2d%2d' in target) > 0 OR target LIKE '%/*%' OR position('%2f%2a' in target) > 0 OR position('%2f**' in target) > 0) AND (target LIKE '%select%' OR target LIKE '%union%' OR target LIKE '%information_schema%' OR target LIKE '%concat(%' OR target LIKE '%sleep(%' OR target LIKE '%benchmark(%' OR target LIKE '%extractvalue(%' OR target LIKE '%updatexml(%') THEN 'sql_comment_with_keyword'
            WHEN target LIKE '%<script%' OR target LIKE '%3cscript%' THEN 'script_tag'
            WHEN target LIKE '%javascript:%' OR target LIKE '%onerror=%' OR target LIKE '%onload=%' OR target LIKE '%alert(%' THEN 'xss_payload'

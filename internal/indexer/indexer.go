@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -85,6 +86,7 @@ type Service struct {
 }
 
 var sqlSelectFromRe = regexp.MustCompile(`(^|[^a-z0-9_])select(%20|\+|\s)+[^&]{0,240}(%20|\+|\s)+from([^a-z0-9_]|$)`)
+var sqlTautologyRe = regexp.MustCompile(`(^|[^a-z0-9_])(or|and)(\s|%20|\+|/\*[^*]*\*/)+['"]?([0-9]+|true)(\s|%20|\+|/\*[^*]*\*/)*(=|%3d|like)(\s|%20|\+|/\*[^*]*\*/)*['"]?([0-9]+|true)([^a-z0-9_]|$)`)
 var pathTraversalRe = regexp.MustCompile(`(^|[^.])(\.\.(/|%2f|%5c)|%2e%2e(/|%2f|%5c))`)
 
 const slowRequestThresholdMS = 1000
@@ -1377,57 +1379,70 @@ func classifyInjectionProbe(path string, query string, target string) (string, s
 	if !looksLikeInjectionCandidate(path, query) {
 		return "", ""
 	}
-	if strings.Contains(target, "union") && strings.Contains(target, "select") {
-		return "sql_injection", "union_select"
+
+	for _, candidate := range decodedSecurityVariants(target) {
+		if strings.Contains(candidate, "union") && strings.Contains(candidate, "select") {
+			return "sql_injection", "union_select"
+		}
+		if strings.Contains(candidate, ";select") || strings.Contains(candidate, "3bselect") || sqlSelectFromRe.MatchString(candidate) {
+			return "sql_injection", "select_from"
+		}
+		if strings.Contains(candidate, "information_schema") {
+			return "sql_injection", "information_schema"
+		}
+		if strings.Contains(candidate, "sleep(") || strings.Contains(candidate, "benchmark(") {
+			return "sql_injection", "time_delay_function"
+		}
+		if strings.Contains(candidate, "extractvalue(") || strings.Contains(candidate, "updatexml(") || strings.Contains(candidate, "concat(") {
+			return "sql_injection", "sql_function"
+		}
+		if strings.Contains(candidate, "%25%27%20or%20") || strings.Contains(candidate, "%27%20or%20") ||
+			strings.Contains(candidate, "%27+or+") || sqlTautologyRe.MatchString(candidate) {
+			return "sql_injection", "tautology"
+		}
+		if (strings.Contains(candidate, "--") || strings.Contains(candidate, "%2d%2d") ||
+			strings.Contains(candidate, "/*") || strings.Contains(candidate, "%2f%2a") || strings.Contains(candidate, "%2f**")) &&
+			(strings.Contains(candidate, "select") || strings.Contains(candidate, "union") ||
+				strings.Contains(candidate, "information_schema") || strings.Contains(candidate, "concat(") ||
+				strings.Contains(candidate, "sleep(") || strings.Contains(candidate, "benchmark(") ||
+				strings.Contains(candidate, "extractvalue(") || strings.Contains(candidate, "updatexml(")) {
+			return "sql_injection", "sql_comment_with_keyword"
+		}
 	}
-	if strings.Contains(target, ";select") || strings.Contains(target, "3bselect") || sqlSelectFromRe.MatchString(target) {
-		return "sql_injection", "select_from"
+
+	for _, candidate := range decodedSecurityVariants(target) {
+		if strings.Contains(candidate, "<script") || strings.Contains(candidate, "3cscript") {
+			return "xss", "script_tag"
+		}
+		if strings.Contains(candidate, "javascript:") || strings.Contains(candidate, "onerror=") ||
+			strings.Contains(candidate, "onload=") || strings.Contains(candidate, "alert(") {
+			return "xss", "xss_payload"
+		}
 	}
-	if strings.Contains(target, "information_schema") {
-		return "sql_injection", "information_schema"
+
+	for _, candidate := range decodedSecurityVariants(target) {
+		for _, decodedPath := range decodedSecurityVariants(path) {
+			if strings.HasPrefix(decodedPath, "/.env") || strings.Contains(candidate, "/.env") ||
+				strings.Contains(candidate, "wp-config.php") || strings.Contains(candidate, "composer.json") ||
+				strings.Contains(candidate, "composer.lock") || strings.Contains(candidate, "id_rsa") ||
+				strings.Contains(candidate, "/.git/") {
+				return "secret_file", "secret_file"
+			}
+		}
 	}
-	if strings.Contains(target, "sleep(") || strings.Contains(target, "benchmark(") {
-		return "sql_injection", "time_delay_function"
-	}
-	if strings.Contains(target, "extractvalue(") || strings.Contains(target, "updatexml(") || strings.Contains(target, "concat(") {
-		return "sql_injection", "sql_function"
-	}
-	if strings.Contains(target, " or 1=1") || strings.Contains(target, " and 1=1") ||
-		strings.Contains(target, "+or+1%3d") || strings.Contains(target, "+and+1%3d") ||
-		strings.Contains(target, "%25%27%20or%20") || strings.Contains(target, "%27%20or%20") ||
-		strings.Contains(target, "%27+or+") {
-		return "sql_injection", "tautology"
-	}
-	if (strings.Contains(target, "--") || strings.Contains(target, "%2d%2d") ||
-		strings.Contains(target, "/*") || strings.Contains(target, "%2f%2a") || strings.Contains(target, "%2f**")) &&
-		(strings.Contains(target, "select") || strings.Contains(target, "union") ||
-			strings.Contains(target, "information_schema") || strings.Contains(target, "concat(") ||
-			strings.Contains(target, "sleep(") || strings.Contains(target, "benchmark(") ||
-			strings.Contains(target, "extractvalue(") || strings.Contains(target, "updatexml(")) {
-		return "sql_injection", "sql_comment_with_keyword"
-	}
-	if strings.Contains(target, "<script") || strings.Contains(target, "3cscript") {
-		return "xss", "script_tag"
-	}
-	if strings.Contains(target, "javascript:") || strings.Contains(target, "onerror=") ||
-		strings.Contains(target, "onload=") || strings.Contains(target, "alert(") {
-		return "xss", "xss_payload"
-	}
-	if strings.HasPrefix(path, "/.env") || strings.Contains(target, "/.env") ||
-		strings.Contains(target, "wp-config.php") || strings.Contains(target, "composer.json") ||
-		strings.Contains(target, "composer.lock") || strings.Contains(target, "id_rsa") ||
-		strings.Contains(target, "/.git/") {
-		return "secret_file", "secret_file"
-	}
-	if pathTraversalRe.MatchString(target) || strings.Contains(target, "/etc/passwd") ||
-		strings.Contains(target, "proc/self/environ") || strings.Contains(target, "boot.ini") {
-		return "path_traversal", "path_traversal"
+
+	for _, candidate := range decodedSecurityVariants(target) {
+		if pathTraversalRe.MatchString(candidate) || strings.Contains(candidate, "/etc/passwd") ||
+			strings.Contains(candidate, "proc/self/environ") || strings.Contains(candidate, "boot.ini") {
+			return "path_traversal", "path_traversal"
+		}
 	}
 	return "", ""
 }
 
 func looksLikeInjectionCandidate(path string, query string) bool {
-	target := path + "?" + query
+	targets := append(decodedSecurityVariants(path), decodedSecurityVariants(query)...)
+	targets = append(targets, decodedSecurityVariants(path+"?"+query)...)
 	for _, needle := range []string{
 		".env", "wp-config.php", "composer.json", "composer.lock", "id_rsa", ".git/",
 		"union", "select", "information_schema", "sleep(", "benchmark(", "extractvalue(",
@@ -1436,11 +1451,36 @@ func looksLikeInjectionCandidate(path string, query string) bool {
 		"onerror=", "onload=", "alert(", "/etc/passwd", "proc/self/environ", "boot.ini",
 		"..", "2e%2e",
 	} {
-		if strings.Contains(target, needle) {
-			return true
+		for _, target := range targets {
+			if strings.Contains(target, needle) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func decodedSecurityVariants(value string) []string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return []string{""}
+	}
+	out := []string{value}
+	seen := map[string]struct{}{value: {}}
+	current := value
+	for i := 0; i < 2; i++ {
+		decoded, err := url.QueryUnescape(current)
+		if err != nil || decoded == current {
+			break
+		}
+		decoded = strings.ToLower(decoded)
+		if _, ok := seen[decoded]; !ok {
+			seen[decoded] = struct{}{}
+			out = append(out, decoded)
+		}
+		current = decoded
+	}
+	return out
 }
 
 func (s *Service) rebuildRollups(ctx context.Context, pool *pgxpool.Pool, start time.Time, end time.Time) (int, error) {

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"originpulse/internal/combiner"
+	"originpulse/internal/parser"
 )
 
 func TestParseCombinedEvents(t *testing.T) {
@@ -72,5 +73,50 @@ func TestParseCombinedEvents(t *testing.T) {
 	}
 	if events[0].LineNo != 1 || events[0].Event.Path != "/foo" || events[0].Event.Query != "bar=baz" {
 		t.Fatalf("parsed event = %#v", events[0])
+	}
+}
+
+func TestClassifySecurityProbesMatchesEncodedSQLTautology(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{name: "encoded spaces and equals", query: "id=1%20OR%201%3D1"},
+		{name: "plus spaces and literal equals", query: "id=1+and+1=1"},
+		{name: "double encoded quote", query: "id=1%2527%2520OR%25201%253D1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			probes := classifySecurityProbes(parser.AccessEvent{
+				Method:   "GET",
+				Path:     "/search",
+				Query:    tt.query,
+				ClientIP: "203.0.113.10",
+				Status:   404,
+			})
+			if len(probes) != 1 {
+				t.Fatalf("probes = %#v, want one SQL injection probe", probes)
+			}
+			if probes[0].Family != "injection" || probes[0].Category != "sql_injection" || probes[0].MatchReason != "tautology" {
+				t.Fatalf("probe = %#v, want SQL tautology", probes[0])
+			}
+		})
+	}
+}
+
+func TestClassifySecurityProbesMatchesDecodedTraversal(t *testing.T) {
+	probes := classifySecurityProbes(parser.AccessEvent{
+		Method:   "GET",
+		Path:     "/download",
+		Query:    "file=%252e%252e%252fwp-config.php",
+		ClientIP: "203.0.113.10",
+		Status:   404,
+	})
+	if len(probes) != 1 {
+		t.Fatalf("probes = %#v, want one decoded traversal/secret probe", probes)
+	}
+	if probes[0].Family != "injection" {
+		t.Fatalf("probe = %#v, want injection family", probes[0])
 	}
 }

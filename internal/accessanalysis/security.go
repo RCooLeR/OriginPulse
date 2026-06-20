@@ -103,6 +103,16 @@ const sqlInjectionPredicateSQL = `
  target LIKE '% and 1=1%' OR
  target LIKE '%+or+1%3d%' OR
  target LIKE '%+and+1%3d%' OR
+ target LIKE '%+or+1=1%' OR
+ target LIKE '%+and+1=1%' OR
+ target LIKE '%20or%201=1%' OR
+ target LIKE '%20or%201%3d1%' OR
+ target LIKE '%20and%201=1%' OR
+ target LIKE '%20and%201%3d1%' OR
+ target LIKE '%09or%091=1%' OR
+ target LIKE '%09or%091%3d1%' OR
+ target LIKE '%09and%091=1%' OR
+ target LIKE '%09and%091%3d1%' OR
  position('%25%27%20or%20' in target) > 0 OR
  position('%27%20or%20' in target) > 0 OR
  position('%27+or+' in target) > 0 OR
@@ -139,6 +149,16 @@ const injectionCandidatePredicateSQL = `
  path_norm LIKE '% and 1=1%' OR query_norm LIKE '% and 1=1%' OR
  path_norm LIKE '%+or+1%3d%' OR query_norm LIKE '%+or+1%3d%' OR
  path_norm LIKE '%+and+1%3d%' OR query_norm LIKE '%+and+1%3d%' OR
+ path_norm LIKE '%+or+1=1%' OR query_norm LIKE '%+or+1=1%' OR
+ path_norm LIKE '%+and+1=1%' OR query_norm LIKE '%+and+1=1%' OR
+ path_norm LIKE '%20or%201=1%' OR query_norm LIKE '%20or%201=1%' OR
+ path_norm LIKE '%20or%201%3d1%' OR query_norm LIKE '%20or%201%3d1%' OR
+ path_norm LIKE '%20and%201=1%' OR query_norm LIKE '%20and%201=1%' OR
+ path_norm LIKE '%20and%201%3d1%' OR query_norm LIKE '%20and%201%3d1%' OR
+ path_norm LIKE '%09or%091=1%' OR query_norm LIKE '%09or%091=1%' OR
+ path_norm LIKE '%09or%091%3d1%' OR query_norm LIKE '%09or%091%3d1%' OR
+ path_norm LIKE '%09and%091=1%' OR query_norm LIKE '%09and%091=1%' OR
+ path_norm LIKE '%09and%091%3d1%' OR query_norm LIKE '%09and%091%3d1%' OR
  path_norm LIKE '%--%' OR query_norm LIKE '%--%' OR
  path_norm LIKE '%/*%' OR query_norm LIKE '%/*%' OR
  path_norm LIKE '%2d%2d%' OR query_norm LIKE '%2d%2d%' OR
