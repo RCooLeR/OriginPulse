@@ -1229,6 +1229,34 @@ td {
   border-top: 1px solid var(--line);
 }
 
+.report-row {
+  align-items: start;
+}
+
+.catalog-summary {
+  max-height: 82px;
+  margin-top: 8px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.42;
+}
+
+.catalog-summary h1,
+.catalog-summary h2,
+.catalog-summary h3,
+.catalog-summary h4,
+.catalog-summary p,
+.catalog-summary ul,
+.catalog-summary ol {
+  margin: 0 0 6px;
+}
+
+.catalog-summary ul,
+.catalog-summary ol {
+  padding-left: 16px;
+}
+
 .report-chart-stack,
 .report-drilldown-stack {
   display: grid;

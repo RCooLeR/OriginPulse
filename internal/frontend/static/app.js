@@ -1442,13 +1442,13 @@ function ipRow(item, index = 0) {
 }
 
 function reportRow(item, index) {
-  const summaryText = reportCatalogSummary(item);
   const reportKey = cacheDetail("report", item, item.id || `${item.created_at || item.generated_at || ""}:${index}`);
   return `
-    <div class="list-row">
+    <div class="list-row report-row">
       <div>
         <strong>${escapeHTML(reportTitle(item))}</strong>
-        <span>${escapeHTML(summaryText)} - ${shortTime(item.created_at || item.generated_at)}</span>
+        <span>${escapeHTML([formatReportType(reportKind(item)), shortTime(item.created_at || item.generated_at)].filter(Boolean).join(" / "))}</span>
+        <div class="markdown-body catalog-summary">${renderMarkdown(reportCatalogSummary(item))}</div>
       </div>
       <button class="button small" type="button" data-detail="report" data-index="${index}" data-value="${escapeAttr(reportKey)}">Open</button>
     </div>
@@ -1465,8 +1465,8 @@ function reportSummaryText(item) {
 }
 
 function reportCatalogSummary(item) {
-  const text = reportSummaryText(item).replace(/\s+/g, " ").trim();
-  return text.length > 180 ? `${text.slice(0, 177)}...` : text || "Generated report";
+  const text = reportSummaryText(item).trim();
+  return text.length > 420 ? `${text.slice(0, 417)}...` : text || "Generated report";
 }
 
 function channelRow(channel) {
