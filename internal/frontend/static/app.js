@@ -2065,23 +2065,6 @@ function chartLegend(items) {
   return `<div class="chart-legend">${items.map(([label, color]) => `<span><i style="background: var(--${color})"></i>${escapeHTML(label)}</span>`).join("")}</div>`;
 }
 
-function donutPanel() {
-  const rows = siteRows();
-  return `
-    <article class="panel">
-      <div class="panel-head"><div><h2>Projects Health</h2><p>Health distribution.</p></div></div>
-      <div class="panel-body donut-wrap">
-        <canvas id="healthDonut" width="160" height="160"></canvas>
-        ${facts([
-          ["Healthy", rows.filter((r) => r.health === "healthy").length],
-          ["Warning", rows.filter((r) => r.health === "warning").length],
-          ["Critical", rows.filter((r) => r.health === "critical").length],
-        ])}
-      </div>
-    </article>
-  `;
-}
-
 function systemPanel() {
   const configured = state.data.overview.database_configured;
   return `
@@ -3905,7 +3888,10 @@ function buildFilterQuery(extra = {}, options = {}) {
   const params = new URLSearchParams();
   params.set("range", state.range);
   if (state.siteID && options.includeSite !== false) params.set("site_id", state.siteID);
-  Object.entries(extra).forEach(([key, value]) => params.set(key, value));
+  Object.entries(extra).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    params.set(key, value);
+  });
   return params.toString();
 }
 
@@ -3953,7 +3939,6 @@ function drawCharts() {
     drawStatusBars(qs("#statusBars"), rows);
     installStatusHover(qs("#statusBars"), rows);
   }
-  if (qs("#healthDonut")) drawDonut(qs("#healthDonut"), siteRows());
 }
 
 function drawSpark(canvas, values, color) {
@@ -4060,31 +4045,6 @@ function showChartTooltip(event, html) {
 function hideChartTooltip() {
   const tooltip = qs("#chartTooltip");
   if (tooltip) tooltip.classList.add("hidden");
-}
-
-function drawDonut(canvas, rows) {
-  const ctx = setupCanvas(canvas);
-  const values = [
-    rows.filter((r) => r.health === "healthy").length,
-    rows.filter((r) => r.health === "warning").length,
-    rows.filter((r) => r.health === "critical").length,
-  ];
-  const total = Math.max(1, values.reduce((a, b) => a + b, 0));
-  const colors = [cssColor("green"), cssColor("amber"), cssColor("red")];
-  let start = -Math.PI / 2;
-  values.forEach((value, index) => {
-    const angle = (value / total) * Math.PI * 2;
-    ctx.beginPath();
-    ctx.strokeStyle = colors[index];
-    ctx.lineWidth = 24;
-    ctx.arc(80, 80, 52, start, start + angle);
-    ctx.stroke();
-    start += angle;
-  });
-  ctx.fillStyle = "#eef6ff";
-  ctx.font = "700 22px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText(String(total), 80, 88);
 }
 
 function setupCanvas(canvas) {

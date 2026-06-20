@@ -891,13 +891,6 @@ td {
   font-size: 0.82rem;
 }
 
-.donut-wrap {
-  display: grid;
-  grid-template-columns: 160px minmax(0, 1fr);
-  gap: 18px;
-  align-items: center;
-}
-
 .facts {
   display: grid;
   gap: 10px;
@@ -1517,7 +1510,4 @@ td {
     grid-template-columns: 1fr;
   }
 
-  .donut-wrap {
-    grid-template-columns: 1fr;
-  }
 }
