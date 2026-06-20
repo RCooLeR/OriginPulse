@@ -741,12 +741,15 @@ function mysqlProbePanel(rows) {
         <div><h2>SQL Injection Probes</h2><p>Requests matching database attack signatures.</p></div>
         <span class="pill">${formatNumber(rows.length)} probes</span>
       </div>
-      <div class="list">${page.rows.map((item) => `
+      <div class="list">${page.rows.map((item, index) => {
+        const key = cacheDetail("security-signal", item, `mysql:${item.category || ""}:${item.ip || ""}:${item.path || ""}:${index}`);
+        return `
         <div class="list-row">
           <div><strong>${escapeHTML(`${item.method || "GET"} ${item.path || "/"}`)}</strong><span>${escapeHTML([item.site_id, item.env, item.match_reason || item.category, item.sample_query || ""].filter(Boolean).join(" / "))}</span></div>
-          <span class="severity ${Number(item.risk_score || 0) >= 70 ? "critical" : "high"}">${formatNumber(item.requests)} req</span>
+          <button class="button small" type="button" data-detail="security-signal" data-value="${escapeAttr(key)}">${formatNumber(item.requests)} req</button>
         </div>
-      `).join("") || empty("No SQL injection probes found.")}</div>
+      `;
+      }).join("") || empty("No SQL injection probes found.")}</div>
       ${pager(key, page)}
     </article>
   `;
