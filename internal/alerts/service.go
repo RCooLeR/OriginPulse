@@ -236,7 +236,7 @@ func (s *Service) Evaluate(ctx context.Context, opts Options) (Result, error) {
 		}
 	}
 
-	result.OpenAlerts, err = s.Open(ctx, 25)
+	result.OpenAlerts, err = s.Open(ctx, RecentMaxLimit)
 	return result, err
 }
 

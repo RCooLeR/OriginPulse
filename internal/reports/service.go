@@ -317,7 +317,7 @@ func (s *Service) reportInput(ctx context.Context, rangeLabel string, siteID str
 		input["overview"] = overview
 	}
 	if s.accessAnalysis != nil {
-		analysis, err := s.accessAnalysis.Analyze(ctx, accessanalysis.Options{Range: rangeLabel, SiteID: siteID, Limit: 100})
+		analysis, err := s.accessAnalysis.Analyze(ctx, accessanalysis.Options{Range: rangeLabel, SiteID: siteID, Limit: accessanalysis.ResultMaxLimit})
 		if err != nil {
 			return nil, err
 		}

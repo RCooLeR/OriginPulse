@@ -473,7 +473,7 @@ func (api API) updateIPManualIntel(w http.ResponseWriter, r *http.Request) {
 	detail, err := api.ipIntel.Details(r.Context(), ipintel.DetailOptions{
 		IP:     ip,
 		Range:  r.URL.Query().Get("range"),
-		Limit:  parseLimit(r, 8, 25),
+		Limit:  parseLimit(r, 50, ipintel.DetailMaxLimit),
 		SiteID: r.URL.Query().Get("site_id"),
 		From:   from,
 		To:     to,

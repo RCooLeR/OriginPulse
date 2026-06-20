@@ -142,7 +142,7 @@ func (s *Scheduler) refreshIPIntel(ctx context.Context) {
 		return
 	}
 	job := s.jobs.Start(ctx, "refresh_ip_intel", "scheduler", map[string]string{"range": "24h"})
-	result, err := s.ipIntel.RefreshTop(ctx, ipintel.Options{Range: "24h", Limit: 50})
+	result, err := s.ipIntel.RefreshTop(ctx, ipintel.Options{Range: "24h", Limit: ipintel.ResultMaxLimit})
 	if err != nil {
 		s.jobs.Finish(job.ID, jobs.StatusFailed, "IP intelligence refresh failed", err)
 		return
