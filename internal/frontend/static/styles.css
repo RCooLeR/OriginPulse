@@ -1324,6 +1324,92 @@ td {
   white-space: nowrap;
 }
 
+.report-chart-visual {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 10px;
+  border: 1px solid rgba(29, 49, 72, 0.72);
+  border-radius: 8px;
+  background: rgba(5, 14, 27, 0.54);
+}
+
+.report-chart-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.report-chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.report-chart-legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.report-bars {
+  display: grid;
+  gap: 8px;
+}
+
+.report-bar-row {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.8fr) minmax(120px, 1.4fr) minmax(48px, auto);
+  gap: 10px;
+  align-items: center;
+  min-height: 24px;
+}
+
+.report-bar-row span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.74rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-bar-row b {
+  color: var(--text);
+  font-size: 0.76rem;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.report-bar-track {
+  position: relative;
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(43, 67, 96, 0.72);
+}
+
+.report-bar-track i,
+.report-bar-track em {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.report-bar-track i {
+  opacity: 0.92;
+}
+
+.report-bar-track em {
+  background: var(--amber);
+  opacity: 0.62;
+}
+
 .compact-list .list-row {
   padding: 9px 0;
 }

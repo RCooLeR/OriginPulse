@@ -3596,15 +3596,62 @@ function reportChartCard(chart, index = 0) {
         ["Total", escapeHTML(formatNumber(total))],
         ["Peak", peak.label ? `${linkifyIPs(peak.label)} / ${escapeHTML(formatNumber(peak.value))}` : "-"],
       ])}
+      ${reportChartVisual(chart, points)}
       <div class="list compact-list">${page.rows.map((point) => `
         <div class="list-row">
-          <div><strong>${linkifyIPs(point.label || shortTime(point.timestamp) || "-")}</strong><span>${linkifyIPs(point.meta || chart.unit || "")}</span></div>
+          <div><strong>${reportPointLabelHTML(point)}</strong><span>${linkifyIPs(point.meta || chart.unit || "")}</span></div>
           <b>${formatNumber(point.value)}${point.secondary !== undefined ? ` / ${formatNumber(point.secondary)}` : ""}</b>
         </div>
       `).join("") || empty("No chart points.")}</div>
       ${drawerPager(pageKey, page)}
     </section>
   `;
+}
+
+function reportChartVisual(chart, points) {
+  if (!points.length) return "";
+  const visible = points.slice(0, 12);
+  const max = Math.max(1, ...visible.map((point) => Number(point.value || 0)));
+  const unit = chart.unit || "count";
+  const hasSecondary = visible.some((point) => point.secondary !== undefined && Number(point.secondary || 0) > 0);
+  return `
+    <div class="report-chart-visual" aria-label="${escapeAttr(chart.title || chart.key || "Report chart")}">
+      <div class="report-chart-legend">
+        <span><i style="background: var(--cyan)"></i>${escapeHTML(unit)}</span>
+        ${hasSecondary ? `<span><i style="background: var(--amber)"></i>secondary</span>` : ""}
+      </div>
+      <div class="report-bars">
+        ${visible.map((point) => {
+          const value = Number(point.value || 0);
+          const secondary = Number(point.secondary || 0);
+          const width = clamp((value / max) * 100, value > 0 ? 3 : 0, 100);
+          const secondaryWidth = hasSecondary ? clamp((secondary / max) * 100, secondary > 0 ? 3 : 0, 100) : 0;
+          const color = reportChartColor(point.color);
+          const title = `${point.label || shortTime(point.timestamp) || "point"}: ${formatNumber(value)} ${unit}${point.secondary !== undefined ? ` / ${formatNumber(point.secondary)}` : ""}${point.meta ? ` / ${point.meta}` : ""}`;
+          return `
+            <div class="report-bar-row" title="${escapeAttr(title)}">
+              <span>${reportPointLabelHTML(point)}</span>
+              <div class="report-bar-track">
+                <i style="width:${width}%; background:${escapeAttr(color)}"></i>
+                ${hasSecondary ? `<em style="width:${secondaryWidth}%"></em>` : ""}
+              </div>
+              <b>${formatCompact(value)}</b>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function reportChartColor(color) {
+  const value = String(color || "").trim();
+  if (/^#[0-9a-f]{3}(?:[0-9a-f]{3})?$/i.test(value)) return value;
+  return "var(--cyan)";
+}
+
+function reportPointLabelHTML(point) {
+  return linkifyIPs(point.label || shortTime(point.timestamp) || "-");
 }
 
 function reportDrilldownCard(drill, index = 0) {
