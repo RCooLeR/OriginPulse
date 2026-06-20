@@ -234,61 +234,31 @@ func (s *Service) ImportTemporaryCombinedGzip(ctx context.Context, opts Temporar
 	defer gzipReader.Close()
 
 	result := TemporaryImportResult{SourceName: opts.SourceName}
-	scanner := bufio.NewScanner(gzipReader)
-	scanner.Buffer(make([]byte, 0, 128*1024), 10*1024*1024)
-	var segmentLineNo int64
-	for scanner.Scan() {
-		segmentLineNo++
-		select {
-		case <-ctx.Done():
-			return result, ctx.Err()
-		default:
-		}
-
-		var combinedLine combiner.CombinedLine
-		if err := json.Unmarshal(scanner.Bytes(), &combinedLine); err != nil {
-			result.InvalidEvents++
-			result.EventsSkipped++
-			continue
-		}
-		result.EventsSeen++
-		valid, inserted, eventID, event, dimensions, err := s.insertEvent(ctx, pool, "", segmentLineNo, combinedLine, false, opts.TemporaryImportID, opts.ImportedUntil)
-		if err != nil {
-			return result, err
-		}
-		if !valid {
-			result.InvalidEvents++
-			result.EventsSkipped++
-			continue
-		}
-		result.ValidEvents++
-		if result.RangeStart.IsZero() || event.TS.Before(result.RangeStart) {
-			result.RangeStart = event.TS
-		}
-		if event.TS.After(result.RangeEnd) {
-			result.RangeEnd = event.TS
-		}
-		if inserted {
-			result.EventsInserted++
-			probes, err := s.insertSecurityProbes(ctx, pool, eventID, "", combinedLine, event, opts.TemporaryImportID)
-			if err != nil {
-				return result, err
-			}
-			result.SecurityProbes += probes
-			errorFacts, slowFacts, err := s.insertEventFacts(ctx, pool, eventID, "", segmentLineNo, combinedLine, event, dimensions, opts.TemporaryImportID)
-			if err != nil {
-				return result, err
-			}
-			result.ErrorEvents += errorFacts
-			result.SlowRequestEvents += slowFacts
-		} else {
-			result.EventsConflicted++
-			result.EventsSkipped++
-		}
-	}
-	if err := scanner.Err(); err != nil {
+	events, seen, invalid, err := parseCombinedEvents(ctx, gzipReader)
+	if err != nil {
 		return result, err
 	}
+	result.EventsSeen = seen
+	result.InvalidEvents = invalid
+	result.ValidEvents = len(events)
+	for _, item := range events {
+		if result.RangeStart.IsZero() || item.Event.TS.Before(result.RangeStart) {
+			result.RangeStart = item.Event.TS
+		}
+		if item.Event.TS.After(result.RangeEnd) {
+			result.RangeEnd = item.Event.TS
+		}
+	}
+	inserted, conflicted, _, securityProbes, errorFacts, slowFacts, err := s.bulkStoreEvents(ctx, pool, "", events, opts.TemporaryImportID, opts.ImportedUntil, false)
+	if err != nil {
+		return result, err
+	}
+	result.EventsInserted = inserted
+	result.EventsConflicted = conflicted
+	result.EventsSkipped = result.InvalidEvents + conflicted
+	result.SecurityProbes = securityProbes
+	result.ErrorEvents = errorFacts
+	result.SlowRequestEvents = slowFacts
 	if result.EventsInserted > 0 && !result.RangeStart.IsZero() && !result.RangeEnd.IsZero() {
 		start := result.RangeStart.UTC().Truncate(time.Hour)
 		end := result.RangeEnd.UTC().Truncate(time.Hour).Add(time.Hour)
@@ -395,7 +365,11 @@ func (s *Service) parseSegmentEvents(ctx context.Context, segmentPath string) ([
 	}
 	defer gzipReader.Close()
 
-	scanner := bufio.NewScanner(gzipReader)
+	return parseCombinedEvents(ctx, gzipReader)
+}
+
+func parseCombinedEvents(ctx context.Context, reader io.Reader) ([]parsedSegmentEvent, int, int, error) {
+	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 128*1024), 10*1024*1024)
 	events := make([]parsedSegmentEvent, 0, 4096)
 	seen := 0
@@ -450,6 +424,10 @@ func (s *Service) parseSegmentEvents(ctx context.Context, segmentPath string) ([
 }
 
 func (s *Service) bulkStoreSegmentEvents(ctx context.Context, pool *pgxpool.Pool, segmentID string, events []parsedSegmentEvent) (int, int, int, int, int, int, error) {
+	return s.bulkStoreEvents(ctx, pool, segmentID, events, "", time.Time{}, true)
+}
+
+func (s *Service) bulkStoreEvents(ctx context.Context, pool *pgxpool.Pool, segmentID string, events []parsedSegmentEvent, temporaryImportID string, importedUntil time.Time, deleteExistingSegment bool) (int, int, int, int, int, int, error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return 0, 0, 0, 0, 0, 0, err
@@ -462,35 +440,38 @@ func (s *Service) bulkStoreSegmentEvents(ctx context.Context, pool *pgxpool.Pool
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx, `DELETE FROM security_probe_events WHERE segment_id = $1::uuid`, segmentID); err != nil {
-		return 0, 0, 0, 0, 0, 0, err
+	deleted := 0
+	if deleteExistingSegment {
+		if _, err := tx.Exec(ctx, `DELETE FROM security_probe_events WHERE segment_id = $1::uuid`, segmentID); err != nil {
+			return 0, 0, 0, 0, 0, 0, err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM error_events WHERE segment_id = $1::uuid`, segmentID); err != nil {
+			return 0, 0, 0, 0, 0, 0, err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM slow_request_events WHERE segment_id = $1::uuid`, segmentID); err != nil {
+			return 0, 0, 0, 0, 0, 0, err
+		}
+		tag, err := tx.Exec(ctx, `DELETE FROM access_events WHERE segment_id = $1::uuid`, segmentID)
+		if err != nil {
+			return 0, 0, 0, 0, 0, 0, err
+		}
+		deleted = int(tag.RowsAffected())
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM error_events WHERE segment_id = $1::uuid`, segmentID); err != nil {
-		return 0, 0, 0, 0, 0, 0, err
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM slow_request_events WHERE segment_id = $1::uuid`, segmentID); err != nil {
-		return 0, 0, 0, 0, 0, 0, err
-	}
-	tag, err := tx.Exec(ctx, `DELETE FROM access_events WHERE segment_id = $1::uuid`, segmentID)
-	if err != nil {
-		return 0, 0, 0, 0, 0, 0, err
-	}
-	deleted := int(tag.RowsAffected())
 
 	if err := s.bulkResolveDimensions(ctx, tx, events); err != nil {
 		return 0, 0, deleted, 0, 0, 0, err
 	}
-	insertedIDs, err := s.bulkInsertAccessEvents(ctx, tx, segmentID, events)
+	insertedIDs, err := s.bulkInsertAccessEvents(ctx, tx, segmentID, events, temporaryImportID, importedUntil)
 	if err != nil {
 		return 0, 0, deleted, 0, 0, 0, err
 	}
 	inserted := len(insertedIDs)
 	conflicted := len(events) - inserted
-	errorFacts, slowFacts, err := s.bulkInsertEventFacts(ctx, tx, segmentID, events, insertedIDs)
+	errorFacts, slowFacts, err := s.bulkInsertEventFacts(ctx, tx, segmentID, events, insertedIDs, temporaryImportID)
 	if err != nil {
 		return inserted, conflicted, deleted, 0, 0, 0, err
 	}
-	securityProbes, err := s.bulkInsertSecurityProbes(ctx, tx, segmentID, events, insertedIDs)
+	securityProbes, err := s.bulkInsertSecurityProbes(ctx, tx, segmentID, events, insertedIDs, temporaryImportID)
 	if err != nil {
 		return inserted, conflicted, deleted, 0, errorFacts, slowFacts, err
 	}
@@ -765,7 +746,7 @@ JOIN dim_user_agents d ON d.user_agent_hash = t.hash`)
 	return ids, resultRows.Err()
 }
 
-func (s *Service) bulkInsertAccessEvents(ctx context.Context, tx pgx.Tx, segmentID string, events []parsedSegmentEvent) (map[int64]int64, error) {
+func (s *Service) bulkInsertAccessEvents(ctx context.Context, tx pgx.Tx, segmentID string, events []parsedSegmentEvent, temporaryImportID string, importedUntil time.Time) (map[int64]int64, error) {
 	inserted := map[int64]int64{}
 	if len(events) == 0 {
 		return inserted, nil
@@ -846,15 +827,15 @@ CREATE TEMP TABLE tmp_access_events (
 INSERT INTO access_events (
   ts, site_id, env, container_id, client_ip, method, scheme, host, path, path_hash, query,
   status, bytes_sent, referer, user_agent, user_agent_hash, request_time_ms, upstream_time_ms, fingerprint, segment_id,
-  segment_line_no, raw_file_id, raw_line_no, ip_id, path_id, query_id, user_agent_id
+  segment_line_no, raw_file_id, raw_line_no, ip_id, path_id, query_id, user_agent_id, temporary_import_id, imported_until
 )
 SELECT
   ts, site_id, env, container_id, nullif(client_ip, '')::inet, nullif(method, ''), nullif(scheme, ''), nullif(host, ''), nullif(path, ''), path_hash, nullif(query, ''),
   nullif(status, 0), bytes_sent, nullif(referer, ''), nullif(user_agent, ''), user_agent_hash, nullif(request_time_ms, 0), nullif(upstream_time_ms, 0), fingerprint, nullif(segment_id, '')::uuid,
-  segment_line_no, nullif(raw_file_id, '')::uuid, nullif(raw_line_no, 0), ip_id, path_id, query_id, user_agent_id
+  segment_line_no, nullif(raw_file_id, '')::uuid, nullif(raw_line_no, 0), ip_id, path_id, query_id, user_agent_id, nullif($1, '')::uuid, $2
 FROM tmp_access_events
 ON CONFLICT (fingerprint, ts) DO NOTHING
-RETURNING id, segment_line_no`)
+RETURNING id, segment_line_no`, temporaryImportID, nullableTime(importedUntil))
 	if err != nil {
 		return inserted, err
 	}
@@ -870,7 +851,7 @@ RETURNING id, segment_line_no`)
 	return inserted, resultRows.Err()
 }
 
-func (s *Service) bulkInsertEventFacts(ctx context.Context, tx pgx.Tx, segmentID string, events []parsedSegmentEvent, insertedIDs map[int64]int64) (int, int, error) {
+func (s *Service) bulkInsertEventFacts(ctx context.Context, tx pgx.Tx, segmentID string, events []parsedSegmentEvent, insertedIDs map[int64]int64, temporaryImportID string) (int, int, error) {
 	if len(insertedIDs) == 0 {
 		return 0, 0, nil
 	}
@@ -881,15 +862,15 @@ func (s *Service) bulkInsertEventFacts(ctx context.Context, tx pgx.Tx, segmentID
 INSERT INTO error_events (
   event_id, ts, site_id, env, container_id, client_ip, method,
   path_id, query_id, user_agent_id, status, bytes_sent, referer,
-  segment_id, segment_line_no
+  segment_id, segment_line_no, temporary_import_id
 )
 SELECT i.event_id, e.ts, e.site_id, e.env, nullif(e.container_id, ''), nullif(e.client_ip, '')::inet, nullif(e.method, ''),
        e.path_id, e.query_id, e.user_agent_id, e.status, e.bytes_sent, nullif(e.referer, ''),
-       $1::uuid, e.segment_line_no
+       nullif($1, '')::uuid, e.segment_line_no, nullif($2, '')::uuid
 FROM tmp_access_events e
 JOIN tmp_inserted_events i ON i.segment_line_no = e.segment_line_no
 WHERE e.status >= 400
-ON CONFLICT (event_id) DO NOTHING`, segmentID)
+ON CONFLICT (event_id) DO NOTHING`, segmentID, temporaryImportID)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -897,15 +878,15 @@ ON CONFLICT (event_id) DO NOTHING`, segmentID)
 INSERT INTO slow_request_events (
   event_id, ts, site_id, env, container_id, client_ip, method,
   path_id, query_id, user_agent_id, status, request_time_ms, upstream_time_ms,
-  segment_id, segment_line_no
+  segment_id, segment_line_no, temporary_import_id
 )
 SELECT i.event_id, e.ts, e.site_id, e.env, nullif(e.container_id, ''), nullif(e.client_ip, '')::inet, nullif(e.method, ''),
        e.path_id, e.query_id, e.user_agent_id, nullif(e.status, 0), e.request_time_ms, nullif(e.upstream_time_ms, 0),
-       $1::uuid, e.segment_line_no
+       nullif($1, '')::uuid, e.segment_line_no, nullif($2, '')::uuid
 FROM tmp_access_events e
 JOIN tmp_inserted_events i ON i.segment_line_no = e.segment_line_no
-WHERE e.request_time_ms >= $2
-ON CONFLICT (event_id) DO NOTHING`, segmentID, slowRequestThresholdMS)
+WHERE e.request_time_ms >= $3
+ON CONFLICT (event_id) DO NOTHING`, segmentID, temporaryImportID, slowRequestThresholdMS)
 	if err != nil {
 		return int(errorTag.RowsAffected()), 0, err
 	}
@@ -924,7 +905,7 @@ func copyInsertedEvents(ctx context.Context, tx pgx.Tx, insertedIDs map[int64]in
 	return err
 }
 
-func (s *Service) bulkInsertSecurityProbes(ctx context.Context, tx pgx.Tx, segmentID string, events []parsedSegmentEvent, insertedIDs map[int64]int64) (int, error) {
+func (s *Service) bulkInsertSecurityProbes(ctx context.Context, tx pgx.Tx, segmentID string, events []parsedSegmentEvent, insertedIDs map[int64]int64, temporaryImportID string) (int, error) {
 	if len(insertedIDs) == 0 {
 		return 0, nil
 	}
@@ -983,12 +964,12 @@ CREATE TEMP TABLE tmp_security_probe_events (
 	tag, err := tx.Exec(ctx, `
 INSERT INTO security_probe_events (
   event_id, family, category, rule_key, match_reason, ts, site_id, env,
-  client_ip, method, path, query, status, segment_id
+  client_ip, method, path, query, status, segment_id, temporary_import_id
 )
 SELECT event_id, family, category, rule_key, nullif(match_reason, ''), ts, site_id, env,
-       nullif(client_ip, '')::inet, nullif(method, ''), nullif(path, ''), nullif(query, ''), nullif(status, 0), nullif(segment_id, '')::uuid
+       nullif(client_ip, '')::inet, nullif(method, ''), nullif(path, ''), nullif(query, ''), nullif(status, 0), nullif(segment_id, '')::uuid, nullif($1, '')::uuid
 FROM tmp_security_probe_events
-ON CONFLICT (event_id, family, category) DO NOTHING`)
+ON CONFLICT (event_id, family, category) DO NOTHING`, temporaryImportID)
 	if err != nil {
 		return 0, err
 	}

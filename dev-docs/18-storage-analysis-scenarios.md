@@ -103,8 +103,8 @@ Current verification:
 Remaining implementation risks:
 
 - The live development database still has pending combined segments to index. The already indexed range is rollup-backed and fast-read ready, but the backlog must be drained before considering the local dataset complete.
-- Pipeline worker concurrency greater than 1 is not the default. A two-worker test exposed PostgreSQL deadlock pressure around shared dimension/event writes. Retry and partial-success repair are implemented, but the stable default is currently one worker until the write path is tuned further.
-- Temporary archive import still uses the older per-row import path. It is functionally proven by smoke tests, but should be moved onto the same bulk path as normal segment indexing for large old investigations.
+- Pipeline worker concurrency greater than 1 is available through `pipeline.index_workers` and CLI/API options, with transient PostgreSQL deadlock/serialization retry and rollup repair in place. The local development config remains conservative at one worker until higher concurrency has been soak tested on production-like data.
+- Temporary archive import now parses archived combined gzip members into the shared bulk dimension/event/fact insert path used by normal segment indexing. It should still be smoke-tested and benchmarked against a large old investigation range on a live PostgreSQL dataset.
 - Natural daily/weekly archives have not appeared in the current live dataset because the data is newer than the configured 2-week and 3-month cutoffs. Archive behavior is currently proven by fixture smoke tests, not by naturally aged production-like data.
 
 ## Scenario Summary
