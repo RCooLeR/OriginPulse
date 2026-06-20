@@ -1601,7 +1601,7 @@ function issueRow(item, index = 0) {
 }
 
 function issueActorLink(item) {
-  if (item.actor_type === "ip" && item.actor_value) return ipLink(item.actor_value);
+  if (isIPActor(item.actor_type, item.actor_value)) return ipLink(firstIPAddress(item.actor_value));
   if (isUserAgentActor(item.actor_type) && item.actor_value) return userAgentLink(item.actor_value);
   return "-";
 }
@@ -1908,6 +1908,11 @@ function compactRow(label, meta, value = "") {
 function ipLink(ip, label = ip) {
   if (!ip) return "-";
   return `<button class="link-button" type="button" data-detail="ip" data-value="${escapeAttr(ip)}">${escapeHTML(label || ip)}</button>`;
+}
+
+function firstIPAddress(value) {
+  const match = String(value || "").match(/\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/);
+  return match ? match[0] : "";
 }
 
 function userAgentLink(agent, label = "") {
@@ -2461,13 +2466,17 @@ function renderAlertRuleDetail(item) {
 }
 
 function alertActorLink(item) {
-  if (item.actor_type === "ip" && item.actor_value) return ipLink(item.actor_value);
+  if (isIPActor(item.actor_type, item.actor_value)) return ipLink(firstIPAddress(item.actor_value));
   if (isUserAgentActor(item.actor_type) && item.actor_value) return userAgentLink(item.actor_value);
-  return escapeHTML([item.actor_type, item.actor_value].filter(Boolean).join(" / ") || "-");
+  return linkifyIPs([item.actor_type, item.actor_value].filter(Boolean).join(" / ") || "-");
 }
 
 function isUserAgentActor(actorType) {
   return /^(user_agent|user-agent|ua)$/i.test(String(actorType || ""));
+}
+
+function isIPActor(actorType, value) {
+  return /^(ip|source_ip|source-ip|client_ip|client-ip)$/i.test(String(actorType || "")) && Boolean(firstIPAddress(value));
 }
 
 function alertPeerAlerts(item) {
