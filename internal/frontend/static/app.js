@@ -104,6 +104,7 @@ const state = {
     users: [],
     segments: [],
   },
+  ipTrust: {},
   fetchErrors: [],
 };
 
@@ -401,6 +402,7 @@ function mergeIssues(base, extra) {
 }
 
 function render() {
+  collectIPTrust();
   renderNav();
   renderChrome();
   const renderers = {
@@ -1529,7 +1531,7 @@ function eventsTable(rows) {
           <tr>
             <td>${shortTime(event.ts)}</td>
             <td>${escapeHTML(event.site_id || "-")}<br><span class="subtle">${escapeHTML(event.env || "")}</span></td>
-            <td>${ipLink(event.client_ip)}</td>
+            <td>${ipLink(event.client_ip, event.client_ip, event)}</td>
             <td><span class="row-title"><strong>${escapeHTML(event.method || "GET")} ${escapeHTML(event.path || "/")}</strong><span>${event.user_agent ? userAgentLink(event.user_agent, event.user_agent) : ""}</span></span></td>
             <td><span class="severity ${Number(event.status) >= 500 ? "critical" : "high"}">${escapeHTML(event.status || "-")}</span></td>
             <td><button class="button small" type="button" data-detail="request" data-value="${escapeAttr(requestKey)}">Trace</button></td>
@@ -1632,7 +1634,7 @@ function ipRow(item, index = 0) {
   return `
     <div class="list-row">
       <div>
-        <strong>${ipLink(item.ip)}</strong>
+        <strong>${ipLink(item.ip, item.ip, item)}</strong>
         <span>${escapeHTML(meta || "Unattributed source")} - ${formatNumber(item.requests)} requests</span>
       </div>
       <button class="button small" type="button" data-detail="ip" data-index="${index}" data-value="${escapeAttr(item.ip || "")}">${risk || "View"}</button>
@@ -1844,7 +1846,7 @@ function ipTrafficTable(rows) {
         </thead>
         <tbody>${rows.map((item) => `
           <tr>
-            <td><span class="row-title"><strong>${ipLink(item.ip)}</strong><span>${escapeHTML([item.known_actor || item.actor_type, item.reverse_dns].filter(Boolean).join(" / ") || "Unattributed source")}</span></span></td>
+            <td><span class="row-title"><strong>${ipLink(item.ip, item.ip, item)}</strong><span>${escapeHTML([item.known_actor || item.actor_type, item.reverse_dns].filter(Boolean).join(" / ") || "Unattributed source")}</span></span></td>
             <td>${formatNumber(item.requests)}</td>
             <td>${formatNumber(item.status_4xx)}</td>
             <td>${formatNumber(item.status_5xx)}</td>
@@ -1905,9 +1907,60 @@ function compactRow(label, meta, value = "") {
   return `<div class="list-row"><div><strong>${linkifyIPs(label || "-")}</strong><span>${linkifyIPs(meta || "")}</span></div><b>${linkifyIPs(String(value ?? ""))}</b></div>`;
 }
 
-function ipLink(ip, label = ip) {
+function ipLink(ip, label = ip, meta = null) {
   if (!ip) return "-";
-  return `<button class="link-button" type="button" data-detail="ip" data-value="${escapeAttr(ip)}">${escapeHTML(label || ip)}</button>`;
+  const trust = ipTrustMeta(ip, meta);
+  const trustClass = trust.trusted ? " trusted-ip" : "";
+  const title = trust.trusted ? ` title="${escapeAttr(trust.label)}"` : "";
+  const badge = trust.trusted ? `<span class="trusted-ip-badge">${iconHTML("fa-circle-check")}</span>` : "";
+  return `<button class="link-button ip-link${trustClass}" type="button" data-detail="ip" data-value="${escapeAttr(ip)}"${title}>${escapeHTML(label || ip)}${badge}</button>`;
+}
+
+function collectIPTrust() {
+  const trust = {};
+  const visit = (value, depth = 0) => {
+    if (!value || depth > 6) return;
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, depth + 1));
+      return;
+    }
+    if (typeof value !== "object") return;
+    const ip = value.ip || value.client_ip || value.source_ip || "";
+    if (ip && isTrustedIPMeta(value)) {
+      trust[String(ip)] = trustedIPLabel(value);
+    }
+    Object.values(value).forEach((item) => {
+      if (item && typeof item === "object") visit(item, depth + 1);
+    });
+  };
+  visit(state.data);
+  visit(state.drawer?.data);
+  visit(state.drawer?.summary);
+  state.ipTrust = trust;
+}
+
+function ipTrustMeta(ip, meta = null) {
+  if (meta && isTrustedIPMeta(meta)) {
+    return { trusted: true, label: trustedIPLabel(meta) };
+  }
+  const label = state.ipTrust[String(ip || "")];
+  return { trusted: Boolean(label), label: label || "" };
+}
+
+function isTrustedIPMeta(item = {}) {
+  const intel = item.stored_intel || item.storedIntel || {};
+  const action = String(item.manual_action || item.manualAction || intel.manual_action || intel.manualAction || "").toLowerCase();
+  const actor = String(item.actor_type || item.actorType || intel.actor_type || intel.actorType || "").toLowerCase();
+  return action === "allowlisted" || action === "verified" || item.verified_actor || item.verifiedActor || intel.verified_actor || intel.verifiedActor || item.verified_source || item.verifiedSource || intel.forward_confirmed || intel.forwardConfirmed || actor === "platform";
+}
+
+function trustedIPLabel(item = {}) {
+  const intel = item.stored_intel || item.storedIntel || {};
+  const action = String(item.manual_action || item.manualAction || intel.manual_action || intel.manualAction || "").toLowerCase();
+  if (action === "allowlisted") return item.manual_label || item.manualLabel || intel.manual_label || intel.manualLabel || item.known_actor || item.knownActor || intel.known_actor || intel.knownActor || "Allowlisted IP";
+  if (item.known_actor || item.knownActor || intel.known_actor || intel.knownActor) return `${item.known_actor || item.knownActor || intel.known_actor || intel.knownActor} verified`;
+  if (item.verified_source || item.verifiedSource) return "Forward-confirmed source";
+  return "Trusted source";
 }
 
 function firstIPAddress(value) {
@@ -3289,6 +3342,9 @@ async function handleAction(button) {
     }
     return;
   }
+  if (action === "save-ip-intel") {
+    return saveIPManualIntel(button);
+  }
   if (action === "evaluate-alerts") {
     return runButton(button, "Alert evaluation complete", async () => {
       await fetchJSON("/api/v1/alerts/evaluate", { method: "POST", body: JSON.stringify({ range: state.range, limit: 200 }) });
@@ -3343,6 +3399,24 @@ async function handleAction(button) {
     exportReport(state.drawer?.data);
     return;
   }
+}
+
+async function saveIPManualIntel(button) {
+  const ip = button.dataset.ip || state.drawer.data?.ip || "";
+  if (!ip) return;
+  const root = button.closest("[data-ip-intel-form]") || document;
+  const action = root.querySelector("[data-ip-intel-action]")?.value || "";
+  const label = root.querySelector("[data-ip-intel-label]")?.value || "";
+  await runButton(button, "IP intelligence updated", async () => {
+    const detail = await fetchJSON(`/api/v1/investigate/ip/${encodeURIComponent(ip)}/manual-intel?${ipDetailParams({ ip }, {})}`, {
+      method: "PATCH",
+      body: JSON.stringify({ manual_action: action, manual_label: label }),
+    });
+    state.drawer.data = detail;
+    state.drawer.summary = { ...(state.drawer.summary || {}), ...(detail.traffic || {}), ip: detail.ip };
+    collectIPTrust();
+    renderCurrentDrawer();
+  });
 }
 
 async function enableBrowserPush() {
@@ -3411,11 +3485,12 @@ function renderIPDetail(detail, summary = {}) {
       ["Avg Response", formatMs(traffic.avg_request_time_ms), "fa-stopwatch"],
       ["Risk Score", intel.risk_score || summary.risk_score || "-", "fa-shield-halved"],
     ])}
+    ${ipManualIntelForm(detail, summary)}
     <section class="detail-grid two">
       <article class="detail-card">
         <h3>WHOIS / Reputation</h3>
         ${factsRich([
-          ["IP Address", ipLink(detail.ip || summary.ip)],
+          ["IP Address", ipLink(detail.ip || summary.ip, detail.ip || summary.ip, detail)],
           ["Known Actor", intel.known_actor || summary.known_actor || "-"],
           ["Actor Type", intel.actor_type || summary.actor_type || "-"],
           ["Reverse DNS", intel.reverse_dns || summary.reverse_dns || "-"],
@@ -3472,6 +3547,41 @@ function renderIPDetail(detail, summary = {}) {
       ${drawerPager("ipRequests", requests)}
     </article>
   `;
+}
+
+function ipManualIntelForm(detail = {}, summary = {}) {
+  const intel = detail.stored_intel || {};
+  const action = intel.manual_action || summary.manual_action || "";
+  const label = intel.manual_label || summary.manual_label || intel.known_actor || summary.known_actor || "";
+  return `
+    <article class="detail-card ip-intel-form" data-ip-intel-form>
+      <div>
+        <h3>Trust Label</h3>
+        <p>Manual whitelist, corporate VPN, RAG egress, crawler validation, or review status.</p>
+      </div>
+      <label class="select-shell compact">
+        <span>Status</span>
+        <select data-ip-intel-action>
+          ${ipManualActionOption("", "None", action)}
+          ${ipManualActionOption("allowlisted", "Allowlisted", action)}
+          ${ipManualActionOption("verified", "Verified", action)}
+          ${ipManualActionOption("watch", "Watch", action)}
+          ${ipManualActionOption("suspicious", "Suspicious", action)}
+          ${ipManualActionOption("ignored", "Ignored", action)}
+          ${ipManualActionOption("clear", "Clear", action)}
+        </select>
+      </label>
+      <label>
+        <span>Label</span>
+        <input type="text" data-ip-intel-label value="${escapeAttr(label)}" placeholder="Corporate VPN, RAG egress, Pantheon internal">
+      </label>
+      <button class="button small primary" type="button" data-action="save-ip-intel" data-ip="${escapeAttr(detail.ip || summary.ip || "")}">${iconHTML("fa-floppy-disk")}Save</button>
+    </article>
+  `;
+}
+
+function ipManualActionOption(value, label, current) {
+  return `<option value="${escapeAttr(value)}" ${String(value) === String(current || "") ? "selected" : ""}>${escapeHTML(label)}</option>`;
 }
 
 function ipSectionPage(item, key, rows, prefix) {

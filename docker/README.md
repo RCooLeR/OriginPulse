@@ -1,113 +1,54 @@
-# Docker Compose
+# Docker
 
-## Target containers
+This Compose stack runs the real app with Postgres and persistent OriginPulse data.
+
+## Setup
+
+Create a local Compose env file from the example:
+
+```powershell
+Copy-Item docker\.env.example docker\.env
+```
+
+Edit `docker\.env` and set at least:
 
 ```text
-originpulse
-postgres
-ollama
+PANTHEON_SSH_KEY_FILE=C:/Users/example/.ssh/id_rsa
 ```
 
-## Example `docker/docker-compose.yml`
+The container receives that key as `/run/secrets/pantheon_ssh_key`, which overrides the host-only Windows path in `config.yml`.
 
-```yaml
-services:
-  postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_DB: originpulse
-      POSTGRES_USER: originpulse
-      POSTGRES_PASSWORD: originpulse_dev_password
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    ports:
-      - "55432:5432"
+## Run
 
-  ollama:
-    image: ollama/ollama
-    volumes:
-      - ollama:/root/.ollama
-    ports:
-      - "11434:11434"
-
-  originpulse:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    command: ["server", "-config", "/app/config.yml"]
-    environment:
-      ORIGINPULSE_CONFIG: /app/config.yml
-      DATABASE_URL: postgres://originpulse:originpulse_dev_password@postgres:5432/originpulse?sslmode=disable
-      OLLAMA_BASE_URL: http://ollama:11434
-      PANTHEON_EMAIL: you@example.com
-      PANTHEON_SSH_KEY_PATH: /run/secrets/pantheon_ssh_key
-      LOG_LEVEL: debug
-    volumes:
-      - ../config.yml:/app/config.yml:ro
-      - originpulse_data:/data
-    secrets:
-      - pantheon_ssh_key
-    depends_on:
-      - postgres
-      - ollama
-    ports:
-      - "8080:8080"
-
-secrets:
-  pantheon_ssh_key:
-    file: ../secrets/pantheon_ssh_key
-
-volumes:
-  pgdata:
-  ollama:
-  originpulse_data:
+```powershell
+docker compose --env-file docker/.env -f docker/docker-compose.yml up --build -d
+docker compose --env-file docker/.env -f docker/docker-compose.yml logs -f originpulse
 ```
 
-## Example backend `docker/Dockerfile`
+Open:
 
-```dockerfile
-FROM golang:1.22-alpine AS build
-
-WORKDIR /src
-RUN apk add --no-cache git ca-certificates tzdata
-
-COPY go.mod go.sum ./
-RUN go mod download
-
-COPY . .
-RUN CGO_ENABLED=0 go build -o /out/originpulse ./cmd/originpulse
-
-FROM alpine:3.20
-
-RUN apk add --no-cache ca-certificates tzdata openssh-client
-WORKDIR /app
-
-COPY --from=build /out/originpulse /usr/local/bin/originpulse
-
-VOLUME ["/data"]
-
-ENTRYPOINT ["originpulse"]
+```text
+http://localhost:8080
 ```
 
-## Dev commands
+## Useful Checks
 
-```bash
-docker compose -f docker/docker-compose.yml up --build
-docker compose -f docker/docker-compose.yml exec originpulse originpulse check-config -config /app/config.yml
-docker compose -f docker/docker-compose.yml exec originpulse originpulse collect -config /app/config.yml
+```powershell
+docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse originpulse check-config -config /app/config.yml
+docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse originpulse collect -config /app/config.yml
+docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse originpulse pipeline -config /app/config.yml -from 2026-06-20T00:00:00Z -to 2026-06-21T00:00:00Z
 ```
 
-For host-run development against the compose Postgres, use:
+For host-run development against the Compose Postgres:
 
-```bash
-DATABASE_URL='postgres://originpulse:originpulse_dev_password@127.0.0.1:55432/originpulse?sslmode=disable'
+```powershell
+$env:DATABASE_URL='postgres://originpulse:originpulse_dev_password@127.0.0.1:55432/originpulse?sslmode=disable'
 ```
 
-## Production notes
+## Persistence
 
-- Do not expose Postgres publicly.
-- Do not expose Ollama publicly.
-- Put proxy behind HTTPS.
-- Use Docker secrets or environment injection for Pantheon credentials.
-- Mount `/data/raw` and `/data/combined` to persistent storage.
-- Back up Postgres and combined logs.
+- Postgres data lives in the `originpulse_postgres_data` Docker volume.
+- App runtime files live in the `originpulse_originpulse_data` Docker volume at `/app/data`.
+- `config.yml` is mounted read-only from the repository root.
+
+Do not expose Postgres publicly. Back up both Docker volumes for real long-term runs.

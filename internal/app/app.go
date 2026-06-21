@@ -97,6 +97,9 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	investigationService := investigation.NewService(storeDB)
 	geoIPManager, geoIPUpdater := setupGeoIP(ctx, cfg)
 	ipIntelService := ipintel.NewService(storeDB, geoIPManager)
+	if cfg.IPAllowlist.Enabled {
+		ipIntelService.SetAllowlist(cfg.IPAllowlist.Entries)
+	}
 	alertService := alerts.NewService(storeDB)
 	backfillService := backfill.NewService(storeDB)
 	reportService := reports.NewService(cfg, storeDB, analyticsService, accessAnalysisService, investigationService, alertService, backfillService)
@@ -110,6 +113,12 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	siteRepo := sites.NewRepository(storeDB, cfg)
 	if storeDB.Enabled() && cfg.Database.SeedConfigSites {
 		if err := siteRepo.SeedFromConfig(ctx); err != nil {
+			storeDB.Close()
+			return nil, err
+		}
+	}
+	if storeDB.Enabled() && cfg.IPAllowlist.Enabled {
+		if err := ipIntelService.SeedAllowlist(ctx, cfg.IPAllowlist.Entries); err != nil {
 			storeDB.Close()
 			return nil, err
 		}

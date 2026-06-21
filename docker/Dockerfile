@@ -1,23 +1,24 @@
-FROM golang:1.26-alpine AS build
+FROM golang:1.25-bookworm AS build
 
 WORKDIR /src
-RUN apk add --no-cache ca-certificates git tzdata
-
-COPY go.mod go.sum ./
-RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -o /out/originpulse ./cmd/originpulse
+RUN if [ ! -d vendor ]; then go mod download; fi
+RUN if [ -d vendor ]; then \
+      CGO_ENABLED=0 go build -mod=vendor -o /out/originpulse ./cmd/originpulse; \
+    else \
+      CGO_ENABLED=0 go build -o /out/originpulse ./cmd/originpulse; \
+    fi
 
-FROM alpine:3.22
+FROM gcr.io/distroless/static-debian12
 
-RUN apk add --no-cache ca-certificates tzdata openssh-client
 WORKDIR /app
 
 COPY --from=build /out/originpulse /usr/local/bin/originpulse
 COPY config.example.yml /app/config.example.yml
+COPY assets /app/assets
 
-VOLUME ["/data"]
+VOLUME ["/app/data"]
 EXPOSE 8080
 
 ENTRYPOINT ["originpulse"]

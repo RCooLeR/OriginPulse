@@ -112,6 +112,20 @@ geoip:
   last_modified_env: "GEOIP_LAST_MODIFIED_PATH"
   last_modified_path: "./data/GeoLite2-City.lastmod"
 
+ip_allowlist:
+  enabled: true
+  entries: []
+  # Exact IPs and CIDRs are supported and render as trusted green sources.
+  # Example entries:
+  # - value: "203.0.113.10"
+  #   label: "Corporate VPN"
+  #   actor_type: "corporate-vpn"
+  #   source: "manual"
+  # - value: "198.51.100.0/24"
+  #   label: "RAG egress"
+  #   actor_type: "rag"
+  #   source: "manual"
+
 sites:
   - id: "example-site"
     name: "Example Site"

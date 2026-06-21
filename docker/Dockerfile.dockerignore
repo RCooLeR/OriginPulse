@@ -1,8 +1,14 @@
 .git
 .idea
+designs
+designs/**
 
 data
 data/**
+tmp
+tmp/**
+components-font-awesome
+components-font-awesome/**
 
 config.yml
 *.local.yml
@@ -12,3 +18,4 @@ originpulse.exe
 data/originpulse-dev.exe
 *.tmp
 *.log
+originpulse-*.log

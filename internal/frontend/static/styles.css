@@ -827,6 +827,18 @@ td {
   background: rgba(35, 208, 113, 0.12);
 }
 
+.ip-link.trusted-ip {
+  color: var(--green);
+  background: rgba(35, 208, 113, 0.1);
+  border-color: rgba(35, 208, 113, 0.35);
+}
+
+.trusted-ip-badge {
+  display: inline-flex;
+  margin-left: 6px;
+  font-size: 0.72em;
+}
+
 .status.warn,
 .severity.medium,
 .severity.high {
@@ -1243,6 +1255,40 @@ td {
   font-size: 0.76rem;
 }
 
+.ip-intel-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(150px, 180px) minmax(180px, 1.2fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.ip-intel-form p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.ip-intel-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.ip-intel-form label span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.ip-intel-form input {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--text);
+  background: #07111f;
+  outline: none;
+}
+
 .report-actions-card {
   display: flex;
   align-items: center;
@@ -1607,6 +1653,7 @@ td {
   .overview-second-row,
   .overview-third-row,
   .search-console,
+  .ip-intel-form,
   .detail-grid.two {
     grid-template-columns: 1fr;
   }

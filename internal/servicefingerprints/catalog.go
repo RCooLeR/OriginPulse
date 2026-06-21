@@ -24,6 +24,15 @@ type Match struct {
 
 var catalog = []Fingerprint{
 	{
+		ID:                 "pantheon",
+		Family:             "pantheon",
+		KnownActor:         "Pantheon",
+		ActorType:          "platform",
+		RiskScore:          10,
+		ReverseDNSContains: []string{"pantheon"},
+		ASNOrgContains:     []string{"pantheon"},
+	},
+	{
 		ID:                 "google",
 		Family:             "googlebot",
 		KnownActor:         "Google",

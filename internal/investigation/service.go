@@ -37,17 +37,21 @@ type Traffic struct {
 }
 
 type IPSummary struct {
-	IP         string    `json:"ip"`
-	Requests   int64     `json:"requests"`
-	Status4xx  int64     `json:"status_4xx"`
-	Status5xx  int64     `json:"status_5xx"`
-	BytesSent  int64     `json:"bytes_sent"`
-	FirstSeen  time.Time `json:"first_seen"`
-	LastSeen   time.Time `json:"last_seen"`
-	RiskScore  *int      `json:"risk_score,omitempty"`
-	ActorType  string    `json:"actor_type,omitempty"`
-	KnownActor string    `json:"known_actor,omitempty"`
-	ReverseDNS string    `json:"reverse_dns,omitempty"`
+	IP             string    `json:"ip"`
+	Requests       int64     `json:"requests"`
+	Status4xx      int64     `json:"status_4xx"`
+	Status5xx      int64     `json:"status_5xx"`
+	BytesSent      int64     `json:"bytes_sent"`
+	FirstSeen      time.Time `json:"first_seen"`
+	LastSeen       time.Time `json:"last_seen"`
+	RiskScore      *int      `json:"risk_score,omitempty"`
+	ActorType      string    `json:"actor_type,omitempty"`
+	KnownActor     string    `json:"known_actor,omitempty"`
+	ReverseDNS     string    `json:"reverse_dns,omitempty"`
+	VerifiedActor  bool      `json:"verified_actor"`
+	VerifiedSource bool      `json:"verified_source"`
+	ManualLabel    string    `json:"manual_label,omitempty"`
+	ManualAction   string    `json:"manual_action,omitempty"`
 }
 
 type PathSummary struct {
@@ -59,18 +63,24 @@ type PathSummary struct {
 }
 
 type EventSummary struct {
-	TS          time.Time `json:"ts"`
-	SiteID      string    `json:"site_id"`
-	Env         string    `json:"env"`
-	ClientIP    string    `json:"client_ip,omitempty"`
-	Method      string    `json:"method,omitempty"`
-	Path        string    `json:"path,omitempty"`
-	Query       string    `json:"query,omitempty"`
-	Status      int       `json:"status,omitempty"`
-	BytesSent   int64     `json:"bytes_sent,omitempty"`
-	Referer     string    `json:"referer,omitempty"`
-	UserAgent   string    `json:"user_agent,omitempty"`
-	ContainerID string    `json:"container_id,omitempty"`
+	TS             time.Time `json:"ts"`
+	SiteID         string    `json:"site_id"`
+	Env            string    `json:"env"`
+	ClientIP       string    `json:"client_ip,omitempty"`
+	Method         string    `json:"method,omitempty"`
+	Path           string    `json:"path,omitempty"`
+	Query          string    `json:"query,omitempty"`
+	Status         int       `json:"status,omitempty"`
+	BytesSent      int64     `json:"bytes_sent,omitempty"`
+	Referer        string    `json:"referer,omitempty"`
+	UserAgent      string    `json:"user_agent,omitempty"`
+	ContainerID    string    `json:"container_id,omitempty"`
+	KnownActor     string    `json:"known_actor,omitempty"`
+	ActorType      string    `json:"actor_type,omitempty"`
+	VerifiedActor  bool      `json:"verified_actor"`
+	VerifiedSource bool      `json:"verified_source"`
+	ManualLabel    string    `json:"manual_label,omitempty"`
+	ManualAction   string    `json:"manual_action,omitempty"`
 }
 
 type StatusSummary struct {
@@ -208,11 +218,18 @@ WITH fact_rows AS (
          f.status,
          coalesce(f.bytes_sent, 0) AS bytes_sent,
          coalesce(f.referer, '') AS referer,
-         left(coalesce(ua.user_agent, ''), 300) AS user_agent
+         left(coalesce(ua.user_agent, ''), 300) AS user_agent,
+         coalesce(ii.known_actor, '') AS known_actor,
+         coalesce(ii.actor_type, '') AS actor_type,
+         coalesce(ii.verified_actor, false) AS verified_actor,
+         coalesce(ii.forward_confirmed, false) AS verified_source,
+         coalesce(ii.manual_label, '') AS manual_label,
+         coalesce(ii.manual_action, '') AS manual_action
   FROM error_events f
   LEFT JOIN dim_paths p ON p.id = f.path_id
   LEFT JOIN dim_queries q ON q.id = f.query_id
   LEFT JOIN dim_user_agents ua ON ua.id = f.user_agent_id
+  LEFT JOIN ip_intel ii ON ii.ip = f.client_ip
   WHERE f.ts >= $1 AND f.ts < $2 AND ($3 = '' OR f.site_id = $3)
 ),
 raw_gap_rows AS (
@@ -227,8 +244,15 @@ raw_gap_rows AS (
          coalesce(e.status, 0) AS status,
          coalesce(e.bytes_sent, 0) AS bytes_sent,
          coalesce(e.referer, '') AS referer,
-         left(coalesce(e.user_agent, ''), 300) AS user_agent
+         left(coalesce(e.user_agent, ''), 300) AS user_agent,
+         coalesce(ii.known_actor, '') AS known_actor,
+         coalesce(ii.actor_type, '') AS actor_type,
+         coalesce(ii.verified_actor, false) AS verified_actor,
+         coalesce(ii.forward_confirmed, false) AS verified_source,
+         coalesce(ii.manual_label, '') AS manual_label,
+         coalesce(ii.manual_action, '') AS manual_action
   FROM access_events e
+  LEFT JOIN ip_intel ii ON ii.ip = e.client_ip
   WHERE e.ts >= $1 AND e.ts < $2
     AND ($3 = '' OR e.site_id = $3)
     AND e.status >= 400
@@ -250,7 +274,13 @@ SELECT ts,
        status,
        bytes_sent,
        referer,
-       user_agent
+       user_agent,
+       known_actor,
+       actor_type,
+       verified_actor,
+       verified_source,
+       manual_label,
+       manual_action
 FROM combined
 ORDER BY ts DESC
 LIMIT $4`, out.Since, out.Until, out.SiteID, limit)
@@ -273,6 +303,12 @@ LIMIT $4`, out.Since, out.Until, out.SiteID, limit)
 			&item.BytesSent,
 			&item.Referer,
 			&item.UserAgent,
+			&item.KnownActor,
+			&item.ActorType,
+			&item.VerifiedActor,
+			&item.VerifiedSource,
+			&item.ManualLabel,
+			&item.ManualAction,
 		); err != nil {
 			return err
 		}
@@ -357,11 +393,15 @@ SELECT host(e.client_ip),
        coalesce(ii.risk_score, -1),
        coalesce(ii.actor_type, ''),
        coalesce(ii.known_actor, ''),
-       coalesce(ii.reverse_dns, '')
+       coalesce(ii.reverse_dns, ''),
+       coalesce(ii.verified_actor, false),
+       coalesce(ii.forward_confirmed, false),
+       coalesce(ii.manual_label, ''),
+       coalesce(ii.manual_action, '')
 FROM access_events e
 LEFT JOIN ip_intel ii ON ii.ip = e.client_ip
 WHERE e.ts >= $1 AND e.ts < $2 AND ($3 = '' OR e.site_id = $3) AND e.client_ip IS NOT NULL
-GROUP BY e.client_ip, ii.risk_score, ii.actor_type, ii.known_actor, ii.reverse_dns
+GROUP BY e.client_ip, ii.risk_score, ii.actor_type, ii.known_actor, ii.reverse_dns, ii.verified_actor, ii.forward_confirmed, ii.manual_label, ii.manual_action
 ORDER BY requests DESC
 LIMIT $4`, out.Since, out.Until, out.SiteID, limit)
 	if err != nil {
@@ -383,6 +423,10 @@ LIMIT $4`, out.Since, out.Until, out.SiteID, limit)
 			&item.ActorType,
 			&item.KnownActor,
 			&item.ReverseDNS,
+			&item.VerifiedActor,
+			&item.VerifiedSource,
+			&item.ManualLabel,
+			&item.ManualAction,
 		); err != nil {
 			return err
 		}
@@ -478,7 +522,11 @@ SELECT host(g.ip),
        coalesce(ii.risk_score, -1),
        coalesce(ii.actor_type, ''),
        coalesce(ii.known_actor, ''),
-       coalesce(ii.reverse_dns, '')
+       coalesce(ii.reverse_dns, ''),
+       coalesce(ii.verified_actor, false),
+       coalesce(ii.forward_confirmed, false),
+       coalesce(ii.manual_label, ''),
+       coalesce(ii.manual_action, '')
 FROM grouped g
 LEFT JOIN ip_intel ii ON ii.ip = g.ip
 ORDER BY g.requests DESC
@@ -502,6 +550,10 @@ LIMIT $4`, out.Since, out.Until, out.SiteID, limit, fullStart, fullEnd)
 			&item.ActorType,
 			&item.KnownActor,
 			&item.ReverseDNS,
+			&item.VerifiedActor,
+			&item.VerifiedSource,
+			&item.ManualLabel,
+			&item.ManualAction,
 		); err != nil {
 			return err
 		}

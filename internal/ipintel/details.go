@@ -220,19 +220,21 @@ func (s *Service) ApplyManualIntel(ctx context.Context, opts ManualIntelOptions)
 		return err
 	}
 	_, err = pool.Exec(ctx, `
-INSERT INTO ip_intel (ip, manual_label, manual_action, verified_actor, risk_score, source, refreshed_at)
-VALUES ($1::inet, $2, $3, $4, $5, $6::jsonb, $7)
+INSERT INTO ip_intel (ip, known_actor, actor_type, manual_label, manual_action, verified_actor, risk_score, source, refreshed_at)
+VALUES ($1::inet, $2, CASE WHEN $3 = 'allowlisted' THEN 'allowlist' ELSE NULL END, $2, $3, $4, $5, $6::jsonb, $7)
 ON CONFLICT (ip) DO UPDATE SET
   manual_label = EXCLUDED.manual_label,
   manual_action = EXCLUDED.manual_action,
-  verified_actor = CASE WHEN $8 = 'verified' THEN true ELSE ip_intel.verified_actor END,
-  risk_score = CASE WHEN $8 = 'suspicious' THEN greatest(coalesce(ip_intel.risk_score, 0), 80) ELSE ip_intel.risk_score END,
+  known_actor = CASE WHEN $8 = 'allowlisted' THEN EXCLUDED.known_actor ELSE ip_intel.known_actor END,
+  actor_type = CASE WHEN $8 = 'allowlisted' THEN 'allowlist' ELSE ip_intel.actor_type END,
+  verified_actor = CASE WHEN $8 IN ('verified', 'allowlisted') THEN true ELSE ip_intel.verified_actor END,
+  risk_score = CASE WHEN $8 = 'suspicious' THEN greatest(coalesce(ip_intel.risk_score, 0), 80) WHEN $8 = 'allowlisted' THEN least(coalesce(ip_intel.risk_score, 10), 10) ELSE ip_intel.risk_score END,
   source = ip_intel.source || EXCLUDED.source,
   refreshed_at = coalesce(ip_intel.refreshed_at, EXCLUDED.refreshed_at)`,
 		addr.String(),
 		emptyToNil(label),
 		emptyToNil(action),
-		action == "verified",
+		action == "verified" || action == "allowlisted",
 		manualRiskScore(action),
 		string(sourceJSON),
 		now,
@@ -245,7 +247,7 @@ func normalizeManualAction(value string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "clear":
 		return "", nil
-	case "verified", "suspicious", "watch", "ignored":
+	case "verified", "allowlisted", "suspicious", "watch", "ignored":
 		return strings.ToLower(strings.TrimSpace(value)), nil
 	default:
 		return "", ErrInvalidManualAction
@@ -263,6 +265,9 @@ func normalizeManualLabel(value string) string {
 func manualRiskScore(action string) any {
 	if action == "suspicious" {
 		return 80
+	}
+	if action == "allowlisted" {
+		return 10
 	}
 	return nil
 }

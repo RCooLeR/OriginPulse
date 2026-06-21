@@ -1,56 +1,64 @@
+name: originpulse
+
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: originpulse
-      POSTGRES_USER: originpulse
-      POSTGRES_PASSWORD: originpulse_dev_password
+      POSTGRES_DB: ${POSTGRES_DB:-originpulse}
+      POSTGRES_USER: ${POSTGRES_USER:-originpulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-originpulse_dev_password}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     ports:
-      - "55432:5432"
+      - "${POSTGRES_PORT:-55432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U originpulse -d originpulse"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 20
-
-  ollama:
-    image: ollama/ollama
-    profiles: ["ollama"]
-    volumes:
-      - ollama:/root/.ollama
-    ports:
-      - "11434:11434"
 
   originpulse:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    image: originpulse:local
+    restart: unless-stopped
     command: ["server", "-config", "/app/config.yml"]
     environment:
-      DATABASE_URL: postgres://originpulse:originpulse_dev_password@postgres:5432/originpulse?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-originpulse}:${POSTGRES_PASSWORD:-originpulse_dev_password}@postgres:5432/${POSTGRES_DB:-originpulse}?sslmode=disable
       ORIGINPULSE_CONFIG: /app/config.yml
-      OLLAMA_BASE_URL: http://ollama:11434
-      OLLAMA_MODEL: gemma4:12b
-      PANTHEON_EMAIL: ""
-      ORIGINPULSE_SMTP_USERNAME: ""
-      ORIGINPULSE_SMTP_PASSWORD: ""
-      ORIGINPULSE_PUSH_WEBHOOK_URLS: ""
-      ORIGINPULSE_VAPID_PUBLIC_KEY: ""
-      ORIGINPULSE_VAPID_PRIVATE_KEY: ""
-      ORIGINPULSE_VAPID_SUBJECT: "mailto:originpulse@localhost"
-      LOG_LEVEL: info
+      PANTHEON_EMAIL: ${PANTHEON_EMAIL:-}
+      PANTHEON_MACHINE_TOKEN: ${PANTHEON_MACHINE_TOKEN:-}
+      PANTHEON_SSH_KEY_PATH: /run/secrets/pantheon_ssh_key
+      MAXMIND_ACCOUNT_ID: ${MAXMIND_ACCOUNT_ID:-}
+      MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma4:12b}
+      ORIGINPULSE_SMTP_USERNAME: ${ORIGINPULSE_SMTP_USERNAME:-}
+      ORIGINPULSE_SMTP_PASSWORD: ${ORIGINPULSE_SMTP_PASSWORD:-}
+      ORIGINPULSE_PUSH_WEBHOOK_URLS: ${ORIGINPULSE_PUSH_WEBHOOK_URLS:-}
+      ORIGINPULSE_VAPID_PUBLIC_KEY: ${ORIGINPULSE_VAPID_PUBLIC_KEY:-}
+      ORIGINPULSE_VAPID_PRIVATE_KEY: ${ORIGINPULSE_VAPID_PRIVATE_KEY:-}
+      ORIGINPULSE_VAPID_SUBJECT: ${ORIGINPULSE_VAPID_SUBJECT:-mailto:originpulse@localhost}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
-      - ../config.example.yml:/app/config.yml:ro
-      - originpulse_data:/data
+      - ../config.yml:/app/config.yml:ro
+      - originpulse_data:/app/data
+    secrets:
+      - pantheon_ssh_key
     ports:
-      - "8080:8080"
+      - "${ORIGINPULSE_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
 
+secrets:
+  pantheon_ssh_key:
+    file: ${PANTHEON_SSH_KEY_FILE:?Set PANTHEON_SSH_KEY_FILE to your Pantheon SSH private key path}
+
 volumes:
-  pgdata:
-  ollama:
+  postgres_data:
+    name: docker_pgdata
   originpulse_data:
+    name: docker_originpulse_data

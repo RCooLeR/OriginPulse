@@ -475,7 +475,7 @@ func (api API) updateIPManualIntel(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ipintel.ErrInvalidIP):
 			writeError(w, http.StatusBadRequest, "invalid_ip", "IP address is invalid")
 		case errors.Is(err, ipintel.ErrInvalidManualAction):
-			writeError(w, http.StatusBadRequest, "invalid_manual_action", "manual action must be verified, suspicious, watch, ignored, or clear")
+			writeError(w, http.StatusBadRequest, "invalid_manual_action", "manual action must be allowlisted, verified, suspicious, watch, ignored, or clear")
 		case errors.Is(err, ipintel.ErrDatabaseDisabled):
 			writeError(w, http.StatusServiceUnavailable, "database_disabled", "database is required for manual IP labels")
 		default:

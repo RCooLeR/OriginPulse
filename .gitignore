@@ -1,10 +1,13 @@
 /data/
 /.idea/
 /config.yml
+/docker/.env
 /originpulse
 /originpulse.exe
+/.tmp/
 /tmp/
 /components-font-awesome/
+/vendor/
 *.log
 *.tmp
 *.mmdb

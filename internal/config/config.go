@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,7 @@ type Config struct {
 	Reports       ReportsConfig       `yaml:"reports" json:"reports"`
 	Notifications NotificationsConfig `yaml:"notifications" json:"notifications"`
 	GeoIP         GeoIPConfig         `yaml:"geoip" json:"geoip"`
+	IPAllowlist   IPAllowlistConfig   `yaml:"ip_allowlist" json:"ip_allowlist"`
 	Sites         []SiteConfig        `yaml:"sites" json:"sites"`
 }
 
@@ -142,6 +144,18 @@ type GeoIPConfig struct {
 	DownloadTimeout  time.Duration `yaml:"download_timeout" json:"download_timeout"`
 	LastModifiedPath string        `yaml:"last_modified_path" json:"last_modified_path"`
 	LastModifiedEnv  string        `yaml:"last_modified_env" json:"last_modified_env"`
+}
+
+type IPAllowlistConfig struct {
+	Enabled bool               `yaml:"enabled" json:"enabled"`
+	Entries []IPAllowlistEntry `yaml:"entries" json:"entries"`
+}
+
+type IPAllowlistEntry struct {
+	Value     string `yaml:"value" json:"value"`
+	Label     string `yaml:"label" json:"label"`
+	ActorType string `yaml:"actor_type" json:"actor_type"`
+	Source    string `yaml:"source" json:"source"`
 }
 
 type EmailNotificationConfig struct {
@@ -313,6 +327,9 @@ func Default() Config {
 			LastModifiedPath: "./data/GeoLite2-City.lastmod",
 			LastModifiedEnv:  "GEOIP_LAST_MODIFIED_PATH",
 		},
+		IPAllowlist: IPAllowlistConfig{
+			Enabled: true,
+		},
 	}
 	cfg.normalize()
 	return cfg
@@ -416,6 +433,19 @@ func (c *Config) Validate() error {
 		}
 		if c.GeoIP.DownloadTimeout <= 0 {
 			return errors.New("geoip.download_timeout must be positive")
+		}
+	}
+	if c.IPAllowlist.Enabled {
+		for _, entry := range c.IPAllowlist.Entries {
+			value := strings.TrimSpace(entry.Value)
+			if value == "" {
+				return errors.New("ip_allowlist entry value is required")
+			}
+			if _, err := netip.ParseAddr(value); err != nil {
+				if _, prefixErr := netip.ParsePrefix(value); prefixErr != nil {
+					return fmt.Errorf("ip_allowlist entry %q must be an IP address or CIDR", value)
+				}
+			}
 		}
 	}
 
@@ -856,6 +886,9 @@ func (c *Config) normalize() {
 	}
 	if c.GeoIP.LastModifiedEnv == "" {
 		c.GeoIP.LastModifiedEnv = "GEOIP_LAST_MODIFIED_PATH"
+	}
+	if !c.IPAllowlist.Enabled && len(c.IPAllowlist.Entries) > 0 {
+		c.IPAllowlist.Enabled = true
 	}
 }
 

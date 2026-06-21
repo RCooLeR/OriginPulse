@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -339,8 +340,8 @@ func (s *Service) RepairUnbackfilledRollups(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	var minTS time.Time
-	var maxTS time.Time
+	var minTS sql.NullTime
+	var maxTS sql.NullTime
 	var count int64
 	if err := pool.QueryRow(ctx, `
 SELECT min(ts), max(ts), count(*)::bigint
@@ -348,10 +349,10 @@ FROM access_events
 WHERE rollups_1h_backfilled_at IS NULL`).Scan(&minTS, &maxTS, &count); err != nil {
 		return 0, err
 	}
-	if count == 0 || minTS.IsZero() || maxTS.IsZero() {
+	if count == 0 || !minTS.Valid || !maxTS.Valid || minTS.Time.IsZero() || maxTS.Time.IsZero() {
 		return 0, nil
 	}
-	return s.RebuildRollups(ctx, minTS, maxTS)
+	return s.RebuildRollups(ctx, minTS.Time, maxTS.Time)
 }
 
 func (s *Service) parseSegmentEvents(ctx context.Context, segmentPath string) ([]parsedSegmentEvent, int, int, error) {

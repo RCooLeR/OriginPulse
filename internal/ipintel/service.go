@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"originpulse/internal/config"
 	"originpulse/internal/db"
 	"originpulse/internal/geoip"
 	"originpulse/internal/rollups"
@@ -55,8 +56,9 @@ type RefreshedIP struct {
 const torExitListURL = "https://check.torproject.org/torbulkexitlist"
 
 type Service struct {
-	db    *db.Store
-	geoIP *geoip.Manager
+	db        *db.Store
+	geoIP     *geoip.Manager
+	allowlist []config.IPAllowlistEntry
 }
 
 func NewService(store *db.Store, geoIP ...*geoip.Manager) *Service {
@@ -65,6 +67,13 @@ func NewService(store *db.Store, geoIP ...*geoip.Manager) *Service {
 		manager = geoIP[0]
 	}
 	return &Service{db: store, geoIP: manager}
+}
+
+func (s *Service) SetAllowlist(entries []config.IPAllowlistEntry) {
+	if s == nil {
+		return
+	}
+	s.allowlist = append([]config.IPAllowlistEntry(nil), entries...)
 }
 
 func (s *Service) Enabled() bool {
@@ -130,6 +139,14 @@ func (s *Service) RefreshTop(ctx context.Context, opts Options) (Result, error) 
 			}
 		}
 		item.IsDatacenter = item.ActorType == "datacenter"
+		if match, ok := matchAllowlist(item.IP, s.allowlist); ok {
+			item.KnownActor = match.label
+			item.ActorType = match.actorType
+			item.VerifiedActor = true
+			if item.RiskScore == 0 || item.RiskScore > 10 {
+				item.RiskScore = 10
+			}
+		}
 
 		if err := s.upsert(ctx, item, names, torCheckAvailable); err != nil {
 			return result, err
@@ -253,13 +270,17 @@ INSERT INTO ip_intel (
 ON CONFLICT (ip) DO UPDATE SET
   country_code = coalesce(EXCLUDED.country_code, ip_intel.country_code),
   reverse_dns = EXCLUDED.reverse_dns,
-  known_actor = EXCLUDED.known_actor,
-  actor_type = EXCLUDED.actor_type,
+  known_actor = CASE WHEN ip_intel.manual_action = 'allowlisted' THEN coalesce(ip_intel.manual_label, ip_intel.known_actor) ELSE EXCLUDED.known_actor END,
+  actor_type = CASE WHEN ip_intel.manual_action = 'allowlisted' THEN coalesce(ip_intel.actor_type, 'allowlist') ELSE EXCLUDED.actor_type END,
   forward_confirmed = EXCLUDED.forward_confirmed,
-  verified_actor = EXCLUDED.verified_actor,
+  verified_actor = CASE WHEN ip_intel.manual_action IN ('allowlisted', 'verified') THEN true ELSE EXCLUDED.verified_actor END,
   is_tor_exit = CASE WHEN $13 THEN EXCLUDED.is_tor_exit ELSE ip_intel.is_tor_exit END,
   is_datacenter = EXCLUDED.is_datacenter,
-  risk_score = EXCLUDED.risk_score,
+  risk_score = CASE
+    WHEN ip_intel.manual_action = 'allowlisted' THEN least(coalesce(EXCLUDED.risk_score, ip_intel.risk_score, 10), 10)
+    WHEN ip_intel.manual_action = 'suspicious' THEN greatest(coalesce(EXCLUDED.risk_score, ip_intel.risk_score, 0), 80)
+    ELSE EXCLUDED.risk_score
+  END,
   source = EXCLUDED.source,
   refreshed_at = EXCLUDED.refreshed_at`,
 		item.IP,
