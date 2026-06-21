@@ -98,9 +98,6 @@ func (s *Service) Run(ctx context.Context, opts Options) (Result, error) {
 	if !s.Enabled() {
 		return result, db.ErrUnavailable
 	}
-	if strings.TrimSpace(opts.LogType) == "" {
-		opts.LogType = "nginx-access"
-	}
 	if opts.MaxGroups <= 0 {
 		opts.MaxGroups = 25
 	}
@@ -110,57 +107,92 @@ func (s *Service) Run(ctx context.Context, opts Options) (Result, error) {
 		if err != nil {
 			return err
 		}
-		groups, skipped, err := s.candidateGroups(ctx, pool, opts, result.DailyCutoff, result.WeeklyCutoff)
-		if err != nil {
-			return err
-		}
-		result.GroupsMatched = len(groups)
-		result.SkippedExisting = skipped
-		if result.DryRun {
-			for _, group := range groups {
-				result.FilesArchived += len(group.Segments)
-				for _, seg := range group.Segments {
-					if info, err := os.Stat(seg.Path); err == nil {
-						result.SourceBytes += info.Size()
-					}
-				}
+		archiveLogTypes := normalizeLogTypes(opts.LogType, s.cfg.Collection.LogTypes)
+		remaining := opts.MaxGroups
+		for _, logType := range archiveLogTypes {
+			if remaining <= 0 {
+				break
 			}
-			return nil
-		}
-		for _, group := range groups {
-			written, err := s.writeGroup(ctx, pool, group)
+			typeOpts := opts
+			typeOpts.LogType = logType
+			typeOpts.MaxGroups = remaining
+			groups, skipped, err := s.candidateGroups(ctx, pool, typeOpts, result.DailyCutoff, result.WeeklyCutoff)
 			if err != nil {
 				return err
 			}
-			result.ArchivesWritten++
-			if group.Granularity == "daily" {
-				result.DailyArchivesWritten++
-			} else if group.Granularity == "weekly" {
-				result.WeeklyArchivesWritten++
+			result.GroupsMatched += len(groups)
+			result.SkippedExisting += skipped
+			if result.DryRun {
+				for _, group := range groups {
+					result.FilesArchived += len(group.Segments)
+					for _, seg := range group.Segments {
+						if info, err := os.Stat(seg.Path); err == nil {
+							result.SourceBytes += info.Size()
+						}
+					}
+				}
+				remaining -= len(groups)
+				continue
 			}
-			result.FilesArchived += written.SourceFileCount
-			result.SourceBytes += written.SourceBytes
-			result.CompressedBytes += written.CompressedBytes
-			if opts.RemoveSources {
-				deleted, failed, err := s.removeArchivedSources(ctx, pool, group)
+			for _, group := range groups {
+				written, err := s.writeGroup(ctx, pool, group)
 				if err != nil {
 					return err
 				}
-				result.SourceFilesDeleted += deleted
-				result.SourceDeleteErrors += failed
-				if group.Granularity == "weekly" && len(group.DailyArchives) > 0 {
-					compacted, failed, err := s.removeCompactedDailyArchives(ctx, pool, group)
+				result.ArchivesWritten++
+				if group.Granularity == "daily" {
+					result.DailyArchivesWritten++
+				} else if group.Granularity == "weekly" {
+					result.WeeklyArchivesWritten++
+				}
+				result.FilesArchived += written.SourceFileCount
+				result.SourceBytes += written.SourceBytes
+				result.CompressedBytes += written.CompressedBytes
+				if opts.RemoveSources {
+					deleted, failed, err := s.removeArchivedSources(ctx, pool, group)
 					if err != nil {
 						return err
 					}
-					result.DailyArchivesCompacted += compacted
-					result.DailyArchiveDeleteErrors += failed
+					result.SourceFilesDeleted += deleted
+					result.SourceDeleteErrors += failed
+					if group.Granularity == "weekly" && len(group.DailyArchives) > 0 {
+						compacted, failed, err := s.removeCompactedDailyArchives(ctx, pool, group)
+						if err != nil {
+							return err
+						}
+						result.DailyArchivesCompacted += compacted
+						result.DailyArchiveDeleteErrors += failed
+					}
 				}
 			}
+			remaining -= len(groups)
 		}
 		return nil
 	})
 	return result, err
+}
+
+func normalizeLogTypes(logType string, configured []string) []string {
+	if trimmed := strings.TrimSpace(logType); trimmed != "" {
+		return []string{trimmed}
+	}
+	out := make([]string, 0, len(configured))
+	seen := map[string]struct{}{}
+	for _, item := range configured {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return []string{"nginx-access"}
+	}
+	return out
 }
 
 func (s *Service) candidateGroups(ctx context.Context, pool *pgxpool.Pool, opts Options, dailyCutoff time.Time, weeklyCutoff time.Time) ([]group, int, error) {

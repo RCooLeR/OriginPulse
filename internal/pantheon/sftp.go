@@ -26,10 +26,14 @@ type SFTPDownloader struct {
 }
 
 type DownloadStats struct {
-	FilesSeen       int
-	FilesDownloaded int
-	FilesSkipped    int
-	BytesDownloaded int64
+	FilesSeen        int
+	FilesDownloaded  int
+	FilesSkipped     int
+	BytesDownloaded  int64
+	ServersAttempted int
+	ServersSucceeded int
+	ServersFailed    int
+	ServerErrors     []string
 }
 
 func (s *DownloadStats) add(other DownloadStats) {
@@ -37,6 +41,10 @@ func (s *DownloadStats) add(other DownloadStats) {
 	s.FilesDownloaded += other.FilesDownloaded
 	s.FilesSkipped += other.FilesSkipped
 	s.BytesDownloaded += other.BytesDownloaded
+	s.ServersAttempted += other.ServersAttempted
+	s.ServersSucceeded += other.ServersSucceeded
+	s.ServersFailed += other.ServersFailed
+	s.ServerErrors = append(s.ServerErrors, other.ServerErrors...)
 }
 
 func NewSFTPDownloader(cfg config.Config) *SFTPDownloader {

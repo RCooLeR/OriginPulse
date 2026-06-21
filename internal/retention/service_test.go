@@ -113,6 +113,60 @@ VALUES ($1::uuid, $2, $3, $4, $5, 'imported', 'retention test')`,
 	}
 }
 
+func TestDryRunRetentionCountsAllRawAndCombinedLogTypes(t *testing.T) {
+	store := testRetentionStore(t)
+	ctx := context.Background()
+	pool, err := store.Pool()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	siteID := fmt.Sprintf("retention-multi-log-%d", now.UnixNano())
+	if _, err := pool.Exec(ctx, `INSERT INTO sites (id, name, pantheon_site_id, enabled) VALUES ($1, $2, $3, true)`, siteID, "Retention Multi Log", "retention-multi-log"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM combined_segments WHERE path LIKE $1`, "%retention-multi-log%")
+		_, _ = pool.Exec(context.Background(), `DELETE FROM raw_files WHERE site_id = $1`, siteID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM sites WHERE id = $1`, siteID)
+	})
+
+	oldTS := now.Add(-10 * 24 * time.Hour)
+	for index, logType := range []string{"nginx-access", "php-error"} {
+		remotePath := fmt.Sprintf("/logs/%s-%d.log", logType, now.UnixNano())
+		localPath := filepath.Join(t.TempDir(), "retention-multi-log", logType+".log")
+		if _, err := pool.Exec(ctx, `
+INSERT INTO raw_files (site_id, env, container_id, log_type, remote_path, remote_size, remote_mtime, local_path, status, downloaded_at)
+VALUES ($1, 'live', $2, $3, $4, $5, $6, $7, 'downloaded', $6)`,
+			siteID, fmt.Sprintf("container-%d", index), logType, remotePath, int64(100+index), oldTS, localPath); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `
+INSERT INTO combined_segments (log_type, bucket_start, bucket_end, path, status, indexed_at)
+VALUES ($1, $2, $3, $4, 'indexed', $5)`,
+			logType, oldTS.Add(time.Duration(index)*time.Hour), oldTS.Add(time.Duration(index+1)*time.Hour), filepath.Join("retention-multi-log", logType+".gz"), oldTS); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := config.Default()
+	cfg.Retention.Enabled = true
+	cfg.Retention.RawFileMaxAge = 24 * time.Hour
+	cfg.Retention.ArchiveMaxAge = 24 * time.Hour
+	service := NewService(cfg, store)
+	result, err := service.Run(ctx, Options{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RawFilesMatched < 2 {
+		t.Fatalf("RawFilesMatched = %d, want at least the two inserted log types", result.RawFilesMatched)
+	}
+	if result.CombinedSegmentsMatched < 2 {
+		t.Fatalf("CombinedSegmentsMatched = %d, want at least the two inserted log types", result.CombinedSegmentsMatched)
+	}
+}
+
 func insertRetentionAccessEvent(ctx context.Context, pool *pgxpool.Pool, siteID string, ts time.Time, key string, temporaryImportID ...string) error {
 	sum := sha256.Sum256([]byte(siteID + key + ts.Format(time.RFC3339Nano)))
 	var tempID any

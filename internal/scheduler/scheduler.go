@@ -82,14 +82,20 @@ func (s *Scheduler) runArchive(ctx context.Context) {
 	if s.archive == nil || !s.archive.Enabled() || !s.cfg.Retention.Enabled {
 		return
 	}
-	job := s.jobs.Start(ctx, "archive_logs", "scheduler", map[string]string{"daily_after": s.cfg.Retention.DailyArchiveAfter.String(), "weekly_after": s.cfg.Retention.WeeklyArchiveAfter.String()})
+	job := s.jobs.Start(ctx, "archive_logs", "scheduler", map[string]any{"daily_after": s.cfg.Retention.DailyArchiveAfter.String(), "weekly_after": s.cfg.Retention.WeeklyArchiveAfter.String()})
 	result, err := s.archive.Run(ctx, archive.Options{MaxGroups: 25, RemoveSources: true})
 	if err != nil {
 		s.jobs.Finish(job.ID, jobs.StatusFailed, "archive failed", err)
 		log.Error().Err(err).Msg("scheduled archive failed")
 		return
 	}
-	s.jobs.Finish(job.ID, jobs.StatusSuccess, "archive completed", nil)
+	s.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, "archive completed", nil, map[string]any{
+		"archives_written":     result.ArchivesWritten,
+		"files_archived":       result.FilesArchived,
+		"source_files_deleted": result.SourceFilesDeleted,
+		"source_bytes":         result.SourceBytes,
+		"compressed_bytes":     result.CompressedBytes,
+	})
 	log.Info().
 		Int("archives_written", result.ArchivesWritten).
 		Int("files_archived", result.FilesArchived).
@@ -112,6 +118,7 @@ func (s *Scheduler) runPipeline(ctx context.Context) {
 		Int("combined_segments", result.CombinedSegments).
 		Int("indexed_segments", result.IndexedSegments).
 		Int("events_inserted", result.EventsInserted).
+		Int("log_events_inserted", result.LogEventsInserted).
 		Int("rollups_repaired", result.RollupsRepaired).
 		Int("security_probes", result.SecurityProbes).
 		Int("error_events", result.ErrorEvents).
@@ -123,13 +130,16 @@ func (s *Scheduler) evaluateAlerts(ctx context.Context) {
 	if s.alerts == nil || !s.alerts.Enabled() {
 		return
 	}
-	job := s.jobs.Start(ctx, "evaluate_alerts", "scheduler", map[string]string{"range": "24h"})
+	job := s.jobs.Start(ctx, "evaluate_alerts", "scheduler", map[string]any{"range": "24h"})
 	result, err := s.alerts.Evaluate(ctx, alerts.Options{Range: "24h", Limit: 200})
 	if err != nil {
 		s.jobs.Finish(job.ID, jobs.StatusFailed, "alert evaluation failed", err)
 		return
 	}
-	s.jobs.Finish(job.ID, jobs.StatusSuccess, "alert evaluation completed", nil)
+	s.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, "alert evaluation completed", nil, map[string]any{
+		"evaluated": result.Evaluated,
+		"upserted":  result.Upserted,
+	})
 	log.Info().
 		Int("evaluated", result.Evaluated).
 		Int("upserted", result.Upserted).
@@ -141,16 +151,21 @@ func (s *Scheduler) refreshIPIntel(ctx context.Context) {
 	if s.ipIntel == nil || !s.ipIntel.Enabled() {
 		return
 	}
-	job := s.jobs.Start(ctx, "refresh_ip_intel", "scheduler", map[string]string{"range": "24h"})
+	job := s.jobs.Start(ctx, "refresh_ip_intel", "scheduler", map[string]any{"range": "24h"})
 	result, err := s.ipIntel.RefreshTop(ctx, ipintel.Options{Range: "24h", Limit: ipintel.ResultMaxLimit})
 	if err != nil {
 		s.jobs.Finish(job.ID, jobs.StatusFailed, "IP intelligence refresh failed", err)
 		return
 	}
-	s.jobs.Finish(job.ID, jobs.StatusSuccess, "IP intelligence refresh completed", nil)
+	s.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, "IP intelligence refresh completed", nil, map[string]any{
+		"refreshed":     result.Refreshed,
+		"failed":        result.Failed,
+		"lookup_failed": result.LookupFailed,
+	})
 	log.Info().
 		Int("refreshed", result.Refreshed).
 		Int("failed", result.Failed).
+		Int("lookup_failed", result.LookupFailed).
 		Msg("scheduled IP intelligence refresh completed")
 }
 
@@ -158,14 +173,19 @@ func (s *Scheduler) runRetention(ctx context.Context) {
 	if s.retention == nil || !s.cfg.Retention.Enabled {
 		return
 	}
-	job := s.jobs.Start(ctx, "retention", "scheduler", map[string]string{"max_age": s.cfg.Retention.MaxAge.String()})
+	job := s.jobs.Start(ctx, "retention", "scheduler", map[string]any{"max_age": s.cfg.Retention.MaxAge.String()})
 	result, err := s.retention.Run(ctx, retention.Options{})
 	if err != nil {
 		s.jobs.Finish(job.ID, jobs.StatusFailed, "retention failed", err)
 		log.Error().Err(err).Msg("scheduled retention failed")
 		return
 	}
-	s.jobs.Finish(job.ID, jobs.StatusSuccess, "retention completed", nil)
+	s.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, "retention completed", nil, map[string]any{
+		"access_events_deleted":     result.AccessEventsDeleted,
+		"rollups_deleted":           result.RollupsDeleted,
+		"combined_segments_deleted": result.CombinedSegmentsDeleted,
+		"raw_files_deleted":         result.RawFilesDeleted,
+	})
 	log.Info().
 		Int("access_events_deleted", result.AccessEventsDeleted).
 		Int("rollups_deleted", result.RollupsDeleted).
@@ -178,14 +198,19 @@ func (s *Scheduler) sendNotifications(ctx context.Context) {
 	if s.notifications == nil || !s.cfg.Notifications.Enabled {
 		return
 	}
-	job := s.jobs.Start(ctx, "send_notifications", "scheduler", map[string]string{"min_severity": s.cfg.Notifications.MinSeverity})
+	job := s.jobs.Start(ctx, "send_notifications", "scheduler", map[string]any{"min_severity": s.cfg.Notifications.MinSeverity})
 	result, err := s.notifications.NotifyOpenAlerts(ctx, 100)
 	if err != nil {
 		s.jobs.Finish(job.ID, jobs.StatusFailed, "notifications failed", err)
 		log.Error().Err(err).Msg("scheduled notifications failed")
 		return
 	}
-	s.jobs.Finish(job.ID, jobs.StatusSuccess, "notifications completed", nil)
+	s.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, "notifications completed", nil, map[string]any{
+		"evaluated": result.Evaluated,
+		"sent":      result.Sent,
+		"skipped":   result.Skipped,
+		"failed":    result.Failed,
+	})
 	log.Info().
 		Int("evaluated", result.Evaluated).
 		Int("sent", result.Sent).
@@ -198,7 +223,7 @@ func (s *Scheduler) runReports(ctx context.Context) {
 	if s.reports == nil || !s.cfg.Reports.Enabled {
 		return
 	}
-	job := s.jobs.Start(ctx, "generate_llm_reports", "scheduler", map[string]string{"ranges": strings.Join(s.cfg.Reports.Ranges, ",")})
+	job := s.jobs.Start(ctx, "generate_llm_reports", "scheduler", map[string]any{"ranges": strings.Join(s.cfg.Reports.Ranges, ",")})
 	generated := 0
 	for _, reportRange := range s.cfg.Reports.Ranges {
 		reportRange = strings.TrimSpace(reportRange)
@@ -212,6 +237,6 @@ func (s *Scheduler) runReports(ctx context.Context) {
 		}
 		generated++
 	}
-	s.jobs.Finish(job.ID, jobs.StatusSuccess, "LLM reports generated", nil)
+	s.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, "LLM reports generated", nil, map[string]any{"generated": generated})
 	log.Info().Int("generated", generated).Msg("scheduled LLM reports generated")
 }

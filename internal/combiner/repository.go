@@ -2,6 +2,8 @@ package combiner
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"originpulse/internal/db"
@@ -39,7 +41,9 @@ type SegmentPage struct {
 }
 
 type Repository struct {
-	db *db.Store
+	db          *db.Store
+	rawDir      string
+	combinedDir string
 }
 
 const (
@@ -47,8 +51,15 @@ const (
 	RecentSegmentsMaxLimit       = 500
 )
 
-func NewRepository(store *db.Store) *Repository {
-	return &Repository{db: store}
+func NewRepository(store *db.Store, rawDir ...string) *Repository {
+	repository := &Repository{db: store}
+	if len(rawDir) > 0 {
+		repository.rawDir = rawDir[0]
+	}
+	if len(rawDir) > 1 {
+		repository.combinedDir = rawDir[1]
+	}
+	return repository
 }
 
 func (r *Repository) Enabled() bool {
@@ -95,9 +106,46 @@ ORDER BY site_id, env, container_id, local_path`, logType, since)
 		if err := rows.Scan(&source.RawFileID, &source.SiteID, &source.Env, &source.ContainerID, &source.LogType, &source.LocalPath); err != nil {
 			return nil, err
 		}
+		source.LocalPath = normalizeStoredDataPath(source.LocalPath, "raw", r.rawDir)
 		sources = append(sources, source)
 	}
 	return sources, rows.Err()
+}
+
+func normalizeStoredRawPath(localPath string, rawDir string) string {
+	return normalizeStoredDataPath(localPath, "raw", rawDir)
+}
+
+func normalizeStoredCombinedPath(segmentPath string, combinedDir string) string {
+	return normalizeStoredDataPath(segmentPath, "combined", combinedDir)
+}
+
+func normalizeStoredDataPath(pathValue string, dataChild string, targetDir string) string {
+	if strings.TrimSpace(pathValue) == "" || strings.TrimSpace(targetDir) == "" || strings.TrimSpace(dataChild) == "" {
+		return pathValue
+	}
+	normalized := strings.ReplaceAll(pathValue, `\`, `/`)
+	for strings.Contains(normalized, "//") {
+		normalized = strings.ReplaceAll(normalized, "//", "/")
+	}
+	marker := "/data/" + strings.Trim(dataChild, "/") + "/"
+	lower := strings.ToLower(normalized)
+	idx := strings.Index(lower, marker)
+	if idx < 0 && strings.HasPrefix(lower, strings.TrimPrefix(marker, "/")) {
+		idx = -1
+	}
+	if idx < 0 && !strings.HasPrefix(lower, strings.TrimPrefix(marker, "/")) {
+		return pathValue
+	}
+	start := idx + len(marker)
+	if idx < 0 {
+		start = len(strings.TrimPrefix(marker, "/"))
+	}
+	relative := strings.TrimPrefix(normalized[start:], "/")
+	if relative == "" {
+		return pathValue
+	}
+	return filepath.Join(targetDir, filepath.FromSlash(relative))
 }
 
 func (r *Repository) UpsertSegment(ctx context.Context, manifest SegmentManifest) error {
@@ -123,9 +171,36 @@ SET bucket_end = EXCLUDED.bucket_end,
     line_count = EXCLUDED.line_count,
     min_ts = EXCLUDED.min_ts,
     max_ts = EXCLUDED.max_ts,
-    status = EXCLUDED.status,
-    indexed_at = NULL,
-    version = combined_segments.version + 1,
+    status = CASE
+      WHEN combined_segments.bucket_end IS NOT DISTINCT FROM EXCLUDED.bucket_end
+        AND combined_segments.path IS NOT DISTINCT FROM EXCLUDED.path
+        AND combined_segments.sha256 IS NOT DISTINCT FROM EXCLUDED.sha256
+        AND combined_segments.line_count IS NOT DISTINCT FROM EXCLUDED.line_count
+        AND combined_segments.min_ts IS NOT DISTINCT FROM EXCLUDED.min_ts
+        AND combined_segments.max_ts IS NOT DISTINCT FROM EXCLUDED.max_ts
+      THEN combined_segments.status
+      ELSE EXCLUDED.status
+    END,
+    indexed_at = CASE
+      WHEN combined_segments.bucket_end IS NOT DISTINCT FROM EXCLUDED.bucket_end
+        AND combined_segments.path IS NOT DISTINCT FROM EXCLUDED.path
+        AND combined_segments.sha256 IS NOT DISTINCT FROM EXCLUDED.sha256
+        AND combined_segments.line_count IS NOT DISTINCT FROM EXCLUDED.line_count
+        AND combined_segments.min_ts IS NOT DISTINCT FROM EXCLUDED.min_ts
+        AND combined_segments.max_ts IS NOT DISTINCT FROM EXCLUDED.max_ts
+      THEN combined_segments.indexed_at
+      ELSE NULL
+    END,
+    version = CASE
+      WHEN combined_segments.bucket_end IS NOT DISTINCT FROM EXCLUDED.bucket_end
+        AND combined_segments.path IS NOT DISTINCT FROM EXCLUDED.path
+        AND combined_segments.sha256 IS NOT DISTINCT FROM EXCLUDED.sha256
+        AND combined_segments.line_count IS NOT DISTINCT FROM EXCLUDED.line_count
+        AND combined_segments.min_ts IS NOT DISTINCT FROM EXCLUDED.min_ts
+        AND combined_segments.max_ts IS NOT DISTINCT FROM EXCLUDED.max_ts
+      THEN combined_segments.version
+      ELSE combined_segments.version + 1
+    END,
     generated_at = now()`,
 		manifest.LogType,
 		manifest.BucketStart,
@@ -192,6 +267,7 @@ LIMIT $1 OFFSET $2`, limit, offset)
 		); err != nil {
 			return out, err
 		}
+		segment.Path = normalizeStoredCombinedPath(segment.Path, r.combinedDir)
 		segments = append(segments, segment)
 	}
 	out.Segments = segments
@@ -259,6 +335,7 @@ LIMIT $1`, limit)
 		); err != nil {
 			return nil, err
 		}
+		segment.Path = normalizeStoredCombinedPath(segment.Path, r.combinedDir)
 		segments = append(segments, segment)
 	}
 	return segments, rows.Err()

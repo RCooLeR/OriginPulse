@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -32,6 +33,7 @@ type Result struct {
 	DatabaseEnabled bool          `json:"database_enabled"`
 	Refreshed       int           `json:"refreshed"`
 	Failed          int           `json:"failed"`
+	LookupFailed    int           `json:"lookup_failed"`
 	Items           []RefreshedIP `json:"items"`
 }
 
@@ -53,7 +55,16 @@ type RefreshedIP struct {
 	RefreshedAt      time.Time `json:"refreshed_at"`
 }
 
-const torExitListURL = "https://check.torproject.org/torbulkexitlist"
+const (
+	torExitListURL       = "https://check.torproject.org/torbulkexitlist"
+	refreshIPWorkerLimit = 16
+)
+
+type refreshOutcome struct {
+	item         RefreshedIP
+	lookupFailed int
+	err          error
+}
 
 type Service struct {
 	db        *db.Store
@@ -106,56 +117,126 @@ func (s *Service) RefreshTop(ctx context.Context, opts Options) (Result, error) 
 		return result, err
 	}
 
-	for _, item := range topIPs {
-		item.RefreshedAt = now
-
-		geo, geoErr := s.lookupGeoIP(item.IP)
-		if geoErr == "" {
-			item.CountryCode = geo.CountryCode
-			item.CityName = geo.CityName
-			item.TimeZone = geo.TimeZone
-		} else if geoErr != "" && geoErr != geoip.ErrNotLoaded.Error() {
-			item.DNSErrors = append(item.DNSErrors, geoErr)
+	outcomes := s.refreshIPBatch(ctx, topIPs, torExits, torCheckAvailable, now)
+	result.Items = make([]RefreshedIP, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		if outcome.err != nil {
 			result.Failed++
-		}
-
-		names, lookupErr := lookupReverse(ctx, item.IP)
-		if lookupErr != "" {
-			item.DNSErrors = append(item.DNSErrors, lookupErr)
-			result.Failed++
-		}
-		item.ReverseDNS = firstName(names)
-		item.ActorType, item.KnownActor, item.RiskScore = classify(names, item.Requests)
-		item.ForwardConfirmed = forwardConfirms(ctx, names, item.IP)
-		item.VerifiedActor = item.ForwardConfirmed && item.KnownActor != ""
-		if torCheckAvailable {
-			_, item.IsTorExit = torExits[item.IP]
-			if item.IsTorExit {
-				item.ActorType = "tor"
-				item.KnownActor = "Tor exit"
-				if item.RiskScore < 80 {
-					item.RiskScore = 80
-				}
+			if err == nil {
+				err = outcome.err
 			}
-		}
-		item.IsDatacenter = item.ActorType == "datacenter"
-		if match, ok := matchAllowlist(item.IP, s.allowlist); ok {
-			item.KnownActor = match.label
-			item.ActorType = match.actorType
-			item.VerifiedActor = true
-			if item.RiskScore == 0 || item.RiskScore > 10 {
-				item.RiskScore = 10
-			}
-		}
-
-		if err := s.upsert(ctx, item, names, torCheckAvailable); err != nil {
-			return result, err
+			continue
 		}
 		result.Refreshed++
-		result.Items = append(result.Items, item)
+		result.LookupFailed += outcome.lookupFailed
+		result.Items = append(result.Items, outcome.item)
+	}
+	if err != nil {
+		return result, err
 	}
 
 	return result, nil
+}
+
+func (s *Service) refreshIPBatch(ctx context.Context, items []RefreshedIP, torExits map[string]struct{}, torCheckAvailable bool, refreshedAt time.Time) []refreshOutcome {
+	if len(items) == 0 {
+		return []refreshOutcome{}
+	}
+	workerCount := refreshWorkerCount(len(items))
+	jobs := make(chan RefreshedIP)
+	outcomes := make(chan refreshOutcome, len(items))
+	var wg sync.WaitGroup
+
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for item := range jobs {
+				outcomes <- s.refreshOneIP(ctx, item, torExits, torCheckAvailable, refreshedAt)
+			}
+		}()
+	}
+
+	go func() {
+		defer close(jobs)
+		for _, item := range items {
+			select {
+			case jobs <- item:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	go func() {
+		wg.Wait()
+		close(outcomes)
+	}()
+
+	result := make([]refreshOutcome, 0, len(items))
+	for outcome := range outcomes {
+		result = append(result, outcome)
+	}
+	return result
+}
+
+func (s *Service) refreshOneIP(ctx context.Context, item RefreshedIP, torExits map[string]struct{}, torCheckAvailable bool, refreshedAt time.Time) refreshOutcome {
+	item.RefreshedAt = refreshedAt
+	lookupFailed := 0
+
+	geo, geoErr := s.lookupGeoIP(item.IP)
+	if geoErr == "" {
+		item.CountryCode = geo.CountryCode
+		item.CityName = geo.CityName
+		item.TimeZone = geo.TimeZone
+	} else if geoErr != "" && geoErr != geoip.ErrNotLoaded.Error() {
+		item.DNSErrors = append(item.DNSErrors, geoErr)
+		lookupFailed++
+	}
+
+	names, lookupErr := lookupReverse(ctx, item.IP)
+	if lookupErr != "" {
+		item.DNSErrors = append(item.DNSErrors, lookupErr)
+		lookupFailed++
+	}
+	item.ReverseDNS = firstName(names)
+	item.ActorType, item.KnownActor, item.RiskScore = classify(names, item.Requests)
+	item.ForwardConfirmed = forwardConfirms(ctx, names, item.IP)
+	item.VerifiedActor = item.ForwardConfirmed && item.KnownActor != ""
+	if torCheckAvailable {
+		_, item.IsTorExit = torExits[item.IP]
+		if item.IsTorExit {
+			item.ActorType = "tor"
+			item.KnownActor = "Tor exit"
+			if item.RiskScore < 80 {
+				item.RiskScore = 80
+			}
+		}
+	}
+	item.IsDatacenter = item.ActorType == "datacenter"
+	if match, ok := matchAllowlist(item.IP, s.allowlist); ok {
+		item.KnownActor = match.label
+		item.ActorType = match.actorType
+		item.VerifiedActor = true
+		if item.RiskScore == 0 || item.RiskScore > 10 {
+			item.RiskScore = 10
+		}
+	}
+
+	if err := s.upsert(ctx, item, names, torCheckAvailable); err != nil {
+		return refreshOutcome{item: item, lookupFailed: lookupFailed, err: err}
+	}
+	return refreshOutcome{item: item, lookupFailed: lookupFailed}
+}
+
+func refreshWorkerCount(itemCount int) int {
+	if itemCount <= 0 {
+		return 0
+	}
+	if itemCount < refreshIPWorkerLimit {
+		return itemCount
+	}
+	return refreshIPWorkerLimit
 }
 
 func loadRefreshTopIPs(ctx context.Context, pool *pgxpool.Pool, since time.Time, until time.Time, limit int) ([]RefreshedIP, error) {

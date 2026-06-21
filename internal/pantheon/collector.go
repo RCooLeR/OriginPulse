@@ -108,7 +108,7 @@ func (c *Collector) CollectSiteEnv(ctx context.Context, site config.SiteConfig, 
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Collection.TimeoutPerSite)
 	defer cancel()
 
-	meta := map[string]string{
+	meta := map[string]any{
 		"site_id": site.ID,
 		"env":     env,
 	}
@@ -163,10 +163,23 @@ func (c *Collector) CollectSiteEnv(ctx context.Context, site config.SiteConfig, 
 		Int("files_seen", stats.FilesSeen).
 		Int("files_downloaded", stats.FilesDownloaded).
 		Int("files_skipped", stats.FilesSkipped).
+		Int("server_failures", stats.ServersFailed).
 		Int64("bytes_downloaded", stats.BytesDownloaded).
 		Msg("collection completed")
 
-	c.jobs.Finish(job.ID, jobs.StatusSuccess, fmt.Sprintf("downloaded %d files, skipped %d", stats.FilesDownloaded, stats.FilesSkipped), nil)
+	message := fmt.Sprintf("downloaded %d files, skipped %d", stats.FilesDownloaded, stats.FilesSkipped)
+	if stats.ServersFailed > 0 {
+		message = fmt.Sprintf("%s, server failures %d", message, stats.ServersFailed)
+	}
+	c.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, message, nil, map[string]any{
+		"files_seen":        stats.FilesSeen,
+		"files_downloaded":  stats.FilesDownloaded,
+		"files_skipped":     stats.FilesSkipped,
+		"bytes_downloaded":  stats.BytesDownloaded,
+		"servers_attempted": stats.ServersAttempted,
+		"servers_succeeded": stats.ServersSucceeded,
+		"server_failures":   stats.ServersFailed,
+	})
 	return nil
 }
 
@@ -178,10 +191,13 @@ func (c *Collector) downloadTargetLogs(ctx context.Context, target Target) (Down
 
 	for _, ip := range target.AppserverIPs {
 		attempted++
+		total.ServersAttempted++
 		containerID := ContainerID("appserver", ip)
 		stats, err := c.downloader.DownloadLogs(ctx, target, "appserver", ip, containerID, c.rawFiles)
 		total.add(stats)
 		if err != nil {
+			total.ServersFailed++
+			total.ServerErrors = append(total.ServerErrors, fmt.Sprintf("appserver %s: %v", ip, err))
 			if firstErr == nil {
 				firstErr = fmt.Errorf("appserver %s: %w", ip, err)
 			}
@@ -189,14 +205,18 @@ func (c *Collector) downloadTargetLogs(ctx context.Context, target Target) (Down
 			continue
 		}
 		succeeded++
+		total.ServersSucceeded++
 	}
 
 	for _, ip := range target.DBServerIPs {
 		attempted++
+		total.ServersAttempted++
 		containerID := ContainerID("dbserver", ip)
 		stats, err := c.downloader.DownloadLogs(ctx, target, "dbserver", ip, containerID, c.rawFiles)
 		total.add(stats)
 		if err != nil {
+			total.ServersFailed++
+			total.ServerErrors = append(total.ServerErrors, fmt.Sprintf("dbserver %s: %v", ip, err))
 			if firstErr == nil {
 				firstErr = fmt.Errorf("dbserver %s: %w", ip, err)
 			}
@@ -204,6 +224,7 @@ func (c *Collector) downloadTargetLogs(ctx context.Context, target Target) (Down
 			continue
 		}
 		succeeded++
+		total.ServersSucceeded++
 	}
 
 	if attempted > 0 && succeeded == 0 && firstErr != nil {

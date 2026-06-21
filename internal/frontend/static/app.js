@@ -36,6 +36,8 @@ const securitySignalDetailPageSize = 6;
 const ipDetailPageSize = 6;
 const drawerHistoryLimit = 500;
 const analysisHistoryLimit = 500;
+const PHP_LOG_TYPES = ["php-error", "php-slow"];
+const MYSQL_LOG_TYPES = ["mysql", "mysql-slow"];
 
 const state = {
   route: pathToRoute[location.pathname] || "overview",
@@ -702,31 +704,34 @@ function renderIssueWorkspace(kind) {
 
 function renderPHP() {
   const issues = issuesFor("php");
+  const logTotals = logTotalsFor(PHP_LOG_TYPES);
+  const logEvents = logEventsFor(PHP_LOG_TYPES);
+  const logMessages = logMessagesFor(PHP_LOG_TYPES);
   const paths = filtered(searchItems((state.data.traffic.top_paths || state.data.analysis.slow_paths || []).filter(isPHPPathRow), (item) => `${item.path} ${item.site_id} ${item.requests}`));
-  const events = filtered(searchItems((state.data.traffic.recent_errors || []).filter(isPHPEventRow), (item) => `${item.status} ${item.site_id} ${item.env} ${item.client_ip} ${item.method} ${item.path} ${item.user_agent}`));
-  const agents = filtered(searchItems(userAgentsFromEvents(events), (item) => `${item.family} ${item.sample} ${item.known_actor} ${item.actor_type}`));
-  const requests = sum(paths, "requests") || events.length;
-  const errors = sum(paths, "status_4xx") + sum(paths, "status_5xx") || events.length;
+  const accessEvents = filtered(searchItems((state.data.traffic.recent_errors || []).filter(isPHPEventRow), (item) => `${item.status} ${item.site_id} ${item.env} ${item.client_ip} ${item.method} ${item.path} ${item.user_agent}`));
   return `
     ${metricGrid([
       metric("PHP Findings", issues.length, "fa-brands fa-php", "purple"),
-      metric("PHP Paths", paths.length, "fa-route", "cyan"),
-      metric("PHP Events", events.length, "fa-rectangle-list", "amber"),
-      metric("Error Pressure", formatPercent(ratio(errors, requests)), "fa-triangle-exclamation", "red"),
+      metric("PHP Log Events", sum(logTotals, "events"), "fa-rectangle-list", "amber"),
+      metric("Severe Logs", severeLogTotal(logTotals), "fa-triangle-exclamation", "red"),
+      metric("Access Matches", accessEvents.length, "fa-route", "cyan"),
     ])}
     <section class="layout-2">
       ${issueFindingsPanel("php", issues)}
-      ${issueTopPathsPanel("php", paths)}
+      ${runtimeLogMessagesPanel("PHP Runtime Messages", "Repeated PHP error and slow-log messages.", logMessages, "phpLogMessages")}
     </section>
     <section class="layout-2">
-      ${issueEventsPanel("php", events)}
-      ${issueAgentsPanel("php", agents)}
+      ${runtimeLogEventsPanel("Recent PHP Log Evidence", "Latest PHP error and slow-log rows from imported files.", logEvents, "phpLogEvents")}
+      ${issueTopPathsPanel("php", paths)}
     </section>
   `;
 }
 
 function renderMySQL() {
   const issues = issuesFor("mysql");
+  const logTotals = logTotalsFor(MYSQL_LOG_TYPES);
+  const logEvents = logEventsFor(MYSQL_LOG_TYPES);
+  const logMessages = logMessagesFor(MYSQL_LOG_TYPES);
   const probes = filtered(searchItems((state.data.analysis.injection_probes || []).filter(isMySQLProbeRow), mysqlProbeSearchText));
   const slowPaths = filtered(searchItems((state.data.analysis.slow_paths || []).filter(isMySQLPathRow), (item) => `${item.site_id} ${item.path}`));
   const sourceIPs = mysqlProbeSourceIPs(probes);
@@ -734,19 +739,69 @@ function renderMySQL() {
   return `
     ${metricGrid([
       metric("MySQL Findings", issues.length, "fa-database", "purple"),
+      metric("MySQL Log Events", sum(logTotals, "events"), "fa-rectangle-list", "amber"),
+      metric("Slow Log Rows", logTypeTotal(logTotals, "mysql-slow"), "fa-stopwatch", "cyan"),
       metric("SQL Probes", sum(probes, "requests"), "fa-syringe", "red"),
-      metric("Slow DB Paths", slowPaths.length, "fa-stopwatch", "amber"),
-      metric("Source IPs", sourceIPs.length, "fa-network-wired", "cyan"),
     ])}
     ${loading}
     <section class="layout-2">
       ${issueFindingsPanel("mysql", issues)}
+      ${runtimeLogMessagesPanel("MySQL Runtime Messages", "Repeated MySQL error and slow-query messages.", logMessages, "mysqlLogMessages")}
+    </section>
+    <section class="layout-2">
+      ${runtimeLogEventsPanel("Recent MySQL Log Evidence", "Latest MySQL error and slow-query rows from imported files.", logEvents, "mysqlLogEvents")}
       ${mysqlProbePanel(probes)}
     </section>
     <section class="layout-2">
       ${mysqlSlowPathsPanel(slowPaths)}
       ${mysqlSourceIPsPanel(sourceIPs)}
     </section>
+  `;
+}
+
+function runtimeLogMessagesPanel(title, subtitle, rows, key) {
+  const page = paginate(rows, state.pages[key], 7);
+  state.pages[key] = page.page;
+  return `
+    <article class="panel">
+      <div class="panel-head">
+        <div><h2>${escapeHTML(title)}</h2><p>${escapeHTML(subtitle)}</p></div>
+        <span class="pill">${formatNumber(rows.length)} messages</span>
+      </div>
+      <div class="list">${page.rows.map((item) => `
+        <div class="list-row">
+          <div>
+            <strong>${escapeHTML(shortLogMessage(item.message))}</strong>
+            <span>${escapeHTML([logTypeLabel(item.log_type), item.severity || "", item.sites || ""].filter(Boolean).join(" / "))} / ${shortTime(item.first_seen)} - ${shortTime(item.last_seen)}</span>
+          </div>
+          <b>${formatNumber(item.events)}</b>
+        </div>
+      `).join("") || empty("No runtime log messages in this range.")}</div>
+      ${pager(key, page)}
+    </article>
+  `;
+}
+
+function runtimeLogEventsPanel(title, subtitle, rows, key) {
+  const page = paginate(rows, state.pages[key], 7);
+  state.pages[key] = page.page;
+  return `
+    <article class="panel">
+      <div class="panel-head">
+        <div><h2>${escapeHTML(title)}</h2><p>${escapeHTML(subtitle)}</p></div>
+        <span class="pill">${formatNumber(rows.length)} rows</span>
+      </div>
+      <div class="list">${page.rows.map((item) => `
+        <div class="list-row log-row">
+          <div>
+            <strong>${escapeHTML(shortLogMessage(item.message || item.raw))}</strong>
+            <span>${escapeHTML(shortTime(item.ts))} / ${escapeHTML(item.site_id || "-")} / ${escapeHTML(item.env || "-")} / ${escapeHTML(item.container_id || "-")} / ${escapeHTML(logTypeLabel(item.log_type))}</span>
+          </div>
+          <span class="severity ${logSeverityClass(item.severity, item.log_type)}">${escapeHTML(item.severity || logSeverityLabel(item.log_type))}</span>
+        </div>
+      `).join("") || empty("No runtime log rows in this range.")}</div>
+      ${pager(key, page)}
+    </article>
   `;
 }
 
@@ -1146,9 +1201,10 @@ function renderPulseLogs() {
   const archives = state.data.archives || [];
   const archiveImports = state.data.archiveImports || [];
   const storage = state.data.storage || {};
+  const jobTotal = state.data.jobCatalog?.total ?? state.data.jobs.length;
   return `
     ${metricGrid([
-      metric("Jobs", state.data.jobs.length, "fa-briefcase", "cyan"),
+      metric("Jobs", jobTotal, "fa-briefcase", "cyan"),
       metric("Database", formatBytes(storage.storage?.database_bytes), "fa-hard-drive", "purple"),
       metric("Hot Events", storage.events?.hot_events || 0, "fa-database", "green"),
       metric("Backfill", storage.events?.backfill_remaining || 0, "fa-rotate", "amber"),
@@ -1395,7 +1451,7 @@ function pipelineResultMessage(result = {}) {
 }
 
 function pulseJobsPanel() {
-  const rows = filtered(searchItems(state.data.jobs || [], (item) => `${item.type || ""} ${item.status || ""} ${item.message || ""}`));
+  const rows = filtered(searchItems(state.data.jobs || [], jobSearchText));
   const page = state.search ? paginate(rows, state.pages.pulseJobs, 10) : jobPage(rows, state.data.jobCatalog);
   state.pages.pulseJobs = page.page;
   return `
@@ -1408,6 +1464,19 @@ function pulseJobsPanel() {
       ${pager("pulseJobs", page)}
     </article>
   `;
+}
+
+function jobSearchText(item = {}) {
+  return [
+    item.type,
+    item.status,
+    item.message,
+    item.last_error,
+    item.triggered_by,
+    item.started_at,
+    item.finished_at,
+    JSON.stringify(item.meta || {}),
+  ].filter(Boolean).join(" ");
 }
 
 function pulseSegmentsPanel() {
@@ -1579,12 +1648,113 @@ function jobsTable(rows) {
   if (!rows.length) return empty("No recent jobs.");
   return `
     <div class="table-wrap"><table>
-      <thead><tr><th>Type</th><th>Status</th><th>Message</th><th>Started</th></tr></thead>
+      <thead><tr><th>Job</th><th>Status</th><th>Details</th><th>Duration</th><th>Started</th></tr></thead>
       <tbody>${rows.map((job) => `
-        <tr><td>${escapeHTML(job.type || "-")}</td><td>${escapeHTML(job.status || "-")}</td><td>${escapeHTML(job.message || "")}</td><td>${shortTime(job.started_at)}</td></tr>
+        <tr>
+          <td><span class="row-title"><strong>${escapeHTML(formatJobType(job.type))}</strong><span>${jobScope(job)}</span></span></td>
+          <td><span class="status ${jobStatusClass(job.status)}">${escapeHTML(job.status || "-")}</span></td>
+          <td><span class="row-title"><strong>${escapeHTML(job.message || "-")}</strong><span class="job-meta">${jobMetaSummary(job)}</span></span></td>
+          <td>${formatDuration(job.duration_ms)}</td>
+          <td>${shortTime(job.started_at)}</td>
+        </tr>
       `).join("")}</tbody>
     </table></div>
   `;
+}
+
+function formatJobType(value) {
+  return String(value || "job")
+    .replaceAll("_", " ")
+    .replaceAll("-", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function jobStatusClass(value) {
+  const status = String(value || "").toLowerCase();
+  if (status === "success") return "good";
+  if (status === "failed") return "bad";
+  if (status === "running") return "warn";
+  return "";
+}
+
+function jobScope(job = {}) {
+  const meta = job.meta || {};
+  const parts = [meta.site_id, meta.env, meta.range, meta.from && meta.to ? `${shortTime(meta.from)} to ${shortTime(meta.to)}` : ""].filter(Boolean);
+  return escapeHTML(parts.join(" / ") || job.triggered_by || "scheduler");
+}
+
+function jobMetaSummary(job = {}) {
+  const meta = job.meta || {};
+  const byType = {
+    collect_site_env: [
+      ["Downloaded", meta.files_downloaded],
+      ["Skipped", meta.files_skipped],
+      ["Bytes", meta.bytes_downloaded, formatBytes],
+      ["Server failures", meta.server_failures],
+    ],
+    pipeline: [
+      ["Segments", meta.indexed_segments],
+      ["Access events", meta.events_inserted],
+      ["Runtime logs", meta.log_events_inserted],
+      ["Security probes", meta.security_probes],
+      ["Errors", meta.error_events],
+      ["Slow", meta.slow_request_events],
+    ],
+    evaluate_alerts: [
+      ["Evaluated", meta.evaluated],
+      ["Upserted", meta.upserted],
+    ],
+    send_notifications: [
+      ["Evaluated", meta.evaluated],
+      ["Sent", meta.sent],
+      ["Skipped", meta.skipped],
+      ["Failed", meta.failed],
+    ],
+    refresh_ip_intel: [
+      ["Refreshed", meta.refreshed],
+      ["Lookup failed", meta.lookup_failed],
+      ["Failed", meta.failed],
+    ],
+    archive_logs: [
+      ["Archives", meta.archives_written],
+      ["Files", meta.files_archived],
+      ["Compressed", meta.compressed_bytes, formatBytes],
+    ],
+    retention: [
+      ["Access deleted", meta.access_events_deleted],
+      ["Raw deleted", meta.raw_files_deleted],
+      ["Segments deleted", meta.combined_segments_deleted],
+    ],
+    generate_llm_reports: [["Generated", meta.generated]],
+  };
+  const chips = (byType[job.type] || genericJobMeta(meta))
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([label, value, formatter]) => `<span>${escapeHTML(label)} ${escapeHTML(formatter ? formatter(value) : formatJobMetaValue(value))}</span>`);
+  return chips.join("") || escapeHTML(job.last_error || "No counters reported");
+}
+
+function genericJobMeta(meta = {}) {
+  return Object.entries(meta)
+    .filter(([key, value]) => !["site_id", "env", "range", "from", "to", "min_severity"].includes(key) && typeof value !== "object")
+    .slice(0, 4)
+    .map(([key, value]) => [formatJobType(key), value]);
+}
+
+function formatJobMetaValue(value) {
+  if (typeof value === "number") return formatNumber(value);
+  const text = String(value ?? "");
+  return /^-?\d+(\.\d+)?$/.test(text) ? formatNumber(text) : text;
+}
+
+function formatDuration(value) {
+  const ms = Number(value || 0);
+  if (!ms) return "-";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds % 60);
+  return `${minutes}m ${rest}s`;
 }
 
 function issueRow(item, index = 0) {
@@ -2869,6 +3039,73 @@ function isPHPPathRow(item) {
 
 function isPHPEventRow(item) {
   return /php|wordpress|wp-|xmlrpc|admin-ajax|wp-json|wp-content|wp-admin/i.test(item.path || "");
+}
+
+function logTotalsFor(types) {
+  const allowed = new Set(types);
+  return (state.data.analysis.log_event_totals || []).filter((item) => allowed.has(item.log_type));
+}
+
+function logEventsFor(types) {
+  const allowed = new Set(types);
+  return filtered(searchItems((state.data.analysis.log_events || []).filter((item) => allowed.has(item.log_type)), logEventSearchText));
+}
+
+function logMessagesFor(types) {
+  const allowed = new Set(types);
+  return filtered(searchItems((state.data.analysis.log_messages || []).filter((item) => allowed.has(item.log_type)), logMessageSearchText));
+}
+
+function logTypeTotal(totals, type) {
+  return totals.filter((item) => item.log_type === type).reduce((count, item) => count + Number(item.events || 0), 0);
+}
+
+function severeLogTotal(totals) {
+  return totals
+    .filter((item) => isSevereLog(item.severity, item.log_type))
+    .reduce((count, item) => count + Number(item.events || 0), 0);
+}
+
+function isSevereLog(severity, logType = "") {
+  return /fatal|panic|emerg|alert|crit|critical|error/i.test(`${severity || ""} ${logType || ""}`);
+}
+
+function logSeverityClass(severity, logType = "") {
+  if (isSevereLog(severity, logType)) return "critical";
+  if (/warn/i.test(severity || "")) return "high";
+  if (/slow/i.test(logType || "")) return "medium";
+  return "low";
+}
+
+function logSeverityLabel(logType = "") {
+  if (/error/i.test(logType)) return "error";
+  if (/slow/i.test(logType)) return "slow";
+  return "info";
+}
+
+function logTypeLabel(value) {
+  const labels = {
+    "nginx-error": "Nginx error",
+    "php-error": "PHP error",
+    "php-slow": "PHP slow",
+    mysql: "MySQL error",
+    "mysql-slow": "MySQL slow",
+  };
+  return labels[value] || readableToken(value || "log");
+}
+
+function shortLogMessage(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "No message";
+  return text.length > 180 ? `${text.slice(0, 177)}...` : text;
+}
+
+function logEventSearchText(item) {
+  return `${item.ts || ""} ${item.site_id || ""} ${item.env || ""} ${item.container_id || ""} ${item.log_type || ""} ${item.severity || ""} ${item.message || ""} ${item.raw || ""}`;
+}
+
+function logMessageSearchText(item) {
+  return `${item.log_type || ""} ${item.severity || ""} ${item.message || ""} ${item.sites || ""}`;
 }
 
 function userAgentsFromEvents(events) {

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -47,6 +48,28 @@ func TestPipelineRequestOptionsIncludesIndexWorkers(t *testing.T) {
 	}
 	if opts.TriggeredBy != "api" {
 		t.Fatalf("TriggeredBy = %q, want api", opts.TriggeredBy)
+	}
+}
+
+func TestRootHealthAliasReturnsJSON(t *testing.T) {
+	handler := NewRouter(Dependencies{})
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if contentType := rec.Header().Get("Content-Type"); contentType != "application/json" {
+		t.Fatalf("content-type = %q, want application/json", contentType)
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode health response: %v", err)
+	}
+	if body["service"] != "originpulse" {
+		t.Fatalf("service = %#v, want originpulse", body["service"])
 	}
 }
 

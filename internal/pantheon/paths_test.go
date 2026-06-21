@@ -61,3 +61,25 @@ func TestAppendableLocalSize(t *testing.T) {
 		t.Fatal("same-size active log should not be appendable")
 	}
 }
+
+func TestDownloadStatsAddIncludesServerCounts(t *testing.T) {
+	stats := DownloadStats{FilesSeen: 1, FilesDownloaded: 1, ServersAttempted: 1, ServersSucceeded: 1}
+	stats.add(DownloadStats{
+		FilesSeen:        2,
+		FilesSkipped:     2,
+		BytesDownloaded:  42,
+		ServersAttempted: 2,
+		ServersFailed:    1,
+		ServerErrors:     []string{"appserver failed"},
+	})
+
+	if stats.FilesSeen != 3 || stats.FilesDownloaded != 1 || stats.FilesSkipped != 2 || stats.BytesDownloaded != 42 {
+		t.Fatalf("file stats = %#v, want merged counters", stats)
+	}
+	if stats.ServersAttempted != 3 || stats.ServersSucceeded != 1 || stats.ServersFailed != 1 {
+		t.Fatalf("server stats = %#v, want attempted=3 succeeded=1 failed=1", stats)
+	}
+	if len(stats.ServerErrors) != 1 || stats.ServerErrors[0] != "appserver failed" {
+		t.Fatalf("server errors = %#v, want one preserved error", stats.ServerErrors)
+	}
+}

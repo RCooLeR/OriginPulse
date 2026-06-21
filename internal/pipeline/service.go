@@ -29,24 +29,25 @@ type Options struct {
 }
 
 type Result struct {
-	From             time.Time         `json:"from,omitempty"`
-	To               time.Time         `json:"to,omitempty"`
-	LogTypes         []string          `json:"log_types"`
-	CombinedSegments int               `json:"combined_segments"`
-	LinesCombined    int               `json:"lines_combined"`
-	LinesQuarantined int               `json:"lines_quarantined"`
-	IndexedSegments  int               `json:"indexed_segments"`
-	EventsInserted   int               `json:"events_inserted"`
-	EventsStored     int               `json:"events_stored"`
-	EventsSkipped    int               `json:"events_skipped"`
-	RollupsUpdated   int               `json:"rollups_updated"`
-	RollupsRepaired  int               `json:"rollups_repaired"`
-	RollupsRecovered int               `json:"rollups_recovered"`
-	SecurityProbes   int               `json:"security_probes"`
-	ErrorEvents      int               `json:"error_events"`
-	SlowRequests     int               `json:"slow_request_events"`
-	CombineResults   []combiner.Result `json:"combine_results,omitempty"`
-	IndexResults     []indexer.Result  `json:"index_results,omitempty"`
+	From              time.Time         `json:"from,omitempty"`
+	To                time.Time         `json:"to,omitempty"`
+	LogTypes          []string          `json:"log_types"`
+	CombinedSegments  int               `json:"combined_segments"`
+	LinesCombined     int               `json:"lines_combined"`
+	LinesQuarantined  int               `json:"lines_quarantined"`
+	IndexedSegments   int               `json:"indexed_segments"`
+	EventsInserted    int               `json:"events_inserted"`
+	LogEventsInserted int               `json:"log_events_inserted"`
+	EventsStored      int               `json:"events_stored"`
+	EventsSkipped     int               `json:"events_skipped"`
+	RollupsUpdated    int               `json:"rollups_updated"`
+	RollupsRepaired   int               `json:"rollups_repaired"`
+	RollupsRecovered  int               `json:"rollups_recovered"`
+	SecurityProbes    int               `json:"security_probes"`
+	ErrorEvents       int               `json:"error_events"`
+	SlowRequests      int               `json:"slow_request_events"`
+	CombineResults    []combiner.Result `json:"combine_results,omitempty"`
+	IndexResults      []indexer.Result  `json:"index_results,omitempty"`
 }
 
 type Service struct {
@@ -80,7 +81,7 @@ func (s *Service) Run(ctx context.Context, opts Options) (Result, error) {
 		return Result{}, fmt.Errorf("pipeline requires a valid from/to range")
 	}
 
-	meta := map[string]string{
+	meta := map[string]any{
 		"from": opts.From.Format(time.RFC3339),
 		"to":   opts.To.Format(time.RFC3339),
 	}
@@ -104,10 +105,27 @@ func (s *Service) Run(ctx context.Context, opts Options) (Result, error) {
 		if err != nil {
 			s.jobs.Finish(job.ID, jobs.StatusFailed, "pipeline failed", err)
 		} else {
-			s.jobs.Finish(job.ID, jobs.StatusSuccess, "pipeline completed", nil)
+			s.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, "pipeline completed", nil, resultJobMeta(result))
 		}
 	}
 	return result, err
+}
+
+func resultJobMeta(result Result) map[string]any {
+	return map[string]any{
+		"combined_segments":   result.CombinedSegments,
+		"indexed_segments":    result.IndexedSegments,
+		"events_inserted":     result.EventsInserted,
+		"log_events_inserted": result.LogEventsInserted,
+		"events_stored":       result.EventsStored,
+		"events_skipped":      result.EventsSkipped,
+		"rollups_updated":     result.RollupsUpdated,
+		"rollups_repaired":    result.RollupsRepaired,
+		"rollups_recovered":   result.RollupsRecovered,
+		"security_probes":     result.SecurityProbes,
+		"error_events":        result.ErrorEvents,
+		"slow_request_events": result.SlowRequests,
+	}
 }
 
 func (s *Service) RunRecent(ctx context.Context, triggeredBy string) (Result, error) {
@@ -168,13 +186,14 @@ func (s *Service) run(ctx context.Context, opts Options) (Result, error) {
 		result.IndexResults = append(result.IndexResults, indexResult)
 		result.IndexedSegments++
 		result.EventsInserted += indexResult.EventsInserted
+		result.LogEventsInserted += indexResult.LogEventsInserted
 		result.EventsStored += indexResult.EventsStored
 		result.EventsSkipped += indexResult.EventsSkipped
 		result.RollupsUpdated += indexResult.RollupsUpdated
 		result.SecurityProbes += indexResult.SecurityProbes
 		result.ErrorEvents += indexResult.ErrorEvents
 		result.SlowRequests += indexResult.SlowRequestEvents
-		if !indexResult.RangeStart.IsZero() && !indexResult.RangeEnd.IsZero() {
+		if indexResult.LogType == "nginx-access" && !indexResult.RangeStart.IsZero() && !indexResult.RangeEnd.IsZero() {
 			if repairStart.IsZero() || indexResult.RangeStart.Before(repairStart) {
 				repairStart = indexResult.RangeStart
 			}
@@ -182,7 +201,7 @@ func (s *Service) run(ctx context.Context, opts Options) (Result, error) {
 				repairEnd = indexResult.RangeEnd
 			}
 		}
-		if indexResult.SegmentID != "" && !indexResult.AlreadyIndexed {
+		if indexResult.LogType == "nginx-access" && indexResult.SegmentID != "" && !indexResult.AlreadyIndexed {
 			repairedSegmentIDs = append(repairedSegmentIDs, indexResult.SegmentID)
 		}
 	}
@@ -197,12 +216,14 @@ func (s *Service) run(ctx context.Context, opts Options) (Result, error) {
 		result.RollupsRepaired = repaired
 		result.RollupsUpdated += repaired
 	}
-	recovered, err := s.indexer.RepairUnbackfilledRollups(ctx)
-	if err != nil {
-		return result, err
+	if hasAccessLogType(opts.LogTypes) {
+		recovered, err := s.indexer.RepairUnbackfilledRollups(ctx)
+		if err != nil {
+			return result, err
+		}
+		result.RollupsRecovered = recovered
+		result.RollupsUpdated += recovered
 	}
-	result.RollupsRecovered = recovered
-	result.RollupsUpdated += recovered
 	if indexErr != nil {
 		return result, indexErr
 	}
@@ -214,6 +235,7 @@ func (s *Service) run(ctx context.Context, opts Options) (Result, error) {
 		Int("indexed_segments", result.IndexedSegments).
 		Int("index_workers", opts.IndexWorkers).
 		Int("events_inserted", result.EventsInserted).
+		Int("log_events_inserted", result.LogEventsInserted).
 		Int("rollups_repaired", result.RollupsRepaired).
 		Int("rollups_recovered", result.RollupsRecovered).
 		Int("security_probes", result.SecurityProbes).
@@ -222,6 +244,15 @@ func (s *Service) run(ctx context.Context, opts Options) (Result, error) {
 		Msg("pipeline completed")
 
 	return result, nil
+}
+
+func hasAccessLogType(logTypes []string) bool {
+	for _, logType := range logTypes {
+		if logType == "nginx-access" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) normalizeOptions(opts Options) Options {
@@ -238,7 +269,10 @@ func (s *Service) normalizeOptions(opts Options) Options {
 		opts.IndexWorkers = opts.MaxSegments
 	}
 	if len(opts.LogTypes) == 0 {
-		opts.LogTypes = []string{"nginx-access"}
+		opts.LogTypes = append([]string(nil), s.cfg.Collection.LogTypes...)
+		if len(opts.LogTypes) == 0 {
+			opts.LogTypes = []string{"nginx-access"}
+		}
 	}
 	for i := range opts.LogTypes {
 		if opts.LogTypes[i] == "" {

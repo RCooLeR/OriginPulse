@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,16 +21,16 @@ const (
 )
 
 type Job struct {
-	ID          string            `json:"id"`
-	Type        string            `json:"type"`
-	Status      Status            `json:"status"`
-	Message     string            `json:"message,omitempty"`
-	Meta        map[string]string `json:"meta,omitempty"`
-	StartedAt   time.Time         `json:"started_at"`
-	FinishedAt  *time.Time        `json:"finished_at,omitempty"`
-	DurationMS  int64             `json:"duration_ms,omitempty"`
-	LastError   string            `json:"last_error,omitempty"`
-	TriggeredBy string            `json:"triggered_by,omitempty"`
+	ID          string         `json:"id"`
+	Type        string         `json:"type"`
+	Status      Status         `json:"status"`
+	Message     string         `json:"message,omitempty"`
+	Meta        map[string]any `json:"meta,omitempty"`
+	StartedAt   time.Time      `json:"started_at"`
+	FinishedAt  *time.Time     `json:"finished_at,omitempty"`
+	DurationMS  int64          `json:"duration_ms,omitempty"`
+	LastError   string         `json:"last_error,omitempty"`
+	TriggeredBy string         `json:"triggered_by,omitempty"`
 }
 
 type Page struct {
@@ -58,7 +59,7 @@ func NewStore(limit int, stores ...*db.Store) *Store {
 	return &Store{limit: limit, db: store}
 }
 
-func (s *Store) Start(ctx context.Context, jobType string, triggeredBy string, meta map[string]string) Job {
+func (s *Store) Start(ctx context.Context, jobType string, triggeredBy string, meta map[string]any) Job {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -81,6 +82,10 @@ func (s *Store) Start(ctx context.Context, jobType string, triggeredBy string, m
 }
 
 func (s *Store) Finish(id string, status Status, message string, err error) {
+	s.FinishWithMeta(id, status, message, err, nil)
+}
+
+func (s *Store) FinishWithMeta(id string, status Status, message string, err error, meta map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -89,8 +94,12 @@ func (s *Store) Finish(id string, status Status, message string, err error) {
 		if s.jobs[i].ID != id {
 			continue
 		}
+		now = clampFinishTime(s.jobs[i].StartedAt, now)
 		s.jobs[i].Status = status
 		s.jobs[i].Message = message
+		if len(meta) > 0 {
+			s.jobs[i].Meta = mergeMeta(s.jobs[i].Meta, meta)
+		}
 		s.jobs[i].FinishedAt = &now
 		s.jobs[i].DurationMS = now.Sub(s.jobs[i].StartedAt).Milliseconds()
 		if err != nil {
@@ -99,6 +108,13 @@ func (s *Store) Finish(id string, status Status, message string, err error) {
 		_ = s.updateJob(context.Background(), s.jobs[i])
 		return
 	}
+}
+
+func clampFinishTime(startedAt time.Time, finishedAt time.Time) time.Time {
+	if !startedAt.IsZero() && finishedAt.Before(startedAt) {
+		return startedAt
+	}
+	return finishedAt
 }
 
 func (s *Store) Recent(limit int) []Job {
@@ -130,27 +146,106 @@ func (s *Store) RecentPage(limit int, offset int) Page {
 }
 
 func (s *Store) Stats() map[Status]int {
+	if stats, ok := s.statsFromDB(context.Background()); ok {
+		return stats
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	return statsFromJobs(s.jobs)
+}
+
+func statsFromJobs(jobs []Job) map[Status]int {
 	stats := map[Status]int{
 		StatusRunning: 0,
 		StatusSkipped: 0,
 		StatusSuccess: 0,
 		StatusFailed:  0,
 	}
-	for _, job := range s.jobs {
+	for _, job := range jobs {
 		stats[job.Status]++
 	}
 	return stats
 }
 
-func cloneMeta(meta map[string]string) map[string]string {
+func (s *Store) statsFromDB(ctx context.Context) (map[Status]int, bool) {
+	if !s.dbEnabled() {
+		return nil, false
+	}
+	pool, err := s.db.Pool()
+	if err != nil {
+		return nil, false
+	}
+	rows, err := pool.Query(ctx, `
+WITH recent AS (
+  SELECT status
+  FROM job_runs
+  ORDER BY started_at DESC
+  LIMIT $1
+)
+SELECT status, count(*)::int
+FROM recent
+GROUP BY status`, s.limit)
+	if err != nil {
+		return nil, false
+	}
+	defer rows.Close()
+
+	stats := statsFromJobs(nil)
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, false
+		}
+		stats[Status(status)] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false
+	}
+	return stats, true
+}
+
+func (s *Store) MarkRunningInterrupted(ctx context.Context, reason string) error {
+	if !s.dbEnabled() {
+		return nil
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "interrupted by application restart"
+	}
+	pool, err := s.db.Pool()
+	if err != nil {
+		return err
+	}
+	_, err = pool.Exec(ctx, `
+UPDATE job_runs
+SET status = 'failed',
+    message = $1,
+    finished_at = now(),
+    duration_ms = greatest(0, floor(extract(epoch from (now() - started_at)) * 1000)::bigint),
+    last_error = $1
+WHERE status = 'running'`, reason)
+	return err
+}
+
+func cloneMeta(meta map[string]any) map[string]any {
 	if len(meta) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(meta))
+	out := make(map[string]any, len(meta))
 	for key, value := range meta {
+		out[key] = value
+	}
+	return out
+}
+
+func mergeMeta(base map[string]any, updates map[string]any) map[string]any {
+	out := cloneMeta(base)
+	if out == nil {
+		out = map[string]any{}
+	}
+	for key, value := range updates {
 		out[key] = value
 	}
 	return out
@@ -284,18 +379,18 @@ LIMIT $1 OFFSET $2`, limit, offset)
 	return jobs, total, true
 }
 
-func emptyMeta(meta map[string]string) map[string]string {
+func emptyMeta(meta map[string]any) map[string]any {
 	if meta == nil {
-		return map[string]string{}
+		return map[string]any{}
 	}
 	return meta
 }
 
-func decodeMeta(raw []byte) map[string]string {
+func decodeMeta(raw []byte) map[string]any {
 	if len(raw) == 0 {
 		return nil
 	}
-	var meta map[string]string
+	var meta map[string]any
 	if err := json.Unmarshal(raw, &meta); err != nil || len(meta) == 0 {
 		return nil
 	}

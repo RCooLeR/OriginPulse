@@ -809,6 +809,23 @@ td {
   font-size: 0.7rem !important;
 }
 
+.job-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.job-meta span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 7px;
+  border: 1px solid rgba(72, 103, 136, 0.45);
+  border-radius: 6px;
+  color: var(--text);
+  background: rgba(10, 25, 43, 0.72);
+}
+
 .status,
 .severity {
   display: inline-flex;

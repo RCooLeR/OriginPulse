@@ -40,6 +40,7 @@ type Options struct {
 type Result struct {
 	SegmentID          string    `json:"segment_id,omitempty"`
 	SegmentPath        string    `json:"segment_path"`
+	LogType            string    `json:"log_type,omitempty"`
 	SegmentStatus      string    `json:"segment_status,omitempty"`
 	AlreadyIndexed     bool      `json:"already_indexed"`
 	EventsSeen         int       `json:"events_seen"`
@@ -51,6 +52,7 @@ type Result struct {
 	EventsConflicted   int       `json:"events_conflicted"`
 	EventsStored       int       `json:"events_stored"`
 	EventsSkipped      int       `json:"events_skipped"`
+	LogEventsInserted  int       `json:"log_events_inserted"`
 	RollupsUpdated     int       `json:"rollups_updated"`
 	SecurityProbes     int       `json:"security_probes"`
 	ErrorEvents        int       `json:"error_events"`
@@ -111,6 +113,13 @@ type parsedSegmentEvent struct {
 	Dimensions    dimensionIDs
 }
 
+type parsedLogEvent struct {
+	LineNo       int64
+	CombinedLine combiner.CombinedLine
+	Event        parser.LogEvent
+	Fingerprint  []byte
+}
+
 type dimensionStat struct {
 	Value string
 	Hash  []byte
@@ -144,6 +153,17 @@ func (s *Service) IndexSegment(ctx context.Context, opts Options) (Result, error
 		return Result{}, err
 	}
 
+	if segment.LogType != "nginx-access" {
+		result := Result{
+			SegmentID:     segment.ID,
+			SegmentPath:   segmentPath,
+			SegmentStatus: segment.Status,
+			RangeStart:    segment.BucketStart,
+			RangeEnd:      segment.BucketEnd,
+		}
+		return s.indexLogSegment(ctx, pool, segment, opts, result)
+	}
+
 	storedBefore, err := s.countEventsForSegment(ctx, pool, segment.ID)
 	if err != nil {
 		return Result{}, err
@@ -153,6 +173,7 @@ func (s *Service) IndexSegment(ctx context.Context, opts Options) (Result, error
 	result := Result{
 		SegmentID:          segment.ID,
 		SegmentPath:        segmentPath,
+		LogType:            segment.LogType,
 		SegmentStatus:      segment.Status,
 		AlreadyIndexed:     alreadyIndexed,
 		EventsStoredBefore: int(storedBefore),
@@ -206,6 +227,47 @@ WHERE segment_id = $1::uuid`, segment.ID); err != nil {
 		}
 	}
 
+	if _, err := pool.Exec(ctx, `UPDATE combined_segments SET indexed_at = now(), status = 'indexed' WHERE id = $1`, segment.ID); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (s *Service) indexLogSegment(ctx context.Context, pool *pgxpool.Pool, segment combiner.SegmentManifest, opts Options, result Result) (Result, error) {
+	storedBefore, err := s.countLogEventsForSegment(ctx, pool, segment.ID)
+	if err != nil {
+		return result, err
+	}
+	result.EventsStoredBefore = int(storedBefore)
+	result.AlreadyIndexed = !opts.Force && segment.Status == "indexed" && (segment.LineCount == 0 || storedBefore > 0)
+
+	events, seen, invalid, err := s.parseSegmentLogEvents(ctx, segment.Path, segment.LogType)
+	if err != nil {
+		return result, err
+	}
+	result.EventsSeen = seen
+	result.InvalidEvents = invalid
+	result.ValidEvents = len(events)
+	if result.AlreadyIndexed {
+		result.EventsSkipped = result.EventsSeen
+		return result, nil
+	}
+
+	inserted, conflicted, deleted, err := s.bulkStoreLogEvents(ctx, pool, segment.ID, events, "", time.Time{}, true)
+	if err != nil {
+		return result, err
+	}
+	result.EventsInserted = inserted
+	result.LogEventsInserted = inserted
+	result.EventsConflicted = conflicted
+	result.EventsDeleted = deleted
+	result.EventsSkipped = invalid + conflicted
+
+	storedCount, err := s.countLogEventsForSegment(ctx, pool, segment.ID)
+	if err != nil {
+		return result, err
+	}
+	result.EventsStored = int(storedCount)
 	if _, err := pool.Exec(ctx, `UPDATE combined_segments SET indexed_at = now(), status = 'indexed' WHERE id = $1`, segment.ID); err != nil {
 		return result, err
 	}
@@ -426,6 +488,78 @@ func parseCombinedEvents(ctx context.Context, reader io.Reader) ([]parsedSegment
 	return events, seen, invalid, nil
 }
 
+func (s *Service) parseSegmentLogEvents(ctx context.Context, segmentPath string, logType string) ([]parsedLogEvent, int, int, error) {
+	file, err := os.Open(segmentPath)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	defer file.Close()
+
+	gzipReader, err := gzip.NewReader(file)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	defer gzipReader.Close()
+
+	return parseCombinedLogEvents(ctx, gzipReader, logType)
+}
+
+func parseCombinedLogEvents(ctx context.Context, reader io.Reader, logType string) ([]parsedLogEvent, int, int, error) {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 128*1024), 10*1024*1024)
+	events := make([]parsedLogEvent, 0, 4096)
+	seen := 0
+	invalid := 0
+	var segmentLineNo int64
+	for scanner.Scan() {
+		segmentLineNo++
+		select {
+		case <-ctx.Done():
+			return nil, seen, invalid, ctx.Err()
+		default:
+		}
+
+		var combinedLine combiner.CombinedLine
+		if err := json.Unmarshal(scanner.Bytes(), &combinedLine); err != nil {
+			invalid++
+			continue
+		}
+		seen++
+		parsed, err := parser.ParseLogLine(combinedLine.Raw, logType)
+		if err != nil {
+			ts, tsErr := time.Parse(time.RFC3339Nano, combinedLine.TS)
+			if tsErr != nil {
+				invalid++
+				continue
+			}
+			parsed = parser.LogEvent{
+				TS:       ts.UTC(),
+				LogType:  logType,
+				Severity: "info",
+				Message:  strings.TrimSpace(combinedLine.Raw),
+				Raw:      combinedLine.Raw,
+			}
+		}
+		parsed.Message = cleanText(parsed.Message)
+		parsed.Raw = cleanText(parsed.Raw)
+
+		fingerprint, err := hex.DecodeString(combinedLine.Fingerprint)
+		if err != nil {
+			return nil, seen, invalid, err
+		}
+		events = append(events, parsedLogEvent{
+			LineNo:       segmentLineNo,
+			CombinedLine: combinedLine,
+			Event:        parsed,
+			Fingerprint:  fingerprint,
+		})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, seen, invalid, err
+	}
+	return events, seen, invalid, nil
+}
+
 func (s *Service) bulkStoreSegmentEvents(ctx context.Context, pool *pgxpool.Pool, segmentID string, events []parsedSegmentEvent) (int, int, int, int, int, int, error) {
 	return s.bulkStoreEvents(ctx, pool, segmentID, events, "", time.Time{}, true)
 }
@@ -482,6 +616,99 @@ func (s *Service) bulkStoreEvents(ctx context.Context, pool *pgxpool.Pool, segme
 		return inserted, conflicted, deleted, securityProbes, errorFacts, slowFacts, err
 	}
 	return inserted, conflicted, deleted, securityProbes, errorFacts, slowFacts, nil
+}
+
+func (s *Service) bulkStoreLogEvents(ctx context.Context, pool *pgxpool.Pool, segmentID string, events []parsedLogEvent, temporaryImportID string, importedUntil time.Time, deleteExistingSegment bool) (int, int, int, error) {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer conn.Release()
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	deleted := 0
+	if deleteExistingSegment {
+		tag, err := tx.Exec(ctx, `DELETE FROM log_events WHERE segment_id = $1::uuid`, segmentID)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		deleted = int(tag.RowsAffected())
+	}
+	if len(events) == 0 {
+		if err := tx.Commit(ctx); err != nil {
+			return 0, 0, deleted, err
+		}
+		return 0, 0, deleted, nil
+	}
+
+	if _, err := tx.Exec(ctx, `
+CREATE TEMP TABLE tmp_log_events (
+  ts timestamptz NOT NULL,
+  site_id text NOT NULL,
+  env text NOT NULL,
+  container_id text NOT NULL,
+  log_type text NOT NULL,
+  severity text,
+  message text NOT NULL,
+  raw text NOT NULL,
+  fingerprint bytea NOT NULL,
+  segment_line_no bigint NOT NULL,
+  raw_file_id text,
+  raw_line_no bigint
+) ON COMMIT DROP`); err != nil {
+		return 0, 0, deleted, err
+	}
+
+	rows := make([][]any, 0, len(events))
+	for _, event := range events {
+		rows = append(rows, []any{
+			event.Event.TS,
+			event.CombinedLine.SiteID,
+			event.CombinedLine.Env,
+			event.CombinedLine.ContainerID,
+			event.Event.LogType,
+			event.Event.Severity,
+			event.Event.Message,
+			event.Event.Raw,
+			event.Fingerprint,
+			event.LineNo,
+			event.CombinedLine.RawFileID,
+			event.CombinedLine.RawLineNo,
+		})
+	}
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"tmp_log_events"}, []string{
+		"ts", "site_id", "env", "container_id", "log_type", "severity", "message", "raw", "fingerprint", "segment_line_no", "raw_file_id", "raw_line_no",
+	}, pgx.CopyFromRows(rows)); err != nil {
+		return 0, 0, deleted, err
+	}
+
+	var importedUntilValue any
+	if !importedUntil.IsZero() {
+		importedUntilValue = importedUntil.UTC()
+	}
+	tag, err := tx.Exec(ctx, `
+INSERT INTO log_events (
+  ts, site_id, env, container_id, log_type, severity, message, raw, fingerprint,
+  segment_id, segment_line_no, raw_file_id, raw_line_no, temporary_import_id, imported_until
+)
+SELECT ts, site_id, env, container_id, log_type, nullif(severity, ''), message, raw, fingerprint,
+       $1::uuid, segment_line_no, nullif(raw_file_id, '')::uuid, raw_line_no, nullif($2, '')::uuid, $3::timestamptz
+FROM tmp_log_events
+ON CONFLICT (fingerprint, ts) DO NOTHING`, segmentID, temporaryImportID, importedUntilValue)
+	if err != nil {
+		return 0, 0, deleted, err
+	}
+	inserted := int(tag.RowsAffected())
+	conflicted := len(events) - inserted
+	if err := tx.Commit(ctx); err != nil {
+		return inserted, conflicted, deleted, err
+	}
+	return inserted, conflicted, deleted, nil
 }
 
 func (s *Service) bulkResolveDimensions(ctx context.Context, tx pgx.Tx, events []parsedSegmentEvent) error {
@@ -1012,6 +1239,12 @@ WHERE path = $1`, path,
 func (s *Service) countEventsForSegment(ctx context.Context, pool *pgxpool.Pool, segmentID string) (int64, error) {
 	var count int64
 	err := pool.QueryRow(ctx, `SELECT count(*)::bigint FROM access_events WHERE segment_id = $1::uuid`, segmentID).Scan(&count)
+	return count, err
+}
+
+func (s *Service) countLogEventsForSegment(ctx context.Context, pool *pgxpool.Pool, segmentID string) (int64, error) {
+	var count int64
+	err := pool.QueryRow(ctx, `SELECT count(*)::bigint FROM log_events WHERE segment_id = $1::uuid`, segmentID).Scan(&count)
 	return count, err
 }
 

@@ -39,8 +39,13 @@ func TestNormalizeOptionsDefaults(t *testing.T) {
 	if opts.IndexWorkers != config.Default().Pipeline.IndexWorkers {
 		t.Fatalf("IndexWorkers = %d, want default %d", opts.IndexWorkers, config.Default().Pipeline.IndexWorkers)
 	}
-	if len(opts.LogTypes) != 1 || opts.LogTypes[0] != "nginx-access" {
-		t.Fatalf("LogTypes = %#v, want nginx-access", opts.LogTypes)
+	if len(opts.LogTypes) != len(config.Default().Collection.LogTypes) {
+		t.Fatalf("LogTypes = %#v, want configured collection log types", opts.LogTypes)
+	}
+	for i, logType := range config.Default().Collection.LogTypes {
+		if opts.LogTypes[i] != logType {
+			t.Fatalf("LogTypes = %#v, want configured collection log types", opts.LogTypes)
+		}
 	}
 }
 
@@ -66,5 +71,31 @@ func TestRecentOptionsPreservePipelineControls(t *testing.T) {
 	}
 	if len(normalized.LogTypes) != 2 {
 		t.Fatalf("LogTypes = %#v, want 2 entries", normalized.LogTypes)
+	}
+}
+
+func TestResultJobMetaIncludesPipelineCounters(t *testing.T) {
+	meta := resultJobMeta(Result{
+		CombinedSegments:  2,
+		IndexedSegments:   3,
+		EventsInserted:    5,
+		LogEventsInserted: 7,
+		RollupsRepaired:   11,
+		SecurityProbes:    13,
+		ErrorEvents:       17,
+		SlowRequests:      19,
+	})
+
+	if meta["combined_segments"] != 2 || meta["indexed_segments"] != 3 {
+		t.Fatalf("segment counters = %#v", meta)
+	}
+	if meta["events_inserted"] != 5 || meta["log_events_inserted"] != 7 {
+		t.Fatalf("event counters = %#v", meta)
+	}
+	if meta["rollups_repaired"] != 11 || meta["security_probes"] != 13 {
+		t.Fatalf("analysis counters = %#v", meta)
+	}
+	if meta["error_events"] != 17 || meta["slow_request_events"] != 19 {
+		t.Fatalf("signal counters = %#v", meta)
 	}
 }

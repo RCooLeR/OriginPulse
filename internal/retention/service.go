@@ -122,8 +122,7 @@ func (s *Service) runLocked(ctx context.Context, result *Result) error {
 		rawFiles, err = s.paths(ctx, `
 SELECT local_path
 FROM raw_files
-WHERE log_type = 'nginx-access'
-  AND remote_mtime < $1`, result.RawFileCutoff)
+WHERE remote_mtime < $1`, result.RawFileCutoff)
 		if err != nil {
 			return err
 		}
@@ -142,8 +141,7 @@ WHERE status = 'ready'
 		combinedFiles, err = s.paths(ctx, `
 SELECT path
 FROM combined_segments
-WHERE log_type = 'nginx-access'
-  AND bucket_end < $1`, result.ArchiveCutoff)
+WHERE bucket_end < $1`, result.ArchiveCutoff)
 		if err != nil {
 			return err
 		}
@@ -152,15 +150,13 @@ WHERE log_type = 'nginx-access'
 	if err := pool.QueryRow(ctx, `
 SELECT count(*)::int, coalesce(sum(remote_size), 0)::bigint
 FROM raw_files
-WHERE log_type = 'nginx-access'
-  AND remote_mtime < $1`, result.RawFileCutoff).Scan(&result.RawFilesMatched, &result.RawBytesMatched); err != nil {
+WHERE remote_mtime < $1`, result.RawFileCutoff).Scan(&result.RawFilesMatched, &result.RawBytesMatched); err != nil {
 		return err
 	}
 	if err := pool.QueryRow(ctx, `
 SELECT count(*)::int
 FROM combined_segments
-WHERE log_type = 'nginx-access'
-  AND bucket_end < $1`, result.ArchiveCutoff).Scan(&result.CombinedSegmentsMatched); err != nil {
+WHERE bucket_end < $1`, result.ArchiveCutoff).Scan(&result.CombinedSegmentsMatched); err != nil {
 		return err
 	}
 	if err := pool.QueryRow(ctx, `
@@ -246,8 +242,7 @@ WHERE created_at < $1`, result.ReportCutoff)
 	if s.cfg.Retention.DeleteCombinedFiles {
 		tag, err = pool.Exec(ctx, `
 DELETE FROM combined_segments
-WHERE log_type = 'nginx-access'
-  AND bucket_end < $1`, result.ArchiveCutoff)
+WHERE bucket_end < $1`, result.ArchiveCutoff)
 		if err != nil {
 			return err
 		}
@@ -257,8 +252,7 @@ WHERE log_type = 'nginx-access'
 	if s.cfg.Retention.DeleteRawFiles {
 		tag, err = pool.Exec(ctx, `
 DELETE FROM raw_files
-WHERE log_type = 'nginx-access'
-  AND remote_mtime < $1`, result.RawFileCutoff)
+WHERE remote_mtime < $1`, result.RawFileCutoff)
 		if err != nil {
 			return err
 		}

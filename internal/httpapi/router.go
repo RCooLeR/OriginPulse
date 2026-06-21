@@ -136,6 +136,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	r.Use(middleware.Recoverer)
 	r.Use(secureHeaders)
 
+	r.Get("/health", api.healthz)
+
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/healthz", api.healthz)
 		r.Get("/auth/me", api.me)

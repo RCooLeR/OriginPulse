@@ -86,9 +86,13 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	}
 
 	store := jobs.NewStore(200, storeDB)
+	if err := store.MarkRunningInterrupted(ctx, "interrupted by application restart"); err != nil {
+		storeDB.Close()
+		return nil, err
+	}
 	rawFiles := pantheon.NewRawFileRepository(storeDB)
 	collector := pantheon.NewCollector(cfg, store, rawFiles)
-	segmentRepo := combiner.NewRepository(storeDB)
+	segmentRepo := combiner.NewRepository(storeDB, cfg.RawDir(), cfg.CombinedDir())
 	combinerService := combiner.NewService(cfg, segmentRepo)
 	indexerService := indexer.NewService(storeDB)
 	pipelineService := pipeline.New(cfg, store, combinerService, segmentRepo, indexerService)

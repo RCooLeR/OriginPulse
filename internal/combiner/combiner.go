@@ -186,6 +186,7 @@ func (s *Service) readSource(ctx context.Context, source RawSource, opts Options
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 128*1024), 10*1024*1024)
 	var rawLineNo int64
+	var lastTS time.Time
 	for scanner.Scan() {
 		rawLineNo++
 		select {
@@ -199,13 +200,19 @@ func (s *Service) readSource(ctx context.Context, source RawSource, opts Options
 			continue
 		}
 
-		ts, err := parser.ParseAccessTimestamp(raw)
+		ts, err := parseSourceTimestamp(raw, source.LogType)
 		if err != nil {
-			result.LinesQuarantined++
-			if qErr := s.quarantine(source, "timestamp_parse_failed", raw); qErr != nil {
-				return qErr
+			if source.LogType != "nginx-access" && !lastTS.IsZero() && isContinuationLogLine(raw) {
+				ts = lastTS
+			} else {
+				result.LinesQuarantined++
+				if qErr := s.quarantine(source, "timestamp_parse_failed", raw); qErr != nil {
+					return qErr
+				}
+				continue
 			}
-			continue
+		} else {
+			lastTS = ts
 		}
 		if ts.Before(opts.From) || !ts.Before(opts.To) {
 			continue
@@ -418,9 +425,26 @@ func detectLogType(path string) string {
 		return "nginx-error"
 	case strings.HasPrefix(lower, "php-error.log"):
 		return "php-error"
+	case strings.HasPrefix(lower, "php-slow.log"):
+		return "php-slow"
+	case strings.HasPrefix(lower, "mysql-slow.log"), strings.HasPrefix(lower, "mysqld-slow-query.log"):
+		return "mysql-slow"
+	case strings.HasPrefix(lower, "mysql.log"), strings.HasPrefix(lower, "mysqld.log"):
+		return "mysql"
 	default:
 		return "unknown"
 	}
+}
+
+func parseSourceTimestamp(raw string, logType string) (time.Time, error) {
+	if logType == "nginx-access" {
+		return parser.ParseAccessTimestamp(raw)
+	}
+	return parser.ParseLogTimestamp(raw)
+}
+
+func isContinuationLogLine(raw string) bool {
+	return strings.TrimSpace(raw) != ""
 }
 
 func statusForBucket(bucketEnd time.Time, finalizeAfter time.Duration) string {

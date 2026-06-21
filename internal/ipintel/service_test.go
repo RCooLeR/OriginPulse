@@ -114,6 +114,18 @@ func TestNormalizeLimitAllowsDeeperRefreshBatches(t *testing.T) {
 	}
 }
 
+func TestRefreshWorkerCount(t *testing.T) {
+	if got := refreshWorkerCount(0); got != 0 {
+		t.Fatalf("refreshWorkerCount(0) = %d, want 0", got)
+	}
+	if got := refreshWorkerCount(3); got != 3 {
+		t.Fatalf("refreshWorkerCount(3) = %d, want 3", got)
+	}
+	if got := refreshWorkerCount(ResultMaxLimit); got != refreshIPWorkerLimit {
+		t.Fatalf("refreshWorkerCount(max) = %d, want %d", got, refreshIPWorkerLimit)
+	}
+}
+
 func TestClassifyReverseDNSServiceFingerprints(t *testing.T) {
 	tests := []struct {
 		name       string

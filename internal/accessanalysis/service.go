@@ -48,6 +48,9 @@ type Report struct {
 	InjectionProbes []AccessProbeSummary `json:"injection_probes"`
 	TorSources      []TorSourceSummary   `json:"tor_sources"`
 	StatusBreakdown []StatusSummary      `json:"status_breakdown"`
+	LogEventTotals  []LogEventTotal      `json:"log_event_totals"`
+	LogMessages     []LogMessageSummary  `json:"log_messages"`
+	LogEvents       []LogEventSummary    `json:"log_events"`
 	Timings         []Timing             `json:"timings,omitempty"`
 }
 
@@ -173,6 +176,35 @@ type StatusSummary struct {
 	Requests int64 `json:"requests"`
 }
 
+type LogEventTotal struct {
+	LogType   string    `json:"log_type"`
+	Severity  string    `json:"severity,omitempty"`
+	Events    int64     `json:"events"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
+}
+
+type LogMessageSummary struct {
+	LogType   string    `json:"log_type"`
+	Severity  string    `json:"severity,omitempty"`
+	Message   string    `json:"message"`
+	Sites     string    `json:"sites,omitempty"`
+	Events    int64     `json:"events"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
+}
+
+type LogEventSummary struct {
+	TS          time.Time `json:"ts"`
+	SiteID      string    `json:"site_id"`
+	Env         string    `json:"env"`
+	ContainerID string    `json:"container_id"`
+	LogType     string    `json:"log_type"`
+	Severity    string    `json:"severity,omitempty"`
+	Message     string    `json:"message"`
+	Raw         string    `json:"raw"`
+}
+
 type aggregateCounts struct {
 	Requests         int64
 	Status4xx        int64
@@ -216,6 +248,9 @@ func (s *Service) Analyze(ctx context.Context, opts Options) (Report, error) {
 		InjectionProbes: []AccessProbeSummary{},
 		TorSources:      []TorSourceSummary{},
 		StatusBreakdown: []StatusSummary{},
+		LogEventTotals:  []LogEventTotal{},
+		LogMessages:     []LogMessageSummary{},
+		LogEvents:       []LogEventSummary{},
 	}
 	if err != nil {
 		return report, err
@@ -330,9 +365,15 @@ func (s *Service) Analyze(ctx context.Context, opts Options) (Report, error) {
 	if err := timed("status_breakdown", func() error { return s.loadStatusBreakdown(ctx, &report, statusRollupsReady) }); err != nil {
 		return report, err
 	}
+	if err := timed("log_events", func() error { return s.loadLogEvents(ctx, &report, limit) }); err != nil {
+		return report, err
+	}
 	if err := timed("detect_issues", func() error { return s.detectIssues(ctx, &report, limit, rollupsReady) }); err != nil {
 		return report, err
 	}
+	started = time.Now()
+	report.Issues = append(report.Issues, logEventIssues(report.LogEventTotals)...)
+	recordTiming("detect_log_issues", started)
 	started = time.Now()
 	sortIssues(report.Issues)
 	recordTiming("sort_issues", started)
@@ -1527,6 +1568,92 @@ LIMIT 32`, report.Since, report.Until, report.SiteID, fullStart, fullEnd)
 	return rows.Err()
 }
 
+func (s *Service) loadLogEvents(ctx context.Context, report *Report, limit int) error {
+	pool, err := s.db.Pool()
+	if err != nil {
+		return err
+	}
+
+	totalRows, err := pool.Query(ctx, `
+SELECT log_type,
+       coalesce(severity, ''),
+       count(*)::bigint,
+       min(ts),
+       max(ts)
+FROM log_events
+WHERE ts >= $1 AND ts < $2 AND ($3 = '' OR site_id = $3)
+GROUP BY log_type, coalesce(severity, '')
+ORDER BY count(*) DESC, log_type, coalesce(severity, '')`, report.Since, report.Until, report.SiteID)
+	if err != nil {
+		return err
+	}
+	defer totalRows.Close()
+	for totalRows.Next() {
+		var item LogEventTotal
+		if err := totalRows.Scan(&item.LogType, &item.Severity, &item.Events, &item.FirstSeen, &item.LastSeen); err != nil {
+			return err
+		}
+		report.LogEventTotals = append(report.LogEventTotals, item)
+	}
+	if err := totalRows.Err(); err != nil {
+		return err
+	}
+
+	messageRows, err := pool.Query(ctx, `
+SELECT log_type,
+       coalesce(severity, ''),
+       left(message, 240) AS message,
+       string_agg(DISTINCT site_id, ', ' ORDER BY site_id) AS sites,
+       count(*)::bigint,
+       min(ts),
+       max(ts)
+FROM log_events
+WHERE ts >= $1 AND ts < $2 AND ($3 = '' OR site_id = $3)
+GROUP BY log_type, coalesce(severity, ''), left(message, 240)
+ORDER BY count(*) DESC, max(ts) DESC
+LIMIT $4`, report.Since, report.Until, report.SiteID, limit)
+	if err != nil {
+		return err
+	}
+	defer messageRows.Close()
+	for messageRows.Next() {
+		var item LogMessageSummary
+		if err := messageRows.Scan(&item.LogType, &item.Severity, &item.Message, &item.Sites, &item.Events, &item.FirstSeen, &item.LastSeen); err != nil {
+			return err
+		}
+		report.LogMessages = append(report.LogMessages, item)
+	}
+	if err := messageRows.Err(); err != nil {
+		return err
+	}
+
+	eventRows, err := pool.Query(ctx, `
+SELECT ts,
+       site_id,
+       env,
+       container_id,
+       log_type,
+       coalesce(severity, ''),
+       left(message, 500) AS message,
+       left(raw, 1200) AS raw
+FROM log_events
+WHERE ts >= $1 AND ts < $2 AND ($3 = '' OR site_id = $3)
+ORDER BY ts DESC
+LIMIT $4`, report.Since, report.Until, report.SiteID, limit)
+	if err != nil {
+		return err
+	}
+	defer eventRows.Close()
+	for eventRows.Next() {
+		var item LogEventSummary
+		if err := eventRows.Scan(&item.TS, &item.SiteID, &item.Env, &item.ContainerID, &item.LogType, &item.Severity, &item.Message, &item.Raw); err != nil {
+			return err
+		}
+		report.LogEvents = append(report.LogEvents, item)
+	}
+	return eventRows.Err()
+}
+
 func (s *Service) detectIssues(ctx context.Context, report *Report, limit int, rollupsReady bool) error {
 	report.Issues = append(report.Issues, siteIssues(report.Sites)...)
 	report.Issues = append(report.Issues, sourceIPIssues(report.SourceIPs)...)
@@ -1857,6 +1984,118 @@ func slowPathIssues(paths []SlowPathSummary) []Issue {
 		})
 	}
 	return issues
+}
+
+func logEventIssues(totals []LogEventTotal) []Issue {
+	type aggregate struct {
+		events       int64
+		severeEvents int64
+		firstSeen    time.Time
+		lastSeen     time.Time
+		severities   []string
+	}
+	byType := map[string]*aggregate{}
+	for _, total := range totals {
+		logType := strings.TrimSpace(total.LogType)
+		if logType == "" {
+			continue
+		}
+		item := byType[logType]
+		if item == nil {
+			item = &aggregate{firstSeen: total.FirstSeen, lastSeen: total.LastSeen}
+			byType[logType] = item
+		}
+		item.events += total.Events
+		if isSevereLogSeverity(total.Severity) || strings.Contains(logType, "error") {
+			item.severeEvents += total.Events
+		}
+		if total.Severity != "" {
+			item.severities = append(item.severities, total.Severity)
+		}
+		if item.firstSeen.IsZero() || (!total.FirstSeen.IsZero() && total.FirstSeen.Before(item.firstSeen)) {
+			item.firstSeen = total.FirstSeen
+		}
+		if total.LastSeen.After(item.lastSeen) {
+			item.lastSeen = total.LastSeen
+		}
+	}
+
+	issues := []Issue{}
+	for logType, item := range byType {
+		if item.events == 0 {
+			continue
+		}
+		score := clamp(25+int(min(item.events/1000, 40))+int(min(item.severeEvents/250, 30)), 25, 95)
+		if item.severeEvents == 0 && !strings.Contains(logType, "slow") && item.events < 100 {
+			continue
+		}
+		label := logTypeLabel(logType)
+		severities := uniqueStrings(item.severities)
+		summary := fmt.Sprintf("%s recorded %d events", label, item.events)
+		if item.severeEvents > 0 {
+			summary = fmt.Sprintf("%s recorded %d events, including %d severe/error rows", label, item.events, item.severeEvents)
+		}
+		if len(severities) > 0 {
+			summary = fmt.Sprintf("%s (%s)", summary, strings.Join(severities, ", "))
+		}
+		issues = append(issues, Issue{
+			RuleKey:    strings.ReplaceAll(logType, "-", "_") + "_log_activity",
+			Severity:   severityFor(score),
+			Title:      label + " activity",
+			Summary:    summary,
+			ActorType:  "log_type",
+			ActorValue: logType,
+			Score:      score,
+			Events:     item.events,
+			Rate:       float64(item.severeEvents),
+			FirstSeen:  item.firstSeen,
+			LastSeen:   item.lastSeen,
+		})
+	}
+	return issues
+}
+
+func isSevereLogSeverity(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "alert", "crit", "critical", "emerg", "emergency", "error", "fatal", "panic":
+		return true
+	default:
+		return false
+	}
+}
+
+func logTypeLabel(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "nginx-error":
+		return "Nginx error log"
+	case "php-error":
+		return "PHP error log"
+	case "php-slow":
+		return "PHP slow log"
+	case "mysql":
+		return "MySQL error log"
+	case "mysql-slow":
+		return "MySQL slow query log"
+	default:
+		return strings.ReplaceAll(value, "-", " ") + " log"
+	}
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	result := []string{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func sortIssues(issues []Issue) {
