@@ -31,6 +31,8 @@ type Overview struct {
 	Status5xxRate     float64   `json:"status_5xx_rate"`
 	TopSite           *TopSite  `json:"top_site,omitempty"`
 	TopIP             *TopIP    `json:"top_ip,omitempty"`
+	LatestEventAt     time.Time `json:"latest_event_at,omitempty"`
+	EventLagSeconds   int64     `json:"event_lag_seconds,omitempty"`
 }
 
 type TopSite struct {
@@ -91,6 +93,12 @@ func (s *Service) DashboardOverviewFor(ctx context.Context, opts Options) (Overv
 	if err != nil {
 		return overview, err
 	}
+	if latest, err := latestAccessEvent(ctx, pool, overview.SiteID); err == nil && !latest.IsZero() {
+		overview.LatestEventAt = latest
+		if lag := now.Sub(latest); lag > 0 {
+			overview.EventLagSeconds = int64(lag.Seconds())
+		}
+	}
 	duration := until.Sub(since)
 
 	counts, err := overviewCountsFromMinuteRollups(ctx, pool, since, until, overview.SiteID)
@@ -147,6 +155,18 @@ LIMIT 1`, since, until, overview.SiteID).Scan(&topIP.IP, &topIP.Requests); err =
 	}
 
 	return overview, nil
+}
+
+func latestAccessEvent(ctx context.Context, pool *pgxpool.Pool, siteID string) (time.Time, error) {
+	var latest *time.Time
+	err := pool.QueryRow(ctx, `
+SELECT max(ts)
+FROM access_events
+WHERE ($1 = '' OR site_id = $1)`, siteID).Scan(&latest)
+	if err != nil || latest == nil {
+		return time.Time{}, err
+	}
+	return latest.UTC(), nil
 }
 
 func overviewCountsFromMinuteRollups(ctx context.Context, pool *pgxpool.Pool, since time.Time, until time.Time, siteID string) (overviewCounts, error) {
@@ -345,6 +365,10 @@ func parseRange(value string) (time.Duration, string) {
 	switch value {
 	case "15m":
 		return 15 * time.Minute, "15m"
+	case "30m":
+		return 30 * time.Minute, "30m"
+	case "3h":
+		return 3 * time.Hour, "3h"
 	case "6h":
 		return 6 * time.Hour, "6h"
 	case "24h", "daily", "day":

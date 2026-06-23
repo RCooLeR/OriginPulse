@@ -82,6 +82,11 @@ func (s *Service) FastReadAudit(ctx context.Context, opts FastReadAuditOptions) 
 		return audit, err
 	}
 	audit.OverviewSource = "rollup_1m + minute edge events"
+	if audit.RecentErrorRawGapRows > 0 {
+		audit.RecentErrorsSource = "error_events + raw_gap_rows"
+	} else {
+		audit.RecentErrorsSource = "error_events"
+	}
 	if audit.DimensionRollupsReady {
 		audit.AccessAnalysisSource = "dimension rollups + fact tables + hour edge events"
 		audit.TrafficSource = "dimension/status rollups + fact tables + hour edge events"

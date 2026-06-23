@@ -126,6 +126,28 @@ func (s *Service) Run(ctx context.Context, opts Options) (Result, error) {
 	return result, err
 }
 
+func (s *Service) ReclassifyUserAgents(ctx context.Context, limit int) (int64, error) {
+	if !s.Enabled() {
+		return 0, db.ErrUnavailable
+	}
+	if limit <= 0 {
+		limit = 50000
+	}
+	if limit > 250000 {
+		limit = 250000
+	}
+	var updated int64
+	err := s.db.WithAdvisoryLock(ctx, backfillLockKey, func(ctx context.Context) error {
+		pool, err := s.db.Pool()
+		if err != nil {
+			return err
+		}
+		updated, err = reclassifyUserAgents(ctx, pool, limit)
+		return err
+	})
+	return updated, err
+}
+
 func enrichMissingUserAgents(ctx context.Context, pool *pgxpool.Pool, batchSize int) (int64, error) {
 	if batchSize <= 0 {
 		batchSize = 5000
@@ -172,6 +194,10 @@ LIMIT $1`, batchSize)
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
+	return updateUserAgentEnrichment(ctx, pool, updates)
+}
+
+func updateUserAgentEnrichment(ctx context.Context, pool *pgxpool.Pool, updates [][]any) (int64, error) {
 	if len(updates) == 0 {
 		return 0, nil
 	}
@@ -227,6 +253,47 @@ WHERE d.id = e.id`)
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+func reclassifyUserAgents(ctx context.Context, pool *pgxpool.Pool, limit int) (int64, error) {
+	rows, err := pool.Query(ctx, `
+SELECT id, user_agent, request_count
+FROM dim_user_agents
+ORDER BY last_seen_at DESC NULLS LAST
+LIMIT $1`, limit)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	updates := make([][]any, 0, limit)
+	for rows.Next() {
+		var id int64
+		var sample string
+		var requests int64
+		if err := rows.Scan(&id, &sample, &requests); err != nil {
+			return 0, err
+		}
+		analysis := useragent.Analyze(sample, requests)
+		updates = append(updates, []any{
+			id,
+			analysis.Family,
+			analysis.BrowserFamily,
+			analysis.BrowserVersion,
+			analysis.OSFamily,
+			analysis.OSVersion,
+			analysis.DeviceFamily,
+			analysis.ActorType,
+			analysis.KnownActor,
+			analysis.IsBot,
+			analysis.IsTool,
+			analysis.RiskScore,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	return updateUserAgentEnrichment(ctx, pool, updates)
 }
 
 func (s *Service) runBatch(ctx context.Context, pool *pgxpool.Pool, opts Options) (Result, error) {

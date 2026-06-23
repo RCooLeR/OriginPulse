@@ -11,6 +11,7 @@ func TestDetectLogType(t *testing.T) {
 		"logs/nginx/nginx-access.log":            "nginx-access",
 		"logs/nginx/nginx-access.log-2026.gz":    "nginx-access",
 		"logs/nginx/nginx-error.log":             "nginx-error",
+		"logs/php/php-fpm-error.log-20260623":    "php-error",
 		"logs/php/php-error.log":                 "php-error",
 		"logs/php/php-slow.log-2026-06-17.gz":    "php-slow",
 		"logs/mysql/mysqld-slow-query.log":       "mysql-slow",
@@ -21,6 +22,32 @@ func TestDetectLogType(t *testing.T) {
 		if got := DetectLogType(path); got != expected {
 			t.Fatalf("DetectLogType(%q) = %q, want %q", path, got, expected)
 		}
+	}
+}
+
+func TestDetectLocalLogType(t *testing.T) {
+	cases := map[string]string{
+		"example-dashboard-access.log":  "apache-access",
+		"example-dashboard-error.log.1": "apache-error",
+		"logs/php/php-fpm-error.log-20260623":       "php-error",
+	}
+
+	for path, expected := range cases {
+		if got := DetectLocalLogType(path); got != expected {
+			t.Fatalf("DetectLocalLogType(%q) = %q, want %q", path, got, expected)
+		}
+	}
+}
+
+func TestMatchesLocalFilenameMasks(t *testing.T) {
+	if !matchesLocalFilenameMasks("example-dashboard-access.log", []string{"example-dashboard-*"}) {
+		t.Fatal("expected example mask to match")
+	}
+	if matchesLocalFilenameMasks("other-access.log", []string{"example-dashboard-*"}) {
+		t.Fatal("unexpected match for unrelated log")
+	}
+	if !matchesLocalFilenameMasks("anything.log", nil) {
+		t.Fatal("empty masks should allow recognized files")
 	}
 }
 

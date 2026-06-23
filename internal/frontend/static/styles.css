@@ -243,6 +243,21 @@ button {
   background: var(--red);
 }
 
+.pill.good {
+  color: var(--green);
+  background: rgba(35, 208, 113, 0.12);
+}
+
+.pill.bad {
+  color: var(--red);
+  background: rgba(255, 61, 61, 0.13);
+}
+
+.pill.warn {
+  color: var(--amber);
+  background: rgba(255, 159, 26, 0.13);
+}
+
 .collector-card,
 .panel,
 .metric-card {
@@ -286,6 +301,19 @@ dl {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.collector-card dl div {
+  display: grid;
+  align-items: start;
+  justify-content: start;
+  gap: 4px;
+}
+
+.collector-card dd {
+  color: var(--text);
+  font-weight: 800;
+  line-height: 1.25;
 }
 
 dt {
@@ -404,6 +432,26 @@ dd {
   color: white;
   font-size: 0.78rem;
   font-weight: 800;
+}
+
+.request-activity {
+  min-width: 104px;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 14px;
+  border: 1px solid rgba(0, 200, 255, 0.48);
+  border-radius: 999px;
+  color: #d9f7ff;
+  background: rgba(0, 200, 255, 0.1);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.request-activity i {
+  color: var(--cyan);
 }
 
 .live-pill i,
@@ -574,15 +622,8 @@ dd {
 .metric-trend {
   display: flex;
   align-items: end;
-  justify-content: space-between;
-  gap: 8px;
   color: var(--green);
   font-size: 0.76rem;
-}
-
-.sparkline {
-  width: 76px;
-  height: 32px;
 }
 
 .layout-2 {
@@ -712,6 +753,10 @@ dd {
   padding: 14px;
 }
 
+.query-form {
+  margin: 0;
+}
+
 .query-string {
   min-height: 46px;
   display: flex;
@@ -725,6 +770,20 @@ dd {
   background: #07111f;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   overflow-wrap: anywhere;
+}
+
+.query-string input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  outline: none;
+  font: inherit;
+}
+
+.query-string input::placeholder {
+  color: var(--faint);
 }
 
 .query-string span {
@@ -850,7 +909,43 @@ td {
   border-color: rgba(35, 208, 113, 0.35);
 }
 
-.trusted-ip-badge {
+.ip-link.provider-verified-ip {
+  color: #ff7ad9;
+  background: rgba(255, 122, 217, 0.1);
+  border-color: rgba(255, 122, 217, 0.38);
+}
+
+.ip-link.suspicious-ip {
+  color: var(--amber);
+  background: rgba(255, 159, 26, 0.12);
+  border-color: rgba(255, 159, 26, 0.42);
+}
+
+.ip-status-badge {
+  display: inline-flex;
+  margin-left: 6px;
+  font-size: 0.72em;
+}
+
+.ua-link.verified-ua {
+  color: var(--green);
+  background: rgba(35, 208, 113, 0.1);
+  border-color: rgba(35, 208, 113, 0.35);
+}
+
+.ua-link.official-ua {
+  color: #ff7ad9;
+  background: rgba(255, 122, 217, 0.1);
+  border-color: rgba(255, 122, 217, 0.38);
+}
+
+.ua-link.malicious-ua {
+  color: var(--red);
+  background: rgba(255, 61, 61, 0.12);
+  border-color: rgba(255, 61, 61, 0.42);
+}
+
+.ua-status-badge {
   display: inline-flex;
   margin-left: 6px;
   font-size: 0.72em;

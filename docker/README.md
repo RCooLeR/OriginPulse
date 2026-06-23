@@ -39,6 +39,15 @@ docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpu
 docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse originpulse pipeline -config /app/config.yml -from 2026-06-20T00:00:00Z -to 2026-06-21T00:00:00Z
 ```
 
+For long-run collection checks:
+
+```powershell
+docker compose --env-file docker/.env -f docker/docker-compose.yml ps
+docker compose --env-file docker/.env -f docker/docker-compose.yml logs --tail=120 originpulse
+docker compose --env-file docker/.env -f docker/docker-compose.yml exec postgres psql -U originpulse -d originpulse -c "select count(*) filter (where rollups_1h_backfilled_at is null) as unbackfilled, max(ts) as newest_access_event, now() - max(ts) as lag from access_events;"
+docker compose --env-file docker/.env -f docker/docker-compose.yml exec postgres psql -U originpulse -d originpulse -c "select type,status,started_at,finished_at,duration_ms,message,meta from job_runs order by started_at desc limit 20;"
+```
+
 For host-run development against the Compose Postgres:
 
 ```powershell
@@ -47,8 +56,10 @@ $env:DATABASE_URL='postgres://originpulse:originpulse_dev_password@127.0.0.1:554
 
 ## Persistence
 
-- Postgres data lives in the `originpulse_postgres_data` Docker volume.
-- App runtime files live in the `originpulse_originpulse_data` Docker volume at `/app/data`.
+- Postgres data lives in the `docker_pgdata` Docker volume.
+- App runtime files live in the `docker_originpulse_data` Docker volume at `/app/data`.
 - `config.yml` is mounted read-only from the repository root.
+
+The volume names are explicit so existing local Docker data is reused across Compose project-name changes.
 
 Do not expose Postgres publicly. Back up both Docker volumes for real long-term runs.

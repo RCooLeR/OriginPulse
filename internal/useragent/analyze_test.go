@@ -64,3 +64,31 @@ func TestAnalyzePythonRequestsTool(t *testing.T) {
 		t.Fatalf("tool/bot = %v/%v, want true/false", got.IsTool, got.IsBot)
 	}
 }
+
+func TestAnalyzeKnownMaliciousScanner(t *testing.T) {
+	got := Analyze("sqlmap/1.8.7#stable (https://sqlmap.org)", 1)
+	if got.Family != "sqlmap" || got.ActorType != "malicious" || got.KnownActor != "sqlmap" {
+		t.Fatalf("scanner = %q/%q/%q, want sqlmap/malicious/sqlmap", got.Family, got.ActorType, got.KnownActor)
+	}
+	if got.RiskScore < 90 {
+		t.Fatalf("RiskScore = %d, want high scanner risk", got.RiskScore)
+	}
+}
+
+func TestAnalyzeLegacySearchBots(t *testing.T) {
+	tests := []struct {
+		agent string
+		actor string
+	}{
+		{"Mozilla/5.0 (compatible; Yahoo! Slurp; http://help.yahoo.com/help/us/ysearch/slurp)", "Yahoo"},
+		{"Mozilla/2.0 (compatible; Ask Jeeves/Teoma)", "Ask"},
+		{"Aolbot-News/1.0", "AOL"},
+		{"msnbot/2.0b (+http://search.msn.com/msnbot.htm)", "Bing"},
+	}
+	for _, tt := range tests {
+		got := Analyze(tt.agent, 1)
+		if got.ActorType != "crawler" || got.KnownActor != tt.actor {
+			t.Fatalf("Analyze(%q) = %q/%q, want crawler/%s", tt.agent, got.ActorType, got.KnownActor, tt.actor)
+		}
+	}
+}

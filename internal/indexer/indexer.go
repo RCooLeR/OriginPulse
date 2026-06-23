@@ -153,7 +153,7 @@ func (s *Service) IndexSegment(ctx context.Context, opts Options) (Result, error
 		return Result{}, err
 	}
 
-	if segment.LogType != "nginx-access" {
+	if !isAccessLogType(segment.LogType) {
 		result := Result{
 			SegmentID:     segment.ID,
 			SegmentPath:   segmentPath,
@@ -222,7 +222,8 @@ func (s *Service) IndexSegment(ctx context.Context, opts Options) (Result, error
 		if _, err := pool.Exec(ctx, `
 UPDATE access_events
 SET rollups_1h_backfilled_at = now()
-WHERE segment_id = $1::uuid`, segment.ID); err != nil {
+WHERE segment_id = $1::uuid
+  AND rollups_1h_backfilled_at IS NULL`, segment.ID); err != nil {
 			return result, err
 		}
 	}
@@ -335,7 +336,8 @@ func (s *Service) ImportTemporaryCombinedGzip(ctx context.Context, opts Temporar
 		if _, err := pool.Exec(ctx, `
 UPDATE access_events
 SET rollups_1h_backfilled_at = now()
-WHERE temporary_import_id = $1::uuid`, opts.TemporaryImportID); err != nil {
+WHERE temporary_import_id = $1::uuid
+  AND rollups_1h_backfilled_at IS NULL`, opts.TemporaryImportID); err != nil {
 			return result, err
 		}
 	}
@@ -370,7 +372,8 @@ func (s *Service) RebuildRollups(ctx context.Context, start time.Time, end time.
 	if _, err := pool.Exec(ctx, `
 UPDATE access_events
 SET rollups_1h_backfilled_at = now()
-WHERE ts >= $1 AND ts < $2`, start, end); err != nil {
+WHERE ts >= $1 AND ts < $2
+  AND rollups_1h_backfilled_at IS NULL`, start, end); err != nil {
 		return total, err
 	}
 	return total, nil
@@ -390,7 +393,8 @@ func (s *Service) MarkRollupsBackfilledForSegments(ctx context.Context, segmentI
 	_, err = pool.Exec(ctx, `
 UPDATE access_events
 SET rollups_1h_backfilled_at = now()
-WHERE segment_id::text = ANY($1)`, segmentIDs)
+WHERE segment_id = ANY($1::uuid[])
+  AND rollups_1h_backfilled_at IS NULL`, segmentIDs)
 	return err
 }
 
@@ -1739,4 +1743,8 @@ func hashBytes(value string) []byte {
 
 func cleanText(value string) string {
 	return strings.ToValidUTF8(strings.ReplaceAll(value, "\x00", ""), "")
+}
+
+func isAccessLogType(logType string) bool {
+	return logType == "nginx-access" || logType == "apache-access"
 }

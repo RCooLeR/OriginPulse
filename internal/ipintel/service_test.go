@@ -1,6 +1,9 @@
 package ipintel
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestNormalizeManualAction(t *testing.T) {
 	tests := []struct {
@@ -165,5 +168,73 @@ func TestClassifyReverseDNSServiceFingerprints(t *testing.T) {
 				t.Fatalf("risk = %d, want positive", risk)
 			}
 		})
+	}
+}
+
+func TestApplyASNFingerprintClassifiesButDoesNotVerifyProvider(t *testing.T) {
+	item := RefreshedIP{ASNOrg: "AMAZON-AES", RiskScore: 20}
+
+	applyASNFingerprint(&item)
+
+	if item.KnownActor != "AWS" || item.ActorType != "datacenter" {
+		t.Fatalf("applyASNFingerprint() = (%q, %q), want AWS datacenter", item.KnownActor, item.ActorType)
+	}
+	if item.VerifiedActor {
+		t.Fatal("applyASNFingerprint() should not mark ASN provider matches verified")
+	}
+	if item.RiskScore != 55 {
+		t.Fatalf("RiskScore = %d, want AWS fingerprint risk 55", item.RiskScore)
+	}
+}
+
+func TestApplyTrafficRiskMarksNoisyProviderSuspicious(t *testing.T) {
+	item := RefreshedIP{
+		ActorType:        "cloud",
+		ProviderVerified: true,
+		Requests:         3538,
+		Status4xx:        3536,
+		RiskScore:        55,
+	}
+
+	applyTrafficRisk(&item)
+
+	if item.RiskScore != 85 {
+		t.Fatalf("RiskScore = %d, want 85", item.RiskScore)
+	}
+}
+
+func TestApplyASNFingerprintKeepsTorExit(t *testing.T) {
+	item := RefreshedIP{
+		ASNOrg:        "AMAZON-AES",
+		KnownActor:    "Tor exit",
+		ActorType:     "tor",
+		RiskScore:     80,
+		IsTorExit:     true,
+		VerifiedActor: false,
+	}
+
+	applyASNFingerprint(&item)
+
+	if item.KnownActor != "Tor exit" || item.ActorType != "tor" {
+		t.Fatalf("applyASNFingerprint() changed Tor label to (%q, %q)", item.KnownActor, item.ActorType)
+	}
+	if item.VerifiedActor {
+		t.Fatal("applyASNFingerprint() should not mark Tor exit as verified provider")
+	}
+}
+
+func TestParseRangeLongDayWindows(t *testing.T) {
+	tests := []struct {
+		value string
+		want  time.Duration
+	}{
+		{"90d", 90 * 24 * time.Hour},
+		{"365d", 365 * 24 * time.Hour},
+	}
+	for _, tt := range tests {
+		got, label := parseRange(tt.value)
+		if got != tt.want || label != tt.value {
+			t.Fatalf("parseRange(%q) = %s/%q, want %s/%q", tt.value, got, label, tt.want, tt.value)
+		}
 	}
 }

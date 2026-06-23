@@ -17,8 +17,8 @@ Observed traffic density:
 
 | Site shape | Requests/day | IPs/day | Paths/day | UAs/day | Requests/hour | IPs/hour | Paths/hour | UAs/hour |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| example-like | ~481k | ~87k | ~27k | ~4.4k | ~25.7k | ~10.3k | ~4.2k | ~1.0k |
-| secondary-site-like | ~119k | ~16k | ~8.8k | ~2.9k | ~6.4k | ~2.0k | ~1.4k | ~0.5k |
+| Primary-site-like | ~481k | ~87k | ~27k | ~4.4k | ~25.7k | ~10.3k | ~4.2k | ~1.0k |
+| Secondary-site-like | ~119k | ~16k | ~8.8k | ~2.9k | ~6.4k | ~2.0k | ~1.4k | ~0.5k |
 
 The live estimator can be reproduced with:
 
@@ -32,22 +32,22 @@ Current projection from the configured retention windows:
 | Projection | Sites | Events/day | Archive-horizon requests | Active Postgres | Raw intake buffer | Compressed archives | Total with archives |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Current configured sites | 2 | ~922k | ~673M | ~749 GB | ~14 GB | ~188 GB | ~951 GB |
-| 20-site half-secondary-site model | 20 | ~3.31M | ~2.42B | ~2.69 TB | ~52 GB | ~674 GB | ~3.41 TB |
+| 20-site blended model | 20 | ~3.31M | ~2.42B | ~2.69 TB | ~52 GB | ~674 GB | ~3.41 TB |
 
 These numbers are measured from the current short observation window of about 2.8 days, then projected through the configurable defaults: 90 days of hot events, 2 weeks of raw downloaded files, 2 years of archives/online rollup horizon, and 5 years of stored reports.
 
 Estate model for sizing:
 
-- 2 example-like sites
-- 2 secondary-site-like sites
+- 2 primary-rate sites
+- 2 secondary-rate sites
 - 16 smaller sites
 - 730 days
 
 | Smaller-site assumption | Requests/day | 2-year events | Current raw schema | Normalized raw estimate |
 |---|---:|---:|---:|---:|
-| 25% of secondary-site | ~1.67M | ~1.22B | ~1.5 TB | ~0.7 TB |
-| 50% of secondary-site | ~2.15M | ~1.57B | ~1.9 TB | ~0.9 TB |
-| 100% of secondary-site | ~3.10M | ~2.26B | ~2.8 TB | ~1.3 TB |
+| 25% of secondary site | ~1.67M | ~1.22B | ~1.5 TB | ~0.7 TB |
+| 50% of secondary site | ~2.15M | ~1.57B | ~1.9 TB | ~0.9 TB |
+| 100% of secondary site | ~3.10M | ~2.26B | ~2.8 TB | ~1.3 TB |
 
 The current raw schema is intentionally pessimistic for long retention because it repeats path, query, and user-agent text on every row and indexes several raw columns.
 

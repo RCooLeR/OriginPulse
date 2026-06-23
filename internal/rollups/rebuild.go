@@ -72,7 +72,7 @@ func Rebuild(ctx context.Context, pool *pgxpool.Pool, start time.Time, end time.
 	if !end.After(start) {
 		return 0, nil
 	}
-	for _, table := range []string{"rollup_1m", "rollup_ip_1h", "rollup_path_1h", "rollup_user_agent_1h", "rollup_ip_path_1h", "rollup_ip_user_agent_1h", "rollup_status_1h", "rollup_site_latency_1h", "rollup_path_latency_1h", "rollup_security_probe_1h"} {
+	for _, table := range []string{"rollup_1m", "rollup_ip_1h", "rollup_path_1h", "rollup_user_agent_1h", "rollup_ip_path_1h", "rollup_ip_user_agent_1h", "rollup_status_1h", "rollup_site_latency_1h", "rollup_path_latency_1h", "rollup_security_probe_1h", "rollup_query_param_1h"} {
 		if _, err := pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %s WHERE bucket_ts >= $1 AND bucket_ts < $2`, table), start, end); err != nil {
 			return 0, err
 		}
@@ -122,7 +122,7 @@ RETURNING 1`, start, end)
 		return 0, err
 	}
 
-	for _, spec := range []string{ipRollupSQL, pathRollupSQL, userAgentRollupSQL, ipPathRollupSQL, ipUserAgentRollupSQL, statusRollupSQL, siteLatencyRollupSQL, pathLatencyRollupSQL, securityProbeRollupSQL} {
+	for _, spec := range []string{ipRollupSQL, pathRollupSQL, userAgentRollupSQL, ipPathRollupSQL, ipUserAgentRollupSQL, statusRollupSQL, siteLatencyRollupSQL, pathLatencyRollupSQL, securityProbeRollupSQL, queryParamRollupSQL} {
 		inserted, err := insertReturningCount(ctx, pool, spec, start, end)
 		if err != nil {
 			return 0, err
@@ -185,6 +185,97 @@ SET requests = EXCLUDED.requests,
     bytes_sent = EXCLUDED.bytes_sent,
     first_seen_at = EXCLUDED.first_seen_at,
     last_seen_at = EXCLUDED.last_seen_at
+RETURNING 1`
+
+const queryParamFamilyCase = `
+CASE
+  WHEN param = 'srsltid' THEN 'srsltid'
+  WHEN param LIKE 'utm\_%' ESCAPE '\' THEN 'utm'
+  WHEN param IN ('gclid', 'fbclid', 'msclkid', 'dclid', 'gad_source', 'gbraid', 'wbraid', 'gad_campaignid') THEN 'click-id'
+  WHEN param IN ('campaign', 'cid', 'x-campaign') THEN 'campaign'
+  WHEN param LIKE 'wpv\_%' ESCAPE '\' THEN 'wpv'
+  ELSE 'other'
+END`
+
+const queryParamRollupSQL = `
+WITH query_pairs AS (
+  SELECT date_trunc('hour', e.ts) AS bucket_ts,
+         e.site_id,
+         e.env,
+         e.status,
+         e.request_time_ms,
+         e.client_ip,
+         e.user_agent_id,
+         e.path_id,
+         coalesce(p.path, '') AS path,
+         q.query,
+         lower(ltrim(split_part(pair.value, '=', 1), '?')) AS param,
+         CASE WHEN strpos(pair.value, '=') > 0 THEN substr(pair.value, strpos(pair.value, '=') + 1) ELSE '' END AS param_value,
+         e.ts
+  FROM access_events e
+  JOIN LATERAL (
+    SELECT query
+    FROM dim_queries
+    WHERE id = e.query_id
+  ) q ON true
+  LEFT JOIN dim_paths p ON p.id = e.path_id
+  CROSS JOIN LATERAL unnest(string_to_array(q.query, '&')) AS pair(value)
+  WHERE e.ts >= $1
+    AND e.ts < $2
+    AND e.query_id IS NOT NULL
+),
+classified AS (
+  SELECT *,
+         ` + queryParamFamilyCase + ` AS family
+  FROM query_pairs
+  WHERE param <> ''
+),
+grouped AS (
+  SELECT bucket_ts,
+         site_id,
+         env,
+         family,
+         param,
+         param_value,
+         count(*) AS requests,
+         count(*) FILTER (WHERE status >= 400 AND status < 500) AS status_4xx,
+         count(*) FILTER (WHERE status >= 500 AND status < 600) AS status_5xx,
+         count(*) FILTER (WHERE request_time_ms >= 1000) AS slow_requests,
+         count(DISTINCT client_ip) AS unique_ips,
+         count(DISTINCT user_agent_id) AS unique_user_agents,
+         count(DISTINCT path_id) AS unique_paths,
+         count(*) FILTER (WHERE request_time_ms IS NOT NULL) AS request_time_count,
+         coalesce(sum(request_time_ms) FILTER (WHERE request_time_ms IS NOT NULL), 0) AS request_time_sum_ms,
+         min(ts) AS first_seen_at,
+         max(ts) AS last_seen_at,
+         coalesce((array_agg(path ORDER BY ts DESC))[1], '') AS example_path,
+         coalesce((array_agg(query ORDER BY ts DESC))[1], '') AS example_query
+  FROM classified
+  GROUP BY 1, 2, 3, 4, 5, 6
+)
+INSERT INTO rollup_query_param_1h (
+  bucket_ts, site_id, env, family, param, param_value, requests, status_4xx, status_5xx, slow_requests,
+  unique_ips, unique_user_agents, unique_paths, request_time_count, request_time_sum_ms, first_seen_at, last_seen_at,
+  example_path, example_query
+)
+SELECT bucket_ts, site_id, env, family, param, param_value, requests, status_4xx, status_5xx, slow_requests,
+       unique_ips, unique_user_agents, unique_paths, request_time_count, request_time_sum_ms, first_seen_at, last_seen_at,
+       example_path, example_query
+FROM grouped
+ON CONFLICT (bucket_ts, site_id, env, family, param, param_value) DO UPDATE
+SET requests = EXCLUDED.requests,
+    status_4xx = EXCLUDED.status_4xx,
+    status_5xx = EXCLUDED.status_5xx,
+    slow_requests = EXCLUDED.slow_requests,
+    unique_ips = EXCLUDED.unique_ips,
+    unique_user_agents = EXCLUDED.unique_user_agents,
+    unique_paths = EXCLUDED.unique_paths,
+    request_time_count = EXCLUDED.request_time_count,
+    request_time_sum_ms = EXCLUDED.request_time_sum_ms,
+    first_seen_at = EXCLUDED.first_seen_at,
+    last_seen_at = EXCLUDED.last_seen_at,
+    example_path = EXCLUDED.example_path,
+    example_query = EXCLUDED.example_query
 RETURNING 1`
 
 const pathRollupSQL = `

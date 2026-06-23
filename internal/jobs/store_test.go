@@ -61,6 +61,29 @@ func TestFinishWithMetaMergesJobMetadata(t *testing.T) {
 	}
 }
 
+func TestStepMethodsAreNoopWithoutDatabase(t *testing.T) {
+	store := NewStore(10)
+	step := store.StartStep(context.Background(), "job-1", "connect sftp", map[string]any{"server": "127.0.0.1"})
+	if step.ID != 0 {
+		t.Fatalf("step ID = %d, want 0 without database", step.ID)
+	}
+	store.FinishStep(step, StatusSuccess, "done", nil, nil)
+	page := store.StepsPage(context.Background(), 10, 0, "")
+	if page.Total != 0 || len(page.Steps) != 0 {
+		t.Fatalf("StepsPage = total %d rows %d, want empty no-db page", page.Total, len(page.Steps))
+	}
+}
+
+func TestNilStoreStepMethodsAreSafe(t *testing.T) {
+	var store *Store
+	step := store.StartStep(context.Background(), "job-1", "connect", nil)
+	store.FinishStep(step, StatusSuccess, "done", nil, nil)
+	page := store.StepsPage(context.Background(), 0, -1, "")
+	if page.Limit != 100 || page.Offset != 0 || page.Total != 0 {
+		t.Fatalf("nil StepsPage = %#v, want normalized empty page", page)
+	}
+}
+
 func TestStatsFromJobsIncludesZeroStatuses(t *testing.T) {
 	stats := statsFromJobs([]Job{
 		{Status: StatusRunning},

@@ -54,6 +54,28 @@ func TestParseAccessLine(t *testing.T) {
 	}
 }
 
+func TestParseAccessLineSplitsEmbeddedURLQuery(t *testing.T) {
+	line := `203.0.113.10 - - [22/Jun/2026:17:18:48 +0000] "GET /webofsciencegroup/www.youtube.com/watch?v=lhfVm3MPnLE HTTP/1.1" 200 123 "-" "curl/8"`
+	event, err := ParseAccessLine(line)
+	if err != nil {
+		t.Fatalf("ParseAccessLine: %v", err)
+	}
+	if event.Path != "/webofsciencegroup/www.youtube.com/watch" || event.Query != "v=lhfVm3MPnLE" {
+		t.Fatalf("request fields = %#v", event)
+	}
+}
+
+func TestParseAccessLineSplitsEncodedEmbeddedURLQuery(t *testing.T) {
+	line := `203.0.113.10 - - [22/Jun/2026:17:18:48 +0000] "GET /webofsciencegroup/www.youtube.com%2Fwatch%3Fv%3DlhfVm3MPnLE HTTP/1.1" 404 123 "-" "curl/8"`
+	event, err := ParseAccessLine(line)
+	if err != nil {
+		t.Fatalf("ParseAccessLine: %v", err)
+	}
+	if event.Path != "/webofsciencegroup/www.youtube.com/watch" || event.Query != "v=lhfVm3MPnLE" {
+		t.Fatalf("request fields = %#v", event)
+	}
+}
+
 func TestParseAccessLineWithBOM(t *testing.T) {
 	line := "\ufeff" + `203.0.113.10 - - [17/Jun/2026:14:22:31 +0000] "GET / HTTP/1.1" 200 123 "-" "curl/8"`
 	event, err := ParseAccessLine(line)

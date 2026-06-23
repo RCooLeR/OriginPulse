@@ -4,6 +4,7 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    shm_size: "1gb"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-originpulse}
       POSTGRES_USER: ${POSTGRES_USER:-originpulse}
@@ -44,6 +45,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - ../config.yml:/app/config.yml:ro
+      - ../tmp:/app/tmp:ro
       - originpulse_data:/app/data
     secrets:
       - pantheon_ssh_key
@@ -52,6 +54,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "originpulse", "healthcheck", "-url", "http://127.0.0.1:8080/health", "-timeout", "5s"]
+      interval: 30s
+      timeout: 6s
+      retries: 5
+      start_period: 20s
 
 secrets:
   pantheon_ssh_key:

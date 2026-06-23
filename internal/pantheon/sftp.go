@@ -19,10 +19,12 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	"originpulse/internal/config"
+	"originpulse/internal/jobs"
 )
 
 type SFTPDownloader struct {
-	cfg config.Config
+	cfg  config.Config
+	jobs *jobs.Store
 }
 
 type DownloadStats struct {
@@ -33,6 +35,8 @@ type DownloadStats struct {
 	ServersAttempted int
 	ServersSucceeded int
 	ServersFailed    int
+	ServersSkipped   int
+	ServersLocked    int
 	ServerErrors     []string
 }
 
@@ -44,38 +48,66 @@ func (s *DownloadStats) add(other DownloadStats) {
 	s.ServersAttempted += other.ServersAttempted
 	s.ServersSucceeded += other.ServersSucceeded
 	s.ServersFailed += other.ServersFailed
+	s.ServersSkipped += other.ServersSkipped
+	s.ServersLocked += other.ServersLocked
 	s.ServerErrors = append(s.ServerErrors, other.ServerErrors...)
 }
 
-func NewSFTPDownloader(cfg config.Config) *SFTPDownloader {
-	return &SFTPDownloader{cfg: cfg}
+func NewSFTPDownloader(cfg config.Config, store *jobs.Store) *SFTPDownloader {
+	return &SFTPDownloader{cfg: cfg, jobs: store}
 }
 
-func (d *SFTPDownloader) DownloadLogs(ctx context.Context, target Target, serverKind string, serverAddress string, containerID string, repo *RawFileRepository) (DownloadStats, error) {
+func (d *SFTPDownloader) DownloadLogs(ctx context.Context, jobID string, target Target, serverKind string, serverAddress string, containerID string, repo *RawFileRepository) (DownloadStats, error) {
 	var stats DownloadStats
-	_ = serverKind
-
-	sshConfig, err := d.sshClientConfig(target.SFTPUser)
-	if err != nil {
-		return stats, err
+	serverMeta := map[string]any{
+		"site_id":      target.SiteID,
+		"env":          target.Environment,
+		"server_kind":  serverKind,
+		"server":       serverAddress,
+		"container_id": containerID,
 	}
 
+	configStep := d.startStep(ctx, jobID, "prepare ssh config", serverMeta)
+	sshConfig, err := d.sshClientConfig(target.SFTPUser)
+	if err != nil {
+		d.finishStep(configStep, jobs.StatusFailed, "SSH config failed", err, nil)
+		return stats, err
+	}
+	d.finishStep(configStep, jobs.StatusSuccess, "SSH config ready", nil, nil)
+
 	address := net.JoinHostPort(serverAddress, fmt.Sprintf("%d", d.cfg.Pantheon.SFTPPort))
+	connectStep := d.startStep(ctx, jobID, "connect sftp", mergeStepMeta(serverMeta, map[string]any{"address": address}))
 	conn, err := d.dialSSH(ctx, "tcp", address, sshConfig)
 	if err != nil {
+		if isPantheonResourceLocked(err) {
+			d.finishStep(connectStep, jobs.StatusSkipped, "Pantheon resource lock detected", nil, map[string]any{"reason": err.Error()})
+			return stats, err
+		}
+		d.finishStep(connectStep, jobs.StatusFailed, "SSH connection failed", err, nil)
 		return stats, err
 	}
 	defer conn.Close()
 
 	client, err := sftp.NewClient(conn)
 	if err != nil {
+		if isPantheonResourceLocked(err) {
+			d.finishStep(connectStep, jobs.StatusSkipped, "Pantheon resource lock detected", nil, map[string]any{"reason": err.Error()})
+			return stats, err
+		}
+		d.finishStep(connectStep, jobs.StatusFailed, "SFTP client failed", err, nil)
 		return stats, err
 	}
 	defer client.Close()
+	d.finishStep(connectStep, jobs.StatusSuccess, "SFTP connected", nil, nil)
 
+	listStep := d.startStep(ctx, jobID, "list remote files", mergeStepMeta(serverMeta, map[string]any{"root": "logs"}))
+	candidates := make([]RawFile, 0)
 	walker := client.Walk("logs")
 	for walker.Step() {
 		if err := walker.Err(); err != nil {
+			d.finishStep(listStep, jobs.StatusFailed, "remote file listing failed", err, map[string]any{
+				"files_seen": stats.FilesSeen,
+			})
 			return stats, err
 		}
 
@@ -92,7 +124,7 @@ func (d *SFTPDownloader) DownloadLogs(ctx context.Context, target Target, server
 
 		stats.FilesSeen++
 		localPath := LocalRawPath(d.cfg.RawDir(), target.SiteID, target.Environment, containerID, remotePath)
-		rawFile := RawFile{
+		candidates = append(candidates, RawFile{
 			SiteID:      target.SiteID,
 			Env:         target.Environment,
 			ContainerID: containerID,
@@ -101,48 +133,118 @@ func (d *SFTPDownloader) DownloadLogs(ctx context.Context, target Target, server
 			RemoteSize:  info.Size(),
 			RemoteMTime: info.ModTime().UTC(),
 			LocalPath:   localPath,
-		}
+		})
+	}
+	d.finishStep(listStep, jobs.StatusSuccess, "remote file listing completed", nil, map[string]any{
+		"files_seen": stats.FilesSeen,
+	})
 
-		if (repo == nil || !repo.Enabled()) && localFileMatches(localPath, info.Size()) {
+	for _, rawFile := range candidates {
+		if (repo == nil || !repo.Enabled()) && localFileMatches(rawFile.LocalPath, rawFile.RemoteSize) {
 			stats.FilesSkipped++
+			skipStep := d.startStep(ctx, jobID, "download file", fileStepMeta(serverMeta, rawFile))
+			d.finishStep(skipStep, jobs.StatusSkipped, "local file already matches remote size", nil, map[string]any{"downloaded": false})
 			continue
 		}
 
 		shouldDownload := true
 		if repo != nil {
+			discoverStep := d.startStep(ctx, jobID, "register remote file", fileStepMeta(serverMeta, rawFile))
 			if err := repo.MarkDiscovered(ctx, rawFile); err != nil {
+				d.finishStep(discoverStep, jobs.StatusFailed, "failed to register remote file", err, nil)
 				return stats, err
 			}
+			d.finishStep(discoverStep, jobs.StatusSuccess, "remote file registered", nil, nil)
 			var err error
+			decisionStep := d.startStep(ctx, jobID, "check download need", fileStepMeta(serverMeta, rawFile))
 			shouldDownload, err = repo.ShouldDownload(ctx, rawFile)
 			if err != nil {
+				d.finishStep(decisionStep, jobs.StatusFailed, "download decision failed", err, nil)
 				return stats, err
 			}
+			d.finishStep(decisionStep, jobs.StatusSuccess, downloadDecisionMessage(shouldDownload), nil, map[string]any{"should_download": shouldDownload})
 		}
-		if !shouldDownload && localFileMatches(localPath, info.Size()) {
+		if !shouldDownload && localFileMatches(rawFile.LocalPath, rawFile.RemoteSize) {
 			stats.FilesSkipped++
+			skipStep := d.startStep(ctx, jobID, "download file", fileStepMeta(serverMeta, rawFile))
+			d.finishStep(skipStep, jobs.StatusSkipped, "file already current", nil, map[string]any{"downloaded": false})
 			continue
 		}
 
-		sha, bytesWritten, err := d.downloadFile(ctx, client, remotePath, localPath, info.Size())
+		downloadStep := d.startStep(ctx, jobID, "download file", fileStepMeta(serverMeta, rawFile))
+		sha, bytesWritten, err := d.downloadFile(ctx, client, rawFile.RemotePath, rawFile.LocalPath, rawFile.RemoteSize)
 		if err != nil {
 			if repo != nil {
 				_ = repo.MarkFailed(ctx, rawFile, err)
 			}
+			d.finishStep(downloadStep, jobs.StatusFailed, "download failed", err, map[string]any{"bytes_written": bytesWritten})
 			return stats, err
 		}
+		d.finishStep(downloadStep, jobs.StatusSuccess, "file downloaded", nil, map[string]any{"bytes_written": bytesWritten, "sha256": sha, "downloaded": true})
 
 		rawFile.SHA256 = sha
 		if repo != nil {
+			markStep := d.startStep(ctx, jobID, "mark file downloaded", fileStepMeta(serverMeta, rawFile))
 			if err := repo.MarkDownloaded(ctx, rawFile); err != nil {
+				d.finishStep(markStep, jobs.StatusFailed, "failed to mark file downloaded", err, nil)
 				return stats, err
 			}
+			d.finishStep(markStep, jobs.StatusSuccess, "file marked downloaded", nil, nil)
 		}
 		stats.FilesDownloaded++
 		stats.BytesDownloaded += bytesWritten
 	}
 
+	summaryStep := d.startStep(ctx, jobID, "summarize server download", serverMeta)
+	d.finishStep(summaryStep, jobs.StatusSuccess, "server download summarized", nil, map[string]any{
+		"files_seen":       stats.FilesSeen,
+		"files_downloaded": stats.FilesDownloaded,
+		"files_skipped":    stats.FilesSkipped,
+		"bytes_downloaded": stats.BytesDownloaded,
+	})
 	return stats, nil
+}
+
+func (d *SFTPDownloader) startStep(ctx context.Context, jobID string, name string, meta map[string]any) jobs.Step {
+	if d.jobs == nil {
+		return jobs.Step{}
+	}
+	return d.jobs.StartStep(ctx, jobID, name, meta)
+}
+
+func (d *SFTPDownloader) finishStep(step jobs.Step, status jobs.Status, message string, err error, meta map[string]any) {
+	if d.jobs == nil {
+		return
+	}
+	d.jobs.FinishStep(step, status, message, err, meta)
+}
+
+func fileStepMeta(serverMeta map[string]any, rawFile RawFile) map[string]any {
+	return mergeStepMeta(serverMeta, map[string]any{
+		"log_type":     rawFile.LogType,
+		"remote_path":  rawFile.RemotePath,
+		"remote_size":  rawFile.RemoteSize,
+		"remote_mtime": rawFile.RemoteMTime.Format(time.RFC3339),
+		"local_path":   rawFile.LocalPath,
+	})
+}
+
+func mergeStepMeta(base map[string]any, extra map[string]any) map[string]any {
+	out := make(map[string]any, len(base)+len(extra))
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range extra {
+		out[key] = value
+	}
+	return out
+}
+
+func downloadDecisionMessage(shouldDownload bool) string {
+	if shouldDownload {
+		return "download required"
+	}
+	return "download not required"
 }
 
 func (d *SFTPDownloader) sshClientConfig(username string) (*ssh.ClientConfig, error) {

@@ -161,16 +161,30 @@ func splitAccessFields(line string) []string {
 
 func parseTarget(target string) (string, string, string, string) {
 	if parsed, err := url.Parse(target); err == nil {
+		path, query := splitDecodedPathQuery(parsed.Path, parsed.RawQuery)
 		if parsed.IsAbs() {
-			return emptyPath(parsed.Path), parsed.RawQuery, parsed.Scheme, parsed.Host
+			return emptyPath(path), query, parsed.Scheme, parsed.Host
 		}
-		return emptyPath(parsed.Path), parsed.RawQuery, "", ""
+		return emptyPath(path), query, "", ""
 	}
 
 	if idx := strings.Index(target, "?"); idx >= 0 {
 		return emptyPath(target[:idx]), target[idx+1:], "", ""
 	}
 	return emptyPath(target), "", "", ""
+}
+
+func splitDecodedPathQuery(path string, query string) (string, string) {
+	if idx := strings.Index(path, "?"); idx >= 0 {
+		embeddedQuery := path[idx+1:]
+		path = path[:idx]
+		if query == "" {
+			query = embeddedQuery
+		} else if embeddedQuery != "" {
+			query = embeddedQuery + "&" + query
+		}
+	}
+	return path, query
 }
 
 func bestClientIP(fields []string) string {

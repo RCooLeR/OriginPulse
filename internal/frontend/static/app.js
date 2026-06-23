@@ -28,6 +28,7 @@ const rawFilePageSize = 10;
 const archivePageSize = 8;
 const archiveImportPageSize = 8;
 const jobPageSize = 10;
+const jobStepPageSize = 12;
 const pulseHistoryLimit = 500;
 const alertHistoryLimit = 500;
 const alertRequestPageSize = 6;
@@ -45,6 +46,7 @@ const state = {
   siteID: new URLSearchParams(location.search).get("site_id") || "",
   search: "",
   reportType: "all",
+  rawFileStatus: "all",
   pipeline: {
     maxSegments: 100,
     indexWorkers: 2,
@@ -60,6 +62,7 @@ const state = {
   pages: {
     trafficPaths: 1,
     trafficIPs: 1,
+    trafficQueries: 1,
     searchTopPaths: 1,
     searchMatchedEvents: 1,
     logRecentEvidence: 1,
@@ -68,6 +71,8 @@ const state = {
     logUserAgents: 1,
     pulseArchives: 1,
     pulseArchiveImports: 1,
+    pulseCooldowns: 1,
+    pulseJobSteps: 1,
   },
   drawer: {
     kind: null,
@@ -89,6 +94,8 @@ const state = {
     segmentCatalog: { total: 0, limit: segmentPageSize, offset: 0 },
     jobs: [],
     jobCatalog: { total: 0, limit: jobPageSize, offset: 0 },
+    jobSteps: [],
+    jobStepCatalog: { total: 0, limit: jobStepPageSize, offset: 0 },
     credentials: {},
     geoip: {},
     collectorHealth: {},
@@ -108,6 +115,15 @@ const state = {
   },
   ipTrust: {},
   fetchErrors: [],
+  pendingRequests: 0,
+  refreshQueued: false,
+  advancedSearch: {
+    key: "",
+    events: [],
+    total: 0,
+    loading: false,
+    error: "",
+  },
 };
 
 class AuthError extends Error {}
@@ -116,18 +132,42 @@ async function fetchJSON(path, options = {}) {
   const { timeoutMs = 0, ...fetchOptions } = options;
   const controller = timeoutMs ? new AbortController() : null;
   const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
-    ...fetchOptions,
-    ...(controller ? { signal: controller.signal } : {}),
-  });
-  if (timeout) clearTimeout(timeout);
-  if (response.status === 401) throw new AuthError();
-  if (!response.ok) {
-    const detail = await response.json().catch(() => null);
-    throw new Error(detail?.error?.message || `${response.status} ${response.statusText}`);
+  beginRequest();
+  try {
+    const response = await fetch(path, {
+      headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
+      ...fetchOptions,
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    if (response.status === 401) throw new AuthError();
+    if (!response.ok) {
+      const detail = await response.json().catch(() => null);
+      throw new Error(detail?.error?.message || `${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    endRequest();
   }
-  return response.json();
+}
+
+function beginRequest() {
+  state.pendingRequests += 1;
+  updateRequestActivity();
+}
+
+function endRequest() {
+  state.pendingRequests = Math.max(0, state.pendingRequests - 1);
+  updateRequestActivity();
+}
+
+function updateRequestActivity() {
+  const activity = qs("#requestActivity");
+  if (!activity) return;
+  const count = state.pendingRequests;
+  activity.classList.toggle("hidden", count === 0);
+  activity.setAttribute("aria-busy", count > 0 ? "true" : "false");
+  activity.querySelector("span").textContent = count > 1 ? `Loading ${count}` : "Loading";
 }
 
 async function safeFetch(path, fallback, timeoutMs = 30000) {
@@ -148,6 +188,7 @@ async function boot() {
     const session = await fetchJSON("/api/v1/auth/me");
     state.currentUser = session.user || null;
     showApp();
+    render();
     await refreshAll();
   } catch (error) {
     if (error instanceof AuthError) {
@@ -206,11 +247,33 @@ function wireEvents() {
     resetPagination();
     render();
   });
+  document.addEventListener("input", (event) => {
+    if (event.target.id !== "advancedSearchInput") return;
+    state.search = event.target.value.trim().toLowerCase();
+    const headerSearch = qs("#searchInput");
+    if (headerSearch && headerSearch.value !== event.target.value) headerSearch.value = event.target.value;
+  });
+  document.addEventListener("submit", (event) => {
+    if (event.target.id !== "advancedSearchForm") return;
+    event.preventDefault();
+    const input = qs("#advancedSearchInput", event.target);
+    state.search = (input?.value || "").trim().toLowerCase();
+    const headerSearch = qs("#searchInput");
+    if (headerSearch) headerSearch.value = input?.value || "";
+    resetPagination();
+    void runAdvancedSearch();
+  });
   document.addEventListener("change", async (event) => {
     const reportType = event.target.closest("[data-report-type-filter]");
     if (reportType) {
       state.reportType = reportType.value || "all";
       await loadReportCatalogPage(1);
+      return;
+    }
+    const rawFileStatus = event.target.closest("[data-raw-file-status-filter]");
+    if (rawFileStatus) {
+      state.rawFileStatus = rawFileStatus.value || "all";
+      await loadRawFilePage(1);
       return;
     }
     const pipelineField = event.target.closest("[data-pipeline-field]");
@@ -237,34 +300,45 @@ function wireEvents() {
 }
 
 async function refreshAll() {
-  if (state.loading) return;
+  if (state.loading) {
+    state.refreshQueued = true;
+    return;
+  }
   state.loading = true;
   state.fetchErrors = [];
   state.estateDataKey = "";
   state.securityAnalysisKey = "";
   document.body.classList.add("busy");
+  render();
   try {
     const filter = buildFilterQuery();
     const analysisFilter = buildFilterQuery({ limit: analysisHistoryLimit });
+    const trafficFilter = buildFilterQuery({
+      limit: analysisHistoryLimit,
+      include_query_params: state.route === "traffic" ? "1" : "",
+    });
+    const wantsPulseData = state.route === "pulse";
+    const heavyReadTimeoutMs = activeRangeMs() >= 90 * 24 * 60 * 60 * 1000 ? 120000 : 30000;
     const estateKey = buildFilterQuery({ limit: analysisHistoryLimit }, { includeSite: false });
-    const analysisRequest = safeFetch(`/api/v1/analysis/access-log?${analysisFilter}`, {}, 30000);
-    const [overview, analysis, traffic, sites, alerts, reports, jobs, credentials, geoip, collectorHealth, retention, storage, fastReadAudit, archives, archiveImports, archiveCoverage, notifications, webPush, users, segments] = await Promise.all([
+    const analysisRequest = safeFetch(`/api/v1/analysis/access-log?${analysisFilter}`, {}, heavyReadTimeoutMs);
+    const [overview, analysis, traffic, sites, alerts, reports, jobs, jobSteps, credentials, geoip, collectorHealth, retention, storage, fastReadAudit, archives, archiveImports, archiveCoverage, notifications, webPush, users, segments] = await Promise.all([
       safeFetch(`/api/v1/dashboard/overview?${filter}`, {}),
       analysisRequest,
-      safeFetch(`/api/v1/investigate/traffic?${buildFilterQuery({ limit: analysisHistoryLimit })}`, {}),
+      safeFetch(`/api/v1/investigate/traffic?${trafficFilter}`, {}, heavyReadTimeoutMs),
       safeFetch("/api/v1/sites", { sites: [] }),
       safeFetch(`/api/v1/alerts?limit=${alertHistoryLimit}`, { alerts: [] }),
       safeFetch(`/api/v1/reports/recent?${reportCatalogQuery(1)}`, { reports: [], total: 0, limit: reportCatalogPageSize, offset: 0, report_types: [] }),
       safeFetch(`/api/v1/system/jobs?${jobHistoryQuery(1)}`, { jobs: [], total: 0, limit: jobPageSize, offset: 0 }),
+      safeFetch(`/api/v1/system/job-steps?${jobStepHistoryQuery(1)}`, { steps: [], total: 0, limit: jobStepPageSize, offset: 0 }),
       safeFetch("/api/v1/system/credentials", {}),
       safeFetch("/api/v1/system/geoip", {}),
       safeFetch(`/api/v1/system/collector-health?${rawFileHistoryQuery(1)}`, {}),
       safeFetch("/api/v1/system/retention", {}),
-      safeFetch("/api/v1/system/storage", {}),
-      safeFetch(`/api/v1/system/fast-read-audit?${filter}`, {}),
+      wantsPulseData ? safeFetch("/api/v1/system/storage", {}) : Promise.resolve(state.data.storage || {}),
+      wantsPulseData ? safeFetch(`/api/v1/system/fast-read-audit?${filter}`, {}) : Promise.resolve(state.data.fastReadAudit || {}),
       safeFetch(`/api/v1/system/archives?${archiveHistoryQuery(1)}`, { archives: [], total: 0, limit: archivePageSize, offset: 0 }),
       safeFetch(`/api/v1/system/archive-imports?${archiveImportHistoryQuery(1)}`, { imports: [], total: 0, limit: archiveImportPageSize, offset: 0 }),
-      safeFetch(`/api/v1/system/archive-coverage?${filter}`, { archives: [], active_temporary_imports: [] }),
+      wantsPulseData ? safeFetch(`/api/v1/system/archive-coverage?${filter}`, { archives: [], active_temporary_imports: [] }) : Promise.resolve(state.data.archiveCoverage || { archives: [], active_temporary_imports: [] }),
       safeFetch(`/api/v1/notifications?${notificationHistoryQuery(1)}`, {}),
       safeFetch("/api/v1/notifications/web-push/public-key", {}),
       safeFetch("/api/v1/users", { users: [] }),
@@ -282,6 +356,8 @@ async function refreshAll() {
       reportCatalog: reportCatalogMeta(reports),
       jobs: jobs.jobs || [],
       jobCatalog: jobCatalogMeta(jobs),
+      jobSteps: jobSteps.steps || [],
+      jobStepCatalog: jobStepCatalogMeta(jobSteps),
       credentials,
       geoip,
       collectorHealth,
@@ -313,6 +389,12 @@ async function refreshAll() {
   } finally {
     state.loading = false;
     document.body.classList.remove("busy");
+    if (state.refreshQueued) {
+      state.refreshQueued = false;
+      void refreshAll();
+    } else {
+      render();
+    }
   }
 }
 
@@ -424,8 +506,16 @@ function render() {
     pulse: renderPulseLogs,
     settings: renderSettings,
   };
-  qs("#content").innerHTML = readinessBanner() + (renderers[state.route] || renderOverview)();
+  qs("#content").innerHTML = readinessBanner() + (state.loading ? loadingPanel() : (renderers[state.route] || renderOverview)());
   requestAnimationFrame(drawCharts);
+}
+
+function loadingPanel() {
+  return `
+    <article class="panel loading-panel">
+      <div class="empty">${iconHTML("fa-spinner fa-spin")} Loading ${escapeHTML(activeRangeLabel())} data...</div>
+    </article>
+  `;
 }
 
 function renderNav() {
@@ -450,8 +540,7 @@ function renderChrome() {
   qs("#userBadge").textContent = initials.split(/\s|@/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "OP";
   const health = collectorHealth();
   qs("#collectorState").textContent = health.state;
-  qs("#collectorUptime").textContent = health.uptime;
-  qs("#collectorRate").textContent = `${formatNumber(Math.round(requestsPerMinute()))}/m`;
+  qs("#collectorLastDownload").textContent = health.lastDownload;
   qs("#pageActions").innerHTML = pageActions();
 }
 
@@ -583,10 +672,15 @@ function renderLogs() {
 }
 
 function renderSearch() {
-  const events = filtered(searchItems(state.data.traffic.recent_errors || [], (item) => `${item.status} ${item.site_id} ${item.env} ${item.client_ip} ${item.method} ${item.path} ${item.user_agent}`));
+  const searchIP = extractIPSearchValue(state.search);
+  const advancedKey = advancedSearchKey(searchIP);
+  const usingAdvancedEvents = searchIP && state.advancedSearch.key === advancedKey;
+  const sourceEvents = usingAdvancedEvents ? state.advancedSearch.events : (state.data.traffic.recent_errors || []);
+  const events = usingAdvancedEvents ? sourceEvents : filtered(searchItems(sourceEvents, (item) => `${item.status} ${item.site_id} ${item.env} ${item.client_ip} ${item.method} ${item.path} ${item.user_agent}`));
   const statuses = state.data.traffic.status_breakdown || state.data.analysis.status_breakdown || [];
   const hosts = groupCount(events, (item) => item.site_id || "unknown");
   const paths = groupCount(events, (item) => item.path || "/");
+  const searchStatus = advancedSearchStatus(searchIP, usingAdvancedEvents);
   return `
     <section class="search-console">
       <article class="panel facet-panel">
@@ -601,15 +695,19 @@ function renderSearch() {
       </article>
       <section class="content-grid">
         <article class="panel query-panel">
-          <div class="query-string">
-            <span>${escapeHTML(state.search || "status:>=400 OR severity:error OR path:/wp-*")}</span>
-            <button class="icon-button" type="button" data-action="query-guide" aria-label="Query guide" title="Query guide">${iconHTML("fa-circle-info")}</button>
-          </div>
+          <form id="advancedSearchForm" class="query-form">
+            <label class="sr-only" for="advancedSearchInput">Search query</label>
+            <div class="query-string">
+              <input id="advancedSearchInput" type="search" value="${escapeAttr(state.search)}" placeholder="status:>=400 OR severity:error OR path:/wp-*" autocomplete="off" spellcheck="false">
+              <button class="icon-button" type="button" data-action="query-guide" aria-label="Query guide" title="Query guide">${iconHTML("fa-circle-info")}</button>
+            </div>
+          </form>
           <div class="toolbar">
             <span class="pill">${escapeHTML(activeRangeLabel())}</span>
             <span class="pill">${state.siteID ? escapeHTML(state.siteID) : "All Projects"}</span>
-            <button class="button small" type="button" data-action="refresh">${iconHTML("fa-magnifying-glass")}Search</button>
+            <button class="button small" type="submit" form="advancedSearchForm">${iconHTML("fa-magnifying-glass")}Search</button>
           </div>
+          ${searchStatus}
         </article>
         <section class="layout-2">
           <article class="panel chart-card">
@@ -625,6 +723,61 @@ function renderSearch() {
       </section>
     </section>
   `;
+}
+
+async function runAdvancedSearch() {
+  const ip = extractIPSearchValue(state.search);
+  if (!ip) {
+    state.advancedSearch = { key: "", events: [], total: 0, loading: false, error: "" };
+    render();
+    return;
+  }
+  const key = advancedSearchKey(ip);
+  state.advancedSearch = { key, events: [], total: 0, loading: true, error: "" };
+  render();
+  try {
+    const detail = await fetchJSON(`/api/v1/investigate/ip/${encodeURIComponent(ip)}?${advancedIPSearchParams()}`);
+    if (state.advancedSearch.key !== key) return;
+    const events = (detail.recent_requests || []).map((event) => ({
+      ...event,
+      client_ip: ip,
+      known_actor: detail.stored_intel?.known_actor || "",
+      actor_type: detail.stored_intel?.actor_type || "",
+      verified_actor: Boolean(detail.stored_intel?.verified_actor),
+      provider_verified: Boolean(detail.stored_intel?.provider_verified),
+      provider_name: detail.stored_intel?.provider_name || "",
+      provider_range: detail.stored_intel?.provider_range || "",
+      provider_source_url: detail.stored_intel?.provider_source_url || "",
+    }));
+    state.advancedSearch = {
+      key,
+      events,
+      total: Number(detail.requests_total || events.length),
+      loading: false,
+      error: "",
+    };
+  } catch (error) {
+    if (state.advancedSearch.key === key) {
+      state.advancedSearch = { key, events: [], total: 0, loading: false, error: error.message || "Search failed" };
+    }
+  }
+  render();
+}
+
+function advancedSearchStatus(ip, usingAdvancedEvents) {
+  if (!ip) {
+    return `<p class="subtle">Text search filters the currently loaded event sample. Use <code>ip:192.42.116.58</code> for a DB-backed IP lookup.</p>`;
+  }
+  if (state.advancedSearch.loading) {
+    return `<p class="subtle">${iconHTML("fa-spinner fa-spin")} Searching full event history for ${escapeHTML(ip)}...</p>`;
+  }
+  if (state.advancedSearch.error) {
+    return `<p class="form-error">${escapeHTML(state.advancedSearch.error)}</p>`;
+  }
+  if (usingAdvancedEvents) {
+    return `<p class="subtle">Showing ${formatNumber(state.advancedSearch.events.length)} of ${formatNumber(state.advancedSearch.total)} DB matches for ${ipLink(ip)}.</p>`;
+  }
+  return `<p class="subtle">Press Search to load full DB matches for ${escapeHTML(ip)}.</p>`;
 }
 
 function renderTraffic() {
@@ -649,6 +802,7 @@ function renderTraffic() {
       ${topPathsPaginatedPanel()}
       ${topIPTrafficPanel()}
     </section>
+    ${queryParamsPanel()}
   `;
 }
 
@@ -1197,14 +1351,20 @@ function renderSettings() {
 
 function renderPulseLogs() {
   const rawFiles = state.data.collectorHealth?.raw_files?.recent || [];
+  const cooldowns = state.data.collectorHealth?.server_cooldowns || [];
   const deliveries = state.data.pulseNotifications?.recent || state.data.notifications?.recent || [];
   const archives = state.data.archives || [];
   const archiveImports = state.data.archiveImports || [];
   const storage = state.data.storage || {};
+  const analytics = state.data.overview?.analytics || {};
+  const scheduler = state.data.overview?.scheduler || {};
   const jobTotal = state.data.jobCatalog?.total ?? state.data.jobs.length;
   return `
     ${metricGrid([
       metric("Jobs", jobTotal, "fa-briefcase", "cyan"),
+      metric("Runtime", appUptimeLabel(), "fa-clock", "green"),
+      metric("Freshness", eventLagLabel(analytics.event_lag_seconds), "fa-hourglass-half", freshnessColor(analytics.event_lag_seconds)),
+      metric("Cycle", cadenceCycleLabel(scheduler), "fa-gauge-high", cadenceColor(scheduler)),
       metric("Database", formatBytes(storage.storage?.database_bytes), "fa-hard-drive", "purple"),
       metric("Hot Events", storage.events?.hot_events || 0, "fa-database", "green"),
       metric("Backfill", storage.events?.backfill_remaining || 0, "fa-rotate", "amber"),
@@ -1222,8 +1382,10 @@ function renderPulseLogs() {
           <button class="button small" type="button" data-action="run-backfill">${iconHTML("fa-database")}Backfill Batch</button>
           <button class="button small" type="button" data-action="run-archive-dry">${iconHTML("fa-box-archive")}Archive Check</button>
           <button class="button small" type="button" data-action="run-archive">${iconHTML("fa-file-zipper")}Archive</button>
+          <button class="button small" type="button" data-action="clean-expired-imports">${iconHTML("fa-broom")}Clean Expired</button>
         </div>
       </div>
+      ${cadencePressurePanel(scheduler)}
       <div class="ingestion-pipeline">
         ${pipelineStep("Downloaded", state.data.segments.length, "fa-cloud-arrow-down", "green")}
         ${pipelineStep("Combined", state.data.segments.filter((item) => item.status).length, "fa-code-merge", "cyan")}
@@ -1233,16 +1395,95 @@ function renderPulseLogs() {
     </article>
     <section class="layout-2">
       ${pulseJobsPanel()}
+      ${pulseJobStepsPanel()}
+    </section>
+    ${serverCooldownsPanel(cooldowns)}
+    <section class="layout-2">
       ${pulseSegmentsPanel()}
-    </section>
-    <section class="layout-2">
       ${pulseArchivesPanel(archives)}
-      ${pulseArchiveImportsPanel(archiveImports)}
     </section>
     <section class="layout-2">
+      ${pulseArchiveImportsPanel(archiveImports)}
       ${pulseRawFilesPanel(rawFiles)}
+    </section>
+    <section class="layout-2">
       ${pulseDeliveriesPanel(deliveries)}
     </section>
+  `;
+}
+
+function cadencePressurePanel(scheduler = {}) {
+  const hasCycle = Number(scheduler.last_cycle_duration_ms || 0) > 0;
+  if (!hasCycle && !Number(scheduler.collection_interval_ms || 0)) return "";
+  return `
+    <div class="panel-body layout-4 compact-grid">
+      ${facts([
+        ["Interval", formatDuration(scheduler.collection_interval_ms)],
+        ["Last cycle", formatDuration(scheduler.last_cycle_duration_ms)],
+        ["Cadence used", scheduler.last_cycle_utilization ? formatPercent(scheduler.last_cycle_utilization) : "-"],
+        ["Latest pipeline", shortTime(scheduler.latest_pipeline_at)],
+      ])}
+      ${facts([
+        ["Collection jobs", formatNumber(scheduler.collection_jobs)],
+        ["Pipeline", formatDuration(scheduler.pipeline_duration_ms)],
+        ["Post pipeline", formatDuration(scheduler.post_pipeline_duration_ms)],
+        ["Cycle finished", shortTime(scheduler.last_cycle_finished_at)],
+      ])}
+      ${facts([
+        ["Running since restart", formatNumber(scheduler.running_since_start)],
+        ["Failed since restart", formatNumber(scheduler.failed_since_start)],
+        ["Interrupted since restart", formatNumber(scheduler.interrupted_since_start)],
+        ["Started", shortTime(scheduler.last_cycle_started_at)],
+        ["Status", cadenceStatusLabel(scheduler)],
+      ])}
+    </div>
+  `;
+}
+
+function cadenceCycleLabel(scheduler = {}) {
+  const cycle = Number(scheduler.last_cycle_duration_ms || 0);
+  const interval = Number(scheduler.collection_interval_ms || 0);
+  if (!cycle && interval) return `- / ${formatDuration(interval)}`;
+  if (!cycle) return "-";
+  return interval ? `${formatDuration(cycle)} / ${formatDuration(interval)}` : formatDuration(cycle);
+}
+
+function cadenceStatusLabel(scheduler = {}) {
+  const failed = Number(scheduler.failed_since_start || 0);
+  if (failed > 0) return `${formatNumber(failed)} failed`;
+  const running = Number(scheduler.running_since_start || 0);
+  if (running > 0) return `${formatNumber(running)} running`;
+  const interrupted = Number(scheduler.interrupted_since_start || 0);
+  if (interrupted > 0) return `Healthy (${formatNumber(interrupted)} interrupted)`;
+  const utilization = Number(scheduler.last_cycle_utilization || 0);
+  if (utilization >= 0.9) return "Near interval";
+  if (utilization >= 0.7) return "Watch";
+  if (utilization > 0) return "Healthy";
+  return "-";
+}
+
+function cadenceColor(scheduler = {}) {
+  if (Number(scheduler.failed_since_start || 0) > 0) return "red";
+  const utilization = Number(scheduler.last_cycle_utilization || 0);
+  if (utilization >= 0.9) return "red";
+  if (utilization >= 0.7) return "amber";
+  return "green";
+}
+
+function serverCooldownsPanel(rows) {
+  if (!rows.length) return "";
+  const filteredRows = filtered(searchItems(rows || [], (item) => `${item.site_id || ""} ${item.env || ""} ${item.server_kind || ""} ${item.server_ip || ""} ${item.reason || ""}`));
+  const page = paginate(filteredRows, state.pages.pulseCooldowns || 1, 8);
+  state.pages.pulseCooldowns = page.page;
+  return `
+    <article class="panel">
+      <div class="panel-head">
+        <div><h2>Pantheon Cooldowns</h2><p>Servers temporarily skipped after Pantheon resource-lock responses.</p></div>
+        <span class="pill">${formatNumber(page.total)} active</span>
+      </div>
+      ${serverCooldownsTable(page.rows)}
+      ${pager("pulseCooldowns", page)}
+    </article>
   `;
 }
 
@@ -1256,11 +1497,12 @@ function storageReadinessPanel(storage) {
   const fast = state.data.fastReadAudit || {};
   const fastStatus = fastReadiness();
   const fastReady = fastStatus.known && fastStatus.ready;
+  const status = storageReadinessStatus(readiness, temporary, fastReady);
   return `
     <article class="panel">
       <div class="panel-head">
         <div><h2>Storage Readiness</h2><p>Hot events, rollups, archives, and retention posture.</p></div>
-        <span class="pill">${readiness.backfill_ready && readiness.temporary_clean && readiness.hot_events_within_window && fastReady ? "Ready" : "Needs work"}</span>
+        <span class="pill" title="${escapeAttr(status.title)}">${escapeHTML(status.label)}</span>
       </div>
       <div class="panel-body layout-4 compact-grid">
         ${facts([
@@ -1285,12 +1527,17 @@ function storageReadinessPanel(storage) {
           ["Ready archives", formatNumber(archives.ready_archives)],
           ["Pending daily", formatNumber(archives.pending_daily_groups)],
           ["Pending weekly", formatNumber(archives.pending_weekly_groups)],
+          ["Active imports", formatNumber(temporary.active_imports)],
+          ["Expired imports", formatNumber(temporary.expired_imports)],
+          ["Temporary events", formatNumber(temporary.imported_events)],
           ["Temporary facts", formatNumber(temporary.imported_facts)],
         ])}
       </div>
       <div class="panel-body layout-4 compact-grid">
         ${facts([
           ["Fast reads", fastStatus.known ? (fastReady ? "Rollup backed" : "Raw fallback") : "Unavailable"],
+          ["Latest event", shortTime(state.data.overview?.analytics?.latest_event_at)],
+          ["Event lag", eventLagLabel(state.data.overview?.analytics?.event_lag_seconds)],
           ["Dimension rollups", yesNo(fast.dimension_rollups_ready)],
           ["Status rollups", yesNo(fast.status_rollups_ready)],
           ["Raw range aggregation", yesNo(fast.expected_raw_range_aggregations)],
@@ -1316,6 +1563,26 @@ function storageReadinessPanel(storage) {
       </div>
     </article>
   `;
+}
+
+function storageReadinessStatus(readiness = {}, temporary = {}, fastReady = false) {
+  const blockers = [];
+  if (!readiness.backfill_ready) blockers.push("rollup backfill pending");
+  if (!readiness.hot_events_within_window) blockers.push("hot events exceed retention window");
+  if (!readiness.archive_queue_empty) blockers.push("archive queue pending");
+  if (!readiness.temporary_clean) {
+    const expired = Number(temporary.expired_imports || 0);
+    const active = Number(temporary.active_imports || 0);
+    const facts = Number(temporary.imported_events || 0) + Number(temporary.imported_facts || 0);
+    if (expired) blockers.push(`${formatNumber(expired)} expired temporary import${expired === 1 ? "" : "s"}`);
+    else if (active) blockers.push(`${formatNumber(active)} active temporary import${active === 1 ? "" : "s"}`);
+    else if (facts) blockers.push("temporary imported data present");
+    else blockers.push("temporary import cleanup pending");
+  }
+  if (!fastReady) blockers.push("fast-read rollups incomplete");
+  return blockers.length
+    ? { label: "Needs work", title: blockers.join("; ") }
+    : { label: "Ready", title: "Storage, retention, temporary imports, and fast reads are clean." };
 }
 
 function pulseArchivesPanel(rows) {
@@ -1454,15 +1721,52 @@ function pulseJobsPanel() {
   const rows = filtered(searchItems(state.data.jobs || [], jobSearchText));
   const page = state.search ? paginate(rows, state.pages.pulseJobs, 10) : jobPage(rows, state.data.jobCatalog);
   state.pages.pulseJobs = page.page;
+  const currentRuns = countSinceAppStart(state.data.jobs || []);
   return `
     <article class="panel">
       <div class="panel-head">
-        <div><h2>Jobs</h2><p>Recent background work and scheduler activity.</p></div>
+        <div><h2>Jobs</h2><p title="IP intelligence DNS/GeoIP misses are enrichment misses, not job failures. Hard failures are shown in the status column.">Recent background work and scheduler activity. ${currentRuns.label}</p></div>
         <span class="pill">${formatNumber(page.total)} jobs</span>
       </div>
       ${jobsTable(page.rows)}
       ${pager("pulseJobs", page)}
     </article>
+  `;
+}
+
+function pulseJobStepsPanel() {
+  const rows = filtered(searchItems(state.data.jobSteps || [], jobStepSearchText));
+  const page = state.search ? paginate(rows, state.pages.pulseJobSteps, 12) : jobStepPage(rows, state.data.jobStepCatalog);
+  state.pages.pulseJobSteps = page.page;
+  const currentSteps = countSinceAppStart(state.data.jobSteps || []);
+  return `
+    <article class="panel">
+      <div class="panel-head">
+        <div><h2>Job Steps</h2><p>Measured phases inside collection, SFTP download, combine, index, and rollup work. ${currentSteps.label}</p></div>
+        <span class="pill">${formatNumber(page.total)} steps</span>
+      </div>
+      ${slowPhasesSummary(state.data.jobStepCatalog.slow_phases || [])}
+      ${jobStepsTable(page.rows)}
+      ${pager("pulseJobSteps", page)}
+    </article>
+  `;
+}
+
+function slowPhasesSummary(rows) {
+  if (!rows.length) return "";
+  return `
+    <div class="list compact-list slow-phases">
+      <div class="list-row">
+        <div><strong>Slowest Phases Since Restart</strong><span>Cumulative / maximum / average duration by measured step.</span></div>
+        <b>${formatNumber(rows.length)} phases</b>
+      </div>
+      ${rows.map((item) => `
+        <div class="list-row">
+          <div><strong>${escapeHTML(formatJobType(item.name))}</strong><span>${escapeHTML(item.status || "-")} / ${formatNumber(item.count)} run${Number(item.count) === 1 ? "" : "s"} / latest ${shortTime(item.latest_at)}</span></div>
+          <b title="Cumulative / maximum / average duration">${formatDuration(item.total_ms)} / ${formatDuration(item.max_ms)} / ${formatDuration(item.avg_ms)}</b>
+        </div>
+      `).join("")}
+    </div>
   `;
 }
 
@@ -1475,6 +1779,18 @@ function jobSearchText(item = {}) {
     item.triggered_by,
     item.started_at,
     item.finished_at,
+    JSON.stringify(item.meta || {}),
+  ].filter(Boolean).join(" ");
+}
+
+function jobStepSearchText(item = {}) {
+  return [
+    item.name,
+    item.status,
+    item.message,
+    item.last_error,
+    item.job_id,
+    item.started_at,
     JSON.stringify(item.meta || {}),
   ].filter(Boolean).join(" ");
 }
@@ -1496,19 +1812,43 @@ function pulseSegmentsPanel() {
 }
 
 function pulseRawFilesPanel(rows) {
-  const filteredRows = filtered(searchItems(rows || [], (item) => `${item.site_id || ""} ${item.env || ""} ${item.container_id || ""} ${item.log_type || ""} ${item.remote_path || ""} ${item.status || ""}`));
+  const filteredRows = filtered(searchItems(rows || [], (item) => `${item.site_id || ""} ${item.env || ""} ${item.container_id || ""} ${item.log_type || ""} ${item.remote_path || ""} ${item.status || ""} ${item.error || ""}`));
   const page = state.search ? paginate(filteredRows, state.pages.pulseRawFiles, 10) : rawFilePage(rows || [], state.data.rawFileCatalog);
   state.pages.pulseRawFiles = page.page;
+  const stats = state.data.collectorHealth?.raw_files?.stats || {};
+  const failedRecent = Number(stats.failed_recent || 0);
+  const failedStale = Number(stats.failed_stale || 0);
+  const failureWindow = rawFileFailureWindowLabel(stats.failed_recent_window_seconds);
   return `
     <article class="panel">
       <div class="panel-head">
         <div><h2>Raw File Activity</h2><p>Recently discovered or downloaded source files.</p></div>
-        <span class="pill">${formatNumber(page.total)} files</span>
+        <div class="toolbar">
+          <span class="pill ${failedRecent ? "bad" : "good"}" title="${escapeAttr(`${formatNumber(failedStale)} older failed file(s) remain in the catalog`)}">${formatNumber(failedRecent)} failed ${escapeHTML(failureWindow)}</span>
+          <select class="select compact-select" data-raw-file-status-filter aria-label="Raw file status">
+            <option value="all" ${state.rawFileStatus === "all" ? "selected" : ""}>All statuses</option>
+            ${["downloaded", "discovered", "failed"].map((status) => `<option value="${status}" ${state.rawFileStatus === status ? "selected" : ""}>${escapeHTML(formatRawFileStatus(status))} (${formatNumber(stats[status] || 0)})</option>`).join("")}
+          </select>
+          <span class="pill">${formatNumber(page.total)} files</span>
+        </div>
       </div>
       ${rawFilesTable(page.rows)}
       ${pager("pulseRawFiles", page)}
     </article>
   `;
+}
+
+function formatRawFileStatus(status) {
+  const value = String(status || "");
+  return value ? value[0].toUpperCase() + value.slice(1) : "Unknown";
+}
+
+function rawFileFailureWindowLabel(seconds) {
+  const value = Number(seconds || 0);
+  if (!Number.isFinite(value) || value <= 0) return "recently";
+  if (value % 3600 === 0) return `last ${formatNumber(value / 3600)}h`;
+  if (value % 60 === 0) return `last ${formatNumber(value / 60)}m`;
+  return `last ${formatNumber(value)}s`;
 }
 
 function pulseDeliveriesPanel(rows) {
@@ -1542,7 +1882,6 @@ function metric(label, value, icon, color = "cyan") {
       <strong class="metric-value">${typeof amount === "number" ? formatCompact(amount) : escapeHTML(amount)}</strong>
       <div class="metric-trend">
         <span>Live range</span>
-        <canvas class="sparkline" data-spark="${sparkValues().join(",")}" data-color="${color}"></canvas>
       </div>
     </article>
   `;
@@ -1601,7 +1940,7 @@ function eventsTable(rows) {
             <td>${shortTime(event.ts)}</td>
             <td>${escapeHTML(event.site_id || "-")}<br><span class="subtle">${escapeHTML(event.env || "")}</span></td>
             <td>${ipLink(event.client_ip, event.client_ip, event)}</td>
-            <td><span class="row-title"><strong>${escapeHTML(event.method || "GET")} ${escapeHTML(event.path || "/")}</strong><span>${event.user_agent ? userAgentLink(event.user_agent, event.user_agent) : ""}</span></span></td>
+            <td><span class="row-title"><strong>${requestLineHTML(event)}</strong><span>${event.user_agent ? userAgentLink(event.user_agent, event.user_agent) : ""}</span></span></td>
             <td><span class="severity ${Number(event.status) >= 500 ? "critical" : "high"}">${escapeHTML(event.status || "-")}</span></td>
             <td><button class="button small" type="button" data-detail="request" data-value="${escapeAttr(requestKey)}">Trace</button></td>
           </tr>
@@ -1652,10 +1991,46 @@ function jobsTable(rows) {
       <tbody>${rows.map((job) => `
         <tr>
           <td><span class="row-title"><strong>${escapeHTML(formatJobType(job.type))}</strong><span>${jobScope(job)}</span></span></td>
-          <td><span class="status ${jobStatusClass(job.status)}">${escapeHTML(job.status || "-")}</span></td>
+          <td><span class="status ${jobStatusClass(job)}">${escapeHTML(jobStatusLabel(job))}</span></td>
           <td><span class="row-title"><strong>${escapeHTML(job.message || "-")}</strong><span class="job-meta">${jobMetaSummary(job)}</span></span></td>
           <td>${formatDuration(job.duration_ms)}</td>
           <td>${shortTime(job.started_at)}</td>
+        </tr>
+      `).join("")}</tbody>
+    </table></div>
+  `;
+}
+
+function jobStepsTable(rows) {
+  if (!rows.length) return empty("No measured job steps yet.");
+  return `
+    <div class="table-wrap"><table>
+      <thead><tr><th>Step</th><th>Status</th><th>Scope</th><th>Duration</th><th>Started</th></tr></thead>
+      <tbody>${rows.map((step) => `
+        <tr>
+          <td><span class="row-title"><strong>${escapeHTML(formatJobType(step.name))}</strong><span>${escapeHTML(step.message || step.last_error || step.job_id || "-")}</span></span></td>
+          <td><span class="status ${jobStatusClass(step)}">${escapeHTML(jobStatusLabel(step))}</span></td>
+          <td><span class="job-meta">${jobStepMetaSummary(step)}</span></td>
+          <td>${formatDuration(step.duration_ms)}</td>
+          <td>${shortTime(step.started_at)}</td>
+        </tr>
+      `).join("")}</tbody>
+    </table></div>
+  `;
+}
+
+function serverCooldownsTable(rows) {
+  if (!rows.length) return empty("No active Pantheon cooldowns.");
+  return `
+    <div class="table-wrap"><table>
+      <thead><tr><th>Server</th><th>Site</th><th>Until</th><th>Remaining</th><th>Reason</th></tr></thead>
+      <tbody>${rows.map((item) => `
+        <tr>
+          <td><span class="row-title"><strong>${item.server_ip ? ipLink(item.server_ip) : "-"}</strong><span>${escapeHTML(formatJobType(item.server_kind || "server"))}</span></span></td>
+          <td>${escapeHTML(item.site_id || "-")}<br><span class="subtle">${escapeHTML(item.env || "")}</span></td>
+          <td>${shortTime(item.cooldown_until)}</td>
+          <td>${formatDuration(msUntil(item.cooldown_until))}</td>
+          <td><span class="row-title"><strong>${escapeHTML(lockReasonLabel(item.reason))}</strong><span>${escapeHTML(shortToken(item.reason || ""))}</span></span></td>
         </tr>
       `).join("")}</tbody>
     </table></div>
@@ -1669,12 +2044,69 @@ function formatJobType(value) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function jobStatusClass(value) {
-  const status = String(value || "").toLowerCase();
+function jobStepMetaSummary(step = {}) {
+  const meta = step.meta || {};
+  const keys = jobStepMetaKeys(step);
+  const chips = keys
+    .filter((key) => meta[key] !== undefined && meta[key] !== null && meta[key] !== "")
+    .slice(0, 8)
+    .map((key) => `<span title="${escapeAttr(String(meta[key]))}">${escapeHTML(formatJobType(key))} ${escapeHTML(formatJobStepValue(key, meta[key]))}</span>`);
+  return chips.join("") || escapeHTML(step.job_id || "-");
+}
+
+function jobStepMetaKeys(step = {}) {
+  const name = String(step.name || "").toLowerCase();
+  const shared = ["site_id", "env", "server_kind", "server", "container_id"];
+  if (name.includes("index segment")) {
+    return ["log_type", "bucket_start", "bucket_end", "path", "events_inserted", "log_events_inserted", "error_events", "security_probes", "slow_request_events", "segment_id"];
+  }
+  if (name.includes("rebuild rollups")) {
+    return ["from", "to", "rollups_repaired"];
+  }
+  if (name.includes("combine ")) {
+    return ["log_type", "from", "to", "segments_created", "files_combined", "lines_combined", "invalid_lines", "path"];
+  }
+  if (name.includes("download file")) {
+    return [...shared, "log_type", "remote_path", "remote_size", "bytes_written", "downloaded"];
+  }
+  if (name.includes("list remote files")) {
+    return [...shared, "root", "files_seen", "files_downloaded", "files_skipped"];
+  }
+  if (name.includes("connect sftp")) {
+    return [...shared, "address", "reason"];
+  }
+  if (name.includes("discover ")) {
+    return ["site_id", "env", "host", "address_count", "addresses"];
+  }
+  return [...shared, "servers_locked", "servers_skipped", "server_failures", "log_type", "remote_path", "remote_size", "bytes_written", "files_seen", "files_downloaded", "files_skipped", "events_inserted", "log_events_inserted", "rollups_repaired"];
+}
+
+function formatJobStepValue(key, value) {
+  if (key.includes("bytes") || key.includes("size")) return formatBytes(value);
+  if (Array.isArray(value)) return value.join(", ");
+  if (typeof value === "number") return formatNumber(value);
+  const text = String(value ?? "");
+  if (text.length > 54) return `${text.slice(0, 51)}...`;
+  return text;
+}
+
+function jobStatusLabel(item = {}) {
+  if (isInterruptedJob(item)) return "interrupted";
+  return String(item.status || "-");
+}
+
+function jobStatusClass(item = {}) {
+  if (isInterruptedJob(item)) return "warn";
+  const status = String(item.status || "").toLowerCase();
   if (status === "success") return "good";
   if (status === "failed") return "bad";
   if (status === "running") return "warn";
   return "";
+}
+
+function isInterruptedJob(item = {}) {
+  if (String(item.status || "").toLowerCase() !== "failed") return false;
+  return /(interrupted by application restart|context canceled)/i.test(`${item.last_error || ""} ${item.message || ""}`);
 }
 
 function jobScope(job = {}) {
@@ -1690,6 +2122,8 @@ function jobMetaSummary(job = {}) {
       ["Downloaded", meta.files_downloaded],
       ["Skipped", meta.files_skipped],
       ["Bytes", meta.bytes_downloaded, formatBytes],
+      ["Servers locked", meta.servers_locked],
+      ["Servers cooldown", meta.servers_skipped],
       ["Server failures", meta.server_failures],
     ],
     pipeline: [
@@ -1712,8 +2146,10 @@ function jobMetaSummary(job = {}) {
     ],
     refresh_ip_intel: [
       ["Refreshed", meta.refreshed],
-      ["Lookup failed", meta.lookup_failed],
-      ["Failed", meta.failed],
+      ["DNS/GeoIP misses", meta.lookup_failed],
+      ["Reverse DNS misses", meta.reverse_dns_failed],
+      ["GeoIP misses", meta.geoip_failed],
+      ["Hard failures", meta.failed],
     ],
     archive_logs: [
       ["Archives", meta.archives_written],
@@ -1755,6 +2191,55 @@ function formatDuration(value) {
   const minutes = Math.floor(seconds / 60);
   const rest = Math.round(seconds % 60);
   return `${minutes}m ${rest}s`;
+}
+
+function appStartedAt() {
+  const value = new Date(state.data.overview?.started_at || 0).getTime();
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function appUptimeLabel() {
+  const seconds = Number(state.data.overview?.uptime_sec || 0);
+  if (seconds > 0) return formatDuration(seconds * 1000);
+  const startedAt = appStartedAt();
+  return startedAt ? formatDuration(Date.now() - startedAt) : "-";
+}
+
+function eventLagLabel(seconds) {
+  const value = Number(seconds || 0);
+  if (!value) return "-";
+  return formatDuration(value * 1000);
+}
+
+function freshnessColor(seconds) {
+  const value = Number(seconds || 0);
+  if (!value || value < 15 * 60) return "green";
+  if (value < 60 * 60) return "amber";
+  return "red";
+}
+
+function countSinceAppStart(rows) {
+  const startedAt = appStartedAt();
+  if (!startedAt) return { count: rows.length, label: "" };
+  const count = rows.filter((item) => new Date(item.started_at || 0).getTime() >= startedAt).length;
+  return {
+    count,
+    label: `${formatNumber(count)} shown since app restart at ${shortTime(state.data.overview?.started_at)}.`,
+  };
+}
+
+function msUntil(value) {
+  const ts = new Date(value || 0).getTime();
+  if (!Number.isFinite(ts)) return 0;
+  return Math.max(0, ts - Date.now());
+}
+
+function lockReasonLabel(value) {
+  const reason = String(value || "").toLowerCase();
+  if (reason.includes("requested resource is locked") || reason.includes("administratively prohibited")) {
+    return "Pantheon resource lock";
+  }
+  return value ? "Collection cooldown" : "Cooldown";
 }
 
 function issueRow(item, index = 0) {
@@ -1935,13 +2420,27 @@ function rawFilesTable(rows) {
         <tr>
           <td>${escapeHTML([item.site_id, item.env].filter(Boolean).join(" / ") || "-")}<br><span class="subtle">${escapeHTML(item.container_id || "")}</span></td>
           <td>${escapeHTML(item.remote_path || item.local_path || "-")}<br><span class="subtle">${escapeHTML(item.log_type || "")}</span></td>
-          <td>${escapeHTML(item.status || "-")}</td>
+          <td>${rawFileStatusCell(item)}</td>
           <td>${formatBytes(item.remote_size || item.local_size || 0)}</td>
           <td>${shortTime(item.last_seen_at || item.downloaded_at || item.remote_mtime)}</td>
         </tr>
       `).join("")}</tbody>
     </table></div>
   `;
+}
+
+function rawFileStatusCell(item = {}) {
+  const stale = item.status === "failed" && !rawFileSeenRecently(item.last_seen_at);
+  const status = `${escapeHTML(item.status || "-")}${stale ? ` <span class="subtle">(historical)</span>` : ""}`;
+  const error = item.error ? `<br><span class="subtle">${escapeHTML(item.error)}</span>` : "";
+  return `${status}${error}`;
+}
+
+function rawFileSeenRecently(value) {
+  const ts = new Date(value || 0).getTime();
+  if (!Number.isFinite(ts) || ts <= 0) return false;
+  const windowSeconds = Number(state.data.collectorHealth?.raw_files?.stats?.failed_recent_window_seconds || 3600);
+  return Date.now() - ts <= Math.max(60, windowSeconds) * 1000;
 }
 
 function topPathsPaginatedPanel() {
@@ -1977,6 +2476,97 @@ function topIPTrafficPanel() {
       ${pager("trafficIPs", page)}
     </article>
   `;
+}
+
+function queryParamsPanel() {
+  const rows = filtered(searchItems(state.data.traffic.query_params || [], (item) => `${item.family} ${item.param} ${item.site_id} ${item.env} ${item.example_path} ${item.example_query} ${item.example_value}`));
+  const page = paginate(rows, state.pages.trafficQueries, 10);
+  state.pages.trafficQueries = page.page;
+  return `
+    <article class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Query Parameters</h2>
+          <p>Traffic grouped by query key so tracking parameters, cache variants, and error-heavy URLs are visible.</p>
+        </div>
+        <span class="pill">${formatNumber(rows.length)} params</span>
+      </div>
+      ${queryParamsTable(page.rows)}
+      ${pager("trafficQueries", page)}
+    </article>
+  `;
+}
+
+function queryParamsTable(rows) {
+  if (!rows.length) return empty("No query-parameter traffic found.");
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Parameter</th>
+            <th>Site</th>
+            <th>Requests</th>
+            <th>Values</th>
+            <th>5xx</th>
+            <th>Slow</th>
+            <th>IPs</th>
+            <th>Paths</th>
+            <th>Avg</th>
+            <th>Sample</th>
+          </tr>
+        </thead>
+        <tbody>${rows.map((item) => {
+          const family = queryFamilyMeta(item.family || item.param || "");
+          const valueState = queryValueState(item);
+          return `
+          <tr>
+            <td><span class="row-title"><strong>${escapeHTML(item.param || "-")}</strong><span class="pill query-badge" title="${escapeAttr(family.title)}">${escapeHTML(family.label)}</span></span></td>
+            <td>${escapeHTML(item.site_id || "-")}<br><span class="subtle">${escapeHTML(item.env || "")}</span></td>
+            <td>${formatNumber(item.requests)}</td>
+            <td>
+              <span class="row-title">
+                <strong>${formatNumber(item.distinct_values)}</strong>
+                <span><span class="pill ${escapeAttr(valueState.className)}" title="${escapeAttr(valueState.title)}">${escapeHTML(valueState.label)}</span> ${escapeHTML(shortToken(item.example_value || ""))}</span>
+              </span>
+            </td>
+            <td>${formatNumber(item.status_5xx)}</td>
+            <td>${formatNumber(item.slow_requests)}</td>
+            <td>${formatNumber(item.unique_ips)}</td>
+            <td>${formatNumber(item.unique_paths)}</td>
+            <td>${formatMs(item.avg_request_time_ms)}</td>
+            <td><span class="row-title"><strong>${escapeHTML(item.example_path || "/")}</strong><span>${queryBadgeHTML(item.example_query)} ${escapeHTML(item.example_query || "")}</span></span></td>
+          </tr>`;
+        }).join("")}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function queryValueState(item = {}) {
+  const requests = Number(item.requests || 0);
+  const distinct = Number(item.distinct_values || 0);
+  const example = String(item.example_value || "");
+  const ratioValue = ratio(distinct, requests);
+  if (!distinct) {
+    return { label: "no value", className: "", title: "This parameter is usually present without a value." };
+  }
+  if (/PANTHEON_STRIPPED|TRACKING_STRIPPED/i.test(example)) {
+    return { label: "stripped", className: "good", title: "The sampled value is stripped before logging, so high-cardinality tracking values are not visible here." };
+  }
+  if (/^srsltid$/i.test(String(item.param || item.family || ""))) {
+    return { label: "raw ids", className: "warn", title: `${formatNumber(distinct)} distinct srsltid values are visible in logs. Add or verify edge stripping if this should be collapsed.` };
+  }
+  if (distinct >= 1000) {
+    return { label: "many values", className: "warn", title: `${formatNumber(distinct)} distinct values are visible in logs.` };
+  }
+  if (requests >= 100 && ratioValue >= 0.5) {
+    return { label: "mostly unique", className: "warn", title: `${formatPercent(ratioValue)} of requests have distinct values. This is usually a tracking ID or cache-busting parameter.` };
+  }
+  if (distinct === 1) {
+    return { label: "single value", className: "", title: "All sampled requests use one value for this parameter." };
+  }
+  return { label: "reused", className: "", title: `${formatPercent(ratioValue)} of requests have distinct values.` };
 }
 
 function pathsTable(rows) {
@@ -2079,11 +2669,11 @@ function compactRow(label, meta, value = "") {
 
 function ipLink(ip, label = ip, meta = null) {
   if (!ip) return "-";
-  const trust = ipTrustMeta(ip, meta);
-  const trustClass = trust.trusted ? " trusted-ip" : "";
-  const title = trust.trusted ? ` title="${escapeAttr(trust.label)}"` : "";
-  const badge = trust.trusted ? `<span class="trusted-ip-badge">${iconHTML("fa-circle-check")}</span>` : "";
-  return `<button class="link-button ip-link${trustClass}" type="button" data-detail="ip" data-value="${escapeAttr(ip)}"${title}>${escapeHTML(label || ip)}${badge}</button>`;
+  const status = ipTrustMeta(ip, meta);
+  const statusClass = status.kind ? ` ${status.kind}-ip` : "";
+  const title = status.label ? ` title="${escapeAttr(status.label)}"` : "";
+  const badge = status.icon ? `<span class="ip-status-badge">${iconHTML(status.icon)}</span>` : "";
+  return `<button class="link-button ip-link${statusClass}" type="button" data-detail="ip" data-value="${escapeAttr(ip)}"${title}>${escapeHTML(label || ip)}${badge}</button>`;
 }
 
 function collectIPTrust() {
@@ -2096,8 +2686,9 @@ function collectIPTrust() {
     }
     if (typeof value !== "object") return;
     const ip = value.ip || value.client_ip || value.source_ip || "";
-    if (ip && isTrustedIPMeta(value)) {
-      trust[String(ip)] = trustedIPLabel(value);
+    if (ip) {
+      const status = ipStatusFromMeta(value);
+      if (status.kind) trust[String(ip)] = status;
     }
     Object.values(value).forEach((item) => {
       if (item && typeof item === "object") visit(item, depth + 1);
@@ -2110,18 +2701,62 @@ function collectIPTrust() {
 }
 
 function ipTrustMeta(ip, meta = null) {
-  if (meta && isTrustedIPMeta(meta)) {
-    return { trusted: true, label: trustedIPLabel(meta) };
+  if (meta) {
+    const status = ipStatusFromMeta(meta);
+    if (status.kind) return status;
   }
-  const label = state.ipTrust[String(ip || "")];
-  return { trusted: Boolean(label), label: label || "" };
+  return state.ipTrust[String(ip || "")] || { kind: "", label: "", icon: "" };
 }
 
-function isTrustedIPMeta(item = {}) {
+function ipStatusFromMeta(item = {}) {
   const intel = item.stored_intel || item.storedIntel || {};
   const action = String(item.manual_action || item.manualAction || intel.manual_action || intel.manualAction || "").toLowerCase();
   const actor = String(item.actor_type || item.actorType || intel.actor_type || intel.actorType || "").toLowerCase();
-  return action === "allowlisted" || action === "verified" || item.verified_actor || item.verifiedActor || intel.verified_actor || intel.verifiedActor || item.verified_source || item.verifiedSource || intel.forward_confirmed || intel.forwardConfirmed || actor === "platform";
+  const knownActor = item.known_actor || item.knownActor || intel.known_actor || intel.knownActor || "";
+  if (action === "allowlisted" || action === "verified") return { kind: "trusted", label: trustedIPLabel(item), icon: "fa-circle-check" };
+  if (isSuspiciousIPMeta(item)) return { kind: "suspicious", label: suspiciousIPLabel(item), icon: "fa-triangle-exclamation" };
+  if (providerVerifiedIPMeta(item)) return { kind: "provider-verified", label: providerIPLabel(item), icon: "fa-shield-halved" };
+  if (String(knownActor).toLowerCase() === "tor exit" || actor === "tor") return { kind: "suspicious", label: "Tor exit", icon: "fa-triangle-exclamation" };
+  return { kind: "", label: "", icon: "" };
+}
+
+function providerVerifiedIPMeta(item = {}) {
+  const intel = item.stored_intel || item.storedIntel || {};
+  return Boolean(item.provider_verified || item.providerVerified || intel.provider_verified || intel.providerVerified);
+}
+
+function isSuspiciousIPMeta(item = {}) {
+  const intel = item.stored_intel || item.storedIntel || {};
+  const action = String(item.manual_action || item.manualAction || intel.manual_action || intel.manualAction || "").toLowerCase();
+  const actor = String(item.actor_type || item.actorType || intel.actor_type || intel.actorType || "").toLowerCase();
+  const knownActor = String(item.known_actor || item.knownActor || intel.known_actor || intel.knownActor || "").toLowerCase();
+  const category = String(item.category || item.rule_key || item.ruleKey || item.match_reason || item.matchReason || item.kind || item.family || "").toLowerCase();
+  const risk = Number(item.risk_score ?? item.riskScore ?? intel.risk_score ?? intel.riskScore ?? 0);
+  const requests = Number(item.requests ?? item.Requests ?? item.traffic?.requests ?? 0);
+  const status4xx = Number(item.status_4xx ?? item.status4xx ?? item.Status4xx ?? item.traffic?.status_4xx ?? 0);
+  const status5xx = Number(item.status_5xx ?? item.status5xx ?? item.Status5xx ?? item.traffic?.status_5xx ?? 0);
+  const provider = providerVerifiedIPMeta(item);
+  const infra = provider || actor === "cloud" || actor === "datacenter" || actor === "edge" || actor === "hosting" || actor === "vps" || Boolean(item.is_datacenter || item.isDatacenter || intel.is_datacenter || intel.isDatacenter);
+  if (action === "suspicious" || action === "watch") return true;
+  if (actor === "tor" || knownActor === "tor exit" || item.is_tor_exit || item.isTorExit || intel.is_tor_exit || intel.isTorExit) return true;
+  if (/(sql|xss|injection|traversal|secret_file|admin_tool|admin_path|admin_login|credential|scanner|probe)/.test(category)) return true;
+  if (infra && requests >= 100 && (status4xx + status5xx) >= 50 && ((status4xx + status5xx) / requests) >= 0.80) return true;
+  return risk >= 70;
+}
+
+function suspiciousIPLabel(item = {}) {
+  const action = item.manual_action || item.manualAction || item.stored_intel?.manual_action || item.storedIntel?.manualAction || "";
+  if (String(action).toLowerCase() === "suspicious") return "Manually marked suspicious";
+  const category = item.category || item.rule_key || item.ruleKey || item.match_reason || item.matchReason || "";
+  if (category) return `Suspicious signal: ${String(category).replaceAll("_", " ")}`;
+  return "Suspicious source";
+}
+
+function providerIPLabel(item = {}) {
+  const intel = item.stored_intel || item.storedIntel || {};
+  const name = item.provider_name || item.providerName || intel.provider_name || intel.providerName || item.known_actor || item.knownActor || intel.known_actor || intel.knownActor || "Official provider";
+  const range = item.provider_range || item.providerRange || intel.provider_range || intel.providerRange || "";
+  return range ? `${name} official range ${range}` : `${name} official range`;
 }
 
 function trustedIPLabel(item = {}) {
@@ -2129,7 +2764,7 @@ function trustedIPLabel(item = {}) {
   const action = String(item.manual_action || item.manualAction || intel.manual_action || intel.manualAction || "").toLowerCase();
   if (action === "allowlisted") return item.manual_label || item.manualLabel || intel.manual_label || intel.manualLabel || item.known_actor || item.knownActor || intel.known_actor || intel.knownActor || "Allowlisted IP";
   if (item.known_actor || item.knownActor || intel.known_actor || intel.knownActor) return `${item.known_actor || item.knownActor || intel.known_actor || intel.knownActor} verified`;
-  if (item.verified_source || item.verifiedSource) return "Forward-confirmed source";
+  if (item.verified_source || item.verifiedSource) return "Verified source";
   return "Trusted source";
 }
 
@@ -2142,8 +2777,12 @@ function userAgentLink(agent, label = "") {
   const item = typeof agent === "string" ? { family: userAgentFamily(agent), sample: agent } : (agent || {});
   const sample = item.sample || item.user_agent || item.family || "Unknown";
   const info = parseUserAgent(item);
+  const status = userAgentStatusMeta(item, info);
+  const statusClass = status.kind ? ` ${status.kind}-ua` : "";
+  const title = status.label ? ` title="${escapeAttr(status.label)}"` : "";
+  const badge = status.icon ? `<span class="ua-status-badge">${iconHTML(status.icon)}</span>` : "";
   const key = cacheDetail("user-agent", item, sample);
-  return `<button class="link-button" type="button" data-detail="user-agent" data-value="${escapeAttr(key)}">${escapeHTML(label || info.label || item.family || sample || "Unknown")}</button>`;
+  return `<button class="link-button ua-link${statusClass}" type="button" data-detail="user-agent" data-value="${escapeAttr(key)}"${title}>${escapeHTML(label || info.label || item.family || sample || "Unknown")}${badge}</button>`;
 }
 
 function userAgentListLabel(agent) {
@@ -2168,6 +2807,40 @@ function userAgentMetaLine(agent, info = parseUserAgent(agent)) {
     risk ? `Risk ${risk}/100` : "",
     errors ? `${formatNumber(errors)} errors` : "",
   ].filter(Boolean).join(" / ");
+}
+
+function userAgentStatusMeta(agent = {}, info = parseUserAgent(agent)) {
+  const item = typeof agent === "string" ? { sample: agent } : (agent || {});
+  if (isIgnoredUserAgent(item, info)) return { kind: "", label: "", icon: "" };
+  if (isVerifiedUserAgent(item, info)) return { kind: "verified", label: "Verified bot/source", icon: "fa-circle-check" };
+  if (isMaliciousUserAgent(item, info)) return { kind: "malicious", label: "Known malicious scanner/tool", icon: "fa-triangle-exclamation" };
+  if (isOfficialNamedBot(item, info)) return { kind: "official", label: `${info.knownActor || item.known_actor || info.family || "Known bot"} user agent`, icon: "fa-shield-halved" };
+  return { kind: "", label: "", icon: "" };
+}
+
+function isIgnoredUserAgent(item = {}, info = parseUserAgent(item)) {
+  const text = `${item.sample || ""} ${item.user_agent || ""} ${item.family || ""} ${item.known_actor || ""} ${info.knownActor || ""} ${info.family || ""}`.toLowerCase();
+  return text.includes("yandex");
+}
+
+function isVerifiedUserAgent(item = {}, info = parseUserAgent(item)) {
+  return Boolean(item.verified_source || item.verifiedSource || Number(item.verified_requests || item.verifiedRequests || 0) > 0 || Number(item.verified_ips || item.verifiedIPs || 0) > 0);
+}
+
+function isMaliciousUserAgent(item = {}, info = parseUserAgent(item)) {
+  const text = `${item.sample || ""} ${item.user_agent || ""} ${item.family || ""} ${item.actor_type || ""} ${item.known_actor || ""} ${info.family || ""} ${info.actorType || ""}`.toLowerCase();
+  const risk = Number(item.risk_score || item.riskScore || 0);
+  if (text.includes("malicious")) return true;
+  if (/\b(sqlmap|nikto|nuclei|masscan|zgrab|zmap|wpscan|dirbuster|gobuster|ffuf|dirsearch|feroxbuster|acunetix|nessus|openvas|netsparker)\b/.test(text)) return true;
+  return risk >= 90 && /(scanner|scan|exploit|vulnerability|tool|script)/.test(text);
+}
+
+function isOfficialNamedBot(item = {}, info = parseUserAgent(item)) {
+  const actor = String(item.actor_type || info.actorType || "").toLowerCase();
+  const known = String(item.known_actor || info.knownActor || "").trim();
+  if (!known) return false;
+  if (!["crawler", "fetcher", "monitor"].includes(actor) && !info.isBot) return false;
+  return true;
 }
 
 function linkifyIPs(value) {
@@ -2216,6 +2889,7 @@ function resetPagination() {
   state.pages = {
     trafficPaths: 1,
     trafficIPs: 1,
+    trafficQueries: 1,
     botRecommendations: 1,
     botAgents: 1,
     botSourceIPs: 1,
@@ -2231,8 +2905,12 @@ function resetPagination() {
     alertsActive: 1,
     alertRules: 1,
     pulseJobs: 1,
+    pulseJobSteps: 1,
+    pulseCooldowns: 1,
     pulseSegments: 1,
     pulseRawFiles: 1,
+    pulseArchives: 1,
+    pulseArchiveImports: 1,
     pulseDeliveries: 1,
   };
   if (state.drawer) state.drawer.pages = {};
@@ -2971,7 +3649,7 @@ function userAgentSectionPage(item, key, rows, prefix) {
 function incidentRows() {
   const alerts = state.data.alerts.map(alertRow);
   const errors = (state.data.traffic.recent_errors || []).map((event) => `
-    <div class="list-row"><div><strong>${escapeHTML(event.status || "Error")} ${escapeHTML(event.path || "/")}</strong><span>${escapeHTML(event.site_id || "-")} / ${event.client_ip ? ipLink(event.client_ip) : "-"} / ${event.user_agent ? userAgentLink(event.user_agent, shortUserAgentSample(event.user_agent)) : "-"} / ${shortTime(event.ts)}</span></div><span class="severity ${Number(event.status) >= 500 ? "critical" : "high"}">${escapeHTML(event.status || "error")}</span></div>
+    <div class="list-row"><div><strong>${escapeHTML(event.status || "Error")} ${requestLineHTML(event, false)}</strong><span>${escapeHTML(event.site_id || "-")} / ${event.client_ip ? ipLink(event.client_ip) : "-"} / ${event.user_agent ? userAgentLink(event.user_agent, shortUserAgentSample(event.user_agent)) : "-"} / ${shortTime(event.ts)}</span></div><span class="severity ${Number(event.status) >= 500 ? "critical" : "high"}">${escapeHTML(event.status || "error")}</span></div>
   `);
   return alerts.concat(errors);
 }
@@ -3216,10 +3894,18 @@ function detectBot(sample, knownActor = "") {
   const patterns = [
     [/Googlebot\/?([\d.]*)/i, "Googlebot", "Google"],
     [/bingbot\/?([\d.]*)/i, "Bingbot", "Microsoft"],
+    [/msnbot\/?([\d.]*)/i, "MSNBot", "Microsoft"],
     [/DuckDuckBot\/?([\d.]*)/i, "DuckDuckBot", "DuckDuckGo"],
+    [/DuckAssistBot\/?([\d.]*)/i, "DuckAssistBot", "DuckDuckGo"],
     [/YandexBot\/?([\d.]*)/i, "YandexBot", "Yandex"],
     [/Baiduspider\/?([\d.]*)/i, "Baiduspider", "Baidu"],
     [/Applebot\/?([\d.]*)/i, "Applebot", "Apple"],
+    [/Yahoo!? Slurp\/?([\d.]*)/i, "Yahoo Slurp", "Yahoo"],
+    [/Slurp\/?([\d.]*)/i, "Yahoo Slurp", "Yahoo"],
+    [/Ask Jeeves\/Teoma\/?([\d.]*)/i, "Teoma", "Ask"],
+    [/Teoma\/?([\d.]*)/i, "Teoma", "Ask"],
+    [/Aolbot-News\/?([\d.]*)/i, "AOLbot News", "AOL"],
+    [/Aolbot\/?([\d.]*)/i, "AOLbot", "AOL"],
     [/GPTBot\/?([\d.]*)/i, "GPTBot", "OpenAI"],
     [/ChatGPT-User\/?([\d.]*)/i, "ChatGPT User", "OpenAI"],
     [/ClaudeBot\/?([\d.]*)/i, "ClaudeBot", "Anthropic"],
@@ -3359,6 +4045,33 @@ function filtered(items) {
   return items;
 }
 
+function extractIPSearchValue(raw) {
+  const query = parseSearchQuery(raw);
+  for (const group of query.groups) {
+    for (const term of group) {
+      if (!term.field || !["ip", "client_ip", "client-ip", "source_ip", "source-ip"].includes(term.field)) continue;
+      const value = String(term.value || "").trim();
+      if (/^[0-9a-f:.]+$/i.test(value)) return value;
+    }
+  }
+  return "";
+}
+
+function advancedSearchKey(ip) {
+  return [ip || "", state.range || "", state.siteID || ""].join("|");
+}
+
+function advancedIPSearchParams() {
+  return buildFilterQuery({
+    limit: 100,
+    sites_offset: 0,
+    top_paths_offset: 0,
+    url_hits_offset: 0,
+    requests_offset: 0,
+    user_agents_offset: 0,
+  });
+}
+
 function parseSearchQuery(raw) {
   const groups = String(raw || "")
     .split(/\s+or\s+/i)
@@ -3478,6 +4191,22 @@ async function handleAction(button) {
       return `${formatNumber(result.archives_written || 0)} archives written / ${formatNumber(result.files_archived || 0)} files archived`;
     });
   }
+  if (action === "clean-expired-imports") {
+    const expired = Number(state.data.storage?.temporary_imports?.expired_imports || state.data.retention?.temporary_imports_matched || 0);
+    if (!expired) {
+      toast("No expired temporary imports to clean");
+      return;
+    }
+    if (!confirm(`Delete ${formatNumber(expired)} expired temporary import${expired === 1 ? "" : "s"} and rebuild affected rollups?`)) return;
+    return runButton(button, "Expired imports cleaned", async () => {
+      const result = await fetchJSON("/api/v1/system/retention", {
+        method: "POST",
+        body: JSON.stringify({ temporary_imports_only: true }),
+      });
+      await refreshAll();
+      return `${formatNumber(result.temporary_imports_deleted || 0)} imports deleted / ${formatNumber(result.rollups_rebuilt || 0)} rollups rebuilt`;
+    });
+  }
   if (action === "import-archive") {
     const archiveID = button.dataset.archiveId;
     if (!archiveID) return;
@@ -3547,6 +4276,10 @@ async function handleAction(button) {
       }
       if (key === "pulseJobs" && !state.search) {
         await loadJobPage(page);
+        return;
+      }
+      if (key === "pulseJobSteps" && !state.search) {
+        await loadJobStepPage(page);
         return;
       }
       state.pages[key] = Math.max(1, page);
@@ -3837,7 +4570,7 @@ function renderRequestDetail(item) {
   return `
     <article class="trace-hero">
       <span class="method ${String(item.method || "GET").toLowerCase()}">${escapeHTML(item.method || "GET")}</span>
-      <strong>${escapeHTML(item.path || "/")}</strong>
+      <strong>${requestLineHTML(item, false)}</strong>
       <span class="severity ${status >= 500 ? "critical" : status >= 400 ? "high" : "low"}">${status || "-"}</span>
       <span>${formatMs(item.request_time_ms || 0)}</span>
       <span>Risk ${risk}/100</span>
@@ -3859,6 +4592,7 @@ function renderRequestDetail(item) {
         <h3>Risk Summary</h3>
         ${factsRich([
           ["Status class", escapeHTML(status >= 500 ? "Server error" : status >= 400 ? "Client error" : "Success")],
+          ["Query Family", queryFamilyLabel(item.query) || "-"],
           ["Query string", escapeHTML(item.query || "-")],
           ["Referer", escapeHTML(item.referer || "-")],
           ["User Agent", item.user_agent ? userAgentLink(item.user_agent, item.user_agent) : "-"],
@@ -3937,7 +4671,7 @@ function renderReportDetail(item) {
 }
 
 function reportChartCard(chart, index = 0) {
-  const points = chart.data || [];
+  const points = sortedReportChartPoints(chart.data || []);
   const pageKey = `reportChart${index}Points`;
   const page = drawerPage(pageKey, points, 6);
   const values = points.map((point) => Number(point.value || 0));
@@ -4000,6 +4734,22 @@ function reportChartVisual(chart, points) {
       </div>
     </div>
   `;
+}
+
+function sortedReportChartPoints(points) {
+  const rows = Array.isArray(points) ? [...points] : [];
+  const hasTimestamps = rows.some((point) => point?.timestamp && !Number.isNaN(new Date(point.timestamp).getTime()));
+  if (!hasTimestamps) return rows;
+  return rows.sort((a, b) => {
+    const aTime = reportPointTime(a);
+    const bTime = reportPointTime(b);
+    return aTime - bTime;
+  });
+}
+
+function reportPointTime(point) {
+  const value = new Date(point?.timestamp || "").getTime();
+  return Number.isNaN(value) ? Number.POSITIVE_INFINITY : value;
 }
 
 function reportChartColor(color) {
@@ -4248,7 +4998,7 @@ function requestRows(rows) {
         <tr>
           <td>${shortTime(row.ts)}</td>
           ${hasSource ? `<td>${ipLink(row.client_ip || row.ip)}</td>` : ""}
-          <td>${escapeHTML(row.method || "GET")} ${escapeHTML(row.path || "/")}</td>
+          <td>${requestLineHTML(row)}</td>
           <td><span class="severity ${Number(row.status) >= 500 ? "critical" : Number(row.status) >= 400 ? "high" : "low"}">${escapeHTML(row.status || "-")}</span></td>
           <td>${formatBytes(row.bytes_sent)}</td>
         </tr>
@@ -4266,7 +5016,7 @@ function securityRequestRows(rows) {
         <tr>
           <td>${shortTime(row.ts)}</td>
           <td>${ipLink(row.client_ip)}</td>
-          <td>${escapeHTML(row.method || "GET")} ${escapeHTML(row.path || "/")}<br><span class="subtle">${escapeHTML(row.site_id || "-")} / ${row.user_agent ? userAgentLink(row.user_agent, row.user_agent) : ""}</span></td>
+          <td>${requestLineHTML(row)}<br><span class="subtle">${escapeHTML(row.site_id || "-")} / ${row.user_agent ? userAgentLink(row.user_agent, row.user_agent) : ""}</span></td>
           <td><span class="severity ${Number(row.status) >= 500 ? "critical" : Number(row.status) >= 400 ? "high" : "low"}">${escapeHTML(row.status || "-")}</span></td>
         </tr>
       `).join("")}</tbody>
@@ -4285,7 +5035,7 @@ function userAgentRequestRows(rows) {
         <tr>
           <td>${shortTime(row.ts)}</td>
           <td>${ipLink(row.client_ip)}</td>
-          <td>${escapeHTML(row.method || "GET")} ${escapeHTML(row.path || "/")}<br><span class="subtle">${escapeHTML(row.site_id || "-")} / ${escapeHTML(row.env || "-")}</span></td>
+          <td>${requestLineHTML(row)}<br><span class="subtle">${escapeHTML(row.site_id || "-")} / ${escapeHTML(row.env || "-")}</span></td>
           <td><button class="button small" type="button" data-detail="request" data-value="${escapeAttr(requestKey)}">${escapeHTML(row.status || "-")}</button></td>
         </tr>
       `}).join("")}</tbody>
@@ -4454,7 +5204,7 @@ function renderPrintableReport(item) {
 }
 
 function printableChart(chart) {
-  const rows = chart.data || [];
+  const rows = sortedReportChartPoints(chart.data || []);
   return `
     <h3>${escapeHTML(chart.title || chart.key || "Chart")}</h3>
     <p>${escapeHTML(chart.kind || "chart")} / ${escapeHTML(chart.unit || "count")} / ${formatNumber(rows.length)} points</p>
@@ -4510,7 +5260,7 @@ function reportToMarkdown(item) {
 }
 
 function markdownChart(chart) {
-  const rows = chart.data || [];
+  const rows = sortedReportChartPoints(chart.data || []);
   return [
     `### ${chart.title || chart.key || "Chart"}`,
     `${chart.kind || "chart"} / ${chart.unit || "count"} / ${rows.length} points`,
@@ -4919,9 +5669,8 @@ async function logout() {
 }
 
 function drawCharts() {
-  qsa(".sparkline").forEach((canvas) => drawSpark(canvas, canvas.dataset.spark.split(",").map(Number), cssColor(canvas.dataset.color || "cyan")));
   if (qs("#trafficLine")) {
-    const rows = state.data.traffic.timeline || [];
+    const rows = routeTimelineRows();
     drawTimeline(qs("#trafficLine"), rows);
     installTimelineHover(qs("#trafficLine"), rows);
   }
@@ -4932,31 +5681,105 @@ function drawCharts() {
   }
 }
 
-function drawSpark(canvas, values, color) {
-  const ctx = setupCanvas(canvas);
-  const { width, height } = canvas.getBoundingClientRect();
-  drawLine(ctx, values, width, height, color, 2);
+function sortedTimelineRows(rows) {
+  return [...rows].sort((a, b) => new Date(a.bucket_ts || 0) - new Date(b.bucket_ts || 0));
+}
+
+function routeTimelineRows() {
+  if (state.route === "search") {
+    const events = currentSearchEvents();
+    if (events.length) return timelineRowsFromEvents(events);
+  }
+  return sortedTimelineRows(state.data.traffic.timeline || []);
+}
+
+function currentSearchEvents() {
+  const searchIP = extractIPSearchValue(state.search);
+  const advancedKey = advancedSearchKey(searchIP);
+  const usingAdvancedEvents = searchIP && state.advancedSearch.key === advancedKey;
+  const sourceEvents = usingAdvancedEvents ? state.advancedSearch.events : (state.data.traffic.recent_errors || []);
+  if (usingAdvancedEvents) return sourceEvents;
+  return filtered(searchItems(sourceEvents, (item) => `${item.status} ${item.site_id} ${item.env} ${item.client_ip} ${item.method} ${item.path} ${item.user_agent}`));
+}
+
+function timelineRowsFromEvents(events) {
+  const rangeMs = activeRangeMs();
+  const bucketMs = Math.max(60 * 1000, Math.ceil(rangeMs / 60 / (60 * 1000)) * 60 * 1000);
+  const buckets = new Map();
+  events.forEach((event) => {
+    const ts = new Date(event.ts || event.timestamp || event.created_at || 0).getTime();
+    if (!Number.isFinite(ts) || ts <= 0) return;
+    const bucket = Math.floor(ts / bucketMs) * bucketMs;
+    const row = buckets.get(bucket) || { bucket_ts: new Date(bucket).toISOString(), requests: 0, status_4xx: 0, status_5xx: 0 };
+    row.requests += 1;
+    const status = Number(event.status || 0);
+    if (status >= 400 && status < 500) row.status_4xx += 1;
+    if (status >= 500 && status < 600) row.status_5xx += 1;
+    buckets.set(bucket, row);
+  });
+  return sortedTimelineRows(Array.from(buckets.values()));
+}
+
+function activeRangeMs() {
+  const value = String(state.range || "24h").toLowerCase();
+  const match = value.match(/^(\d+)(m|h|d)$/);
+  if (!match) return 24 * 60 * 60 * 1000;
+  const amount = Number(match[1]);
+  if (match[2] === "m") return amount * 60 * 1000;
+  if (match[2] === "h") return amount * 60 * 60 * 1000;
+  return amount * 24 * 60 * 60 * 1000;
 }
 
 function drawTimeline(canvas, rows) {
   const ctx = setupCanvas(canvas);
   const { width, height } = canvas.getBoundingClientRect();
-  drawFrame(ctx, width, height);
-  const values = rows.length ? rows.map((row) => row.requests || 0) : sparkValues(24, 120, 900);
-  drawLine(ctx, values, width, height, cssColor("cyan"), 2.5);
+  const axisHeight = rows.length > 1 ? 18 : 0;
+  const plotHeight = Math.max(40, height - axisHeight);
+  drawFrame(ctx, width, plotHeight);
+  if (!rows.length) {
+    drawNoChartData(ctx, width, plotHeight);
+    return;
+  }
+  const values = rows.map((row) => row.requests || 0);
+  drawLine(ctx, values, width, plotHeight, cssColor("cyan"), 2.5);
   const errors = rows.map((row) => (row.status_4xx || 0) + (row.status_5xx || 0));
-  if (errors.some(Boolean)) drawLine(ctx, errors, width, height, cssColor("red"), 2);
+  if (errors.some(Boolean)) drawLine(ctx, errors, width, plotHeight, cssColor("red"), 2);
+  drawTimelineAxis(ctx, rows, width, height);
+}
+
+function drawNoChartData(ctx, width, height) {
+  ctx.fillStyle = "#91a3b8";
+  ctx.font = "12px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("No data in selected range", width / 2, height / 2);
+  ctx.textAlign = "start";
+  ctx.textBaseline = "alphabetic";
+}
+
+function drawTimelineAxis(ctx, rows, width, height) {
+  if (rows.length <= 1) return;
+  const first = shortTime(rows[0].bucket_ts);
+  const last = shortTime(rows[rows.length - 1].bucket_ts);
+  ctx.fillStyle = "#91a3b8";
+  ctx.font = "11px sans-serif";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(first, 4, height - 4);
+  const lastWidth = ctx.measureText(last).width;
+  ctx.fillText(last, Math.max(4, width - lastWidth - 4), height - 4);
+  ctx.strokeStyle = "rgba(145, 163, 184, 0.35)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(4, height - 16);
+  ctx.lineTo(width - 4, height - 16);
+  ctx.stroke();
 }
 
 function drawStatusBars(canvas, rows) {
   const ctx = setupCanvas(canvas);
   const { width, height } = canvas.getBoundingClientRect();
   drawFrame(ctx, width, height);
-  const buckets = rows.length ? rows : [
-    { status: 200, requests: state.data.analysis?.totals?.requests || 0 },
-    { status: 404, requests: state.data.analysis?.totals?.status_4xx || 0 },
-    { status: 500, requests: state.data.analysis?.totals?.status_5xx || 0 },
-  ];
+  const buckets = statusClassRows(rows);
   const max = Math.max(1, ...buckets.map((row) => row.requests || 0));
   const gap = 10;
   const barWidth = Math.max(16, (width - gap * (buckets.length + 1)) / Math.max(1, buckets.length));
@@ -4964,7 +5787,7 @@ function drawStatusBars(canvas, rows) {
     const h = ((row.requests || 0) / max) * (height - 44);
     const x = gap + index * (barWidth + gap);
     const y = height - h - 24;
-    ctx.fillStyle = statusColor(row.status);
+    ctx.fillStyle = statusBucketColor(row.status);
     ctx.fillRect(x, y, barWidth, h);
     ctx.fillStyle = "#91a3b8";
     ctx.font = "11px sans-serif";
@@ -4992,11 +5815,7 @@ function installTimelineHover(canvas, rows) {
 }
 
 function installStatusHover(canvas, rows) {
-  const buckets = rows.length ? rows : [
-    { status: 200, requests: state.data.analysis?.totals?.requests || 0 },
-    { status: 404, requests: state.data.analysis?.totals?.status_4xx || 0 },
-    { status: 500, requests: state.data.analysis?.totals?.status_5xx || 0 },
-  ];
+  const buckets = statusClassRows(rows);
   canvas.dataset.hoverReady = "status";
   canvas.onmousemove = (event) => {
     if (!buckets.length) return hideChartTooltip();
@@ -5011,11 +5830,31 @@ function installStatusHover(canvas, rows) {
     const row = buckets[index] || {};
     showChartTooltip(event, `
       <strong>Status ${escapeHTML(row.status || "n/a")}</strong>
-      <span><i style="background: ${statusColor(row.status)}"></i>${formatNumber(row.requests)} requests</span>
+      <span><i style="background: ${statusBucketColor(row.status)}"></i>${formatNumber(row.requests)} requests</span>
       <span>${formatPercent(ratio(row.requests, state.data.analysis?.totals?.requests))} of traffic</span>
     `);
   };
   canvas.onmouseleave = hideChartTooltip;
+}
+
+function statusClassRows(rows) {
+  const buckets = [
+    { status: "2xx", requests: 0 },
+    { status: "3xx", requests: 0 },
+    { status: "4xx", requests: 0 },
+    { status: "5xx", requests: 0 },
+  ];
+  const source = rows.length ? rows : [
+    { status: 200, requests: state.data.analysis?.totals?.requests || 0 },
+    { status: 400, requests: state.data.analysis?.totals?.status_4xx || 0 },
+    { status: 500, requests: state.data.analysis?.totals?.status_5xx || 0 },
+  ];
+  source.forEach((row) => {
+    const status = Number(row.status || 0);
+    const index = status >= 500 ? 3 : status >= 400 ? 2 : status >= 300 ? 1 : status >= 200 ? 0 : -1;
+    if (index >= 0) buckets[index].requests += Number(row.requests || 0);
+  });
+  return buckets;
 }
 
 function showChartTooltip(event, html) {
@@ -5076,10 +5915,6 @@ function drawLine(ctx, values, width, height, color, lineWidth) {
   ctx.stroke();
 }
 
-function sparkValues(count = 18, min = 10, max = 80) {
-  return Array.from({ length: count }, (_, index) => Math.round(min + Math.abs(Math.sin(index * 1.7 + count) * max) + (index % 5) * 4));
-}
-
 function cssColor(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(`--${name}`).trim() || name;
 }
@@ -5092,12 +5927,21 @@ function statusColor(status) {
   return cssColor("green");
 }
 
+function statusBucketColor(status) {
+  const value = String(status || "");
+  if (value.startsWith("5")) return cssColor("red");
+  if (value.startsWith("4")) return cssColor("amber");
+  if (value.startsWith("3")) return cssColor("purple");
+  return cssColor("green");
+}
+
 function collectorHealth() {
   const stats = state.data.collectorHealth?.raw_files?.stats || {};
   const recent = state.data.collectorHealth?.raw_files?.recent || [];
+  const lastDownloadAt = state.data.collectorHealth?.raw_files?.last_download_at;
   return {
     state: state.data.overview.database_configured ? "Healthy" : "Local",
-    uptime: state.data.overview.collection_interval || "-",
+    lastDownload: shortTime(lastDownloadAt),
     recent,
     stats,
   };
@@ -5221,10 +6065,12 @@ function segmentPage(rows, catalog = {}) {
 
 function rawFileHistoryQuery(page = state.pages.pulseRawFiles || 1) {
   const safePage = Math.max(1, Number(page || 1));
-  return new URLSearchParams({
+  const params = {
     limit: String(rawFilePageSize),
     offset: String((safePage - 1) * rawFilePageSize),
-  }).toString();
+  };
+  if (state.rawFileStatus && state.rawFileStatus !== "all") params.status = state.rawFileStatus;
+  return new URLSearchParams(params).toString();
 }
 
 async function loadRawFilePage(page = state.pages.pulseRawFiles || 1) {
@@ -5243,6 +6089,7 @@ function rawFileCatalogMeta(rawFiles = {}) {
     total: Number(rawFiles.total || 0),
     limit: Number(rawFiles.limit || rawFilePageSize),
     offset: Number(rawFiles.offset || 0),
+    status: rawFiles.status || "",
   };
 }
 
@@ -5326,6 +6173,14 @@ function jobHistoryQuery(page = state.pages.pulseJobs || 1) {
   }).toString();
 }
 
+function jobStepHistoryQuery(page = state.pages.pulseJobSteps || 1) {
+  const safePage = Math.max(1, Number(page || 1));
+  return new URLSearchParams({
+    limit: String(jobStepPageSize),
+    offset: String((safePage - 1) * jobStepPageSize),
+  }).toString();
+}
+
 async function loadJobPage(page = state.pages.pulseJobs || 1) {
   const safePage = Math.max(1, Number(page || 1));
   const response = await safeFetch(`/api/v1/system/jobs?${jobHistoryQuery(safePage)}`, {
@@ -5340,6 +6195,20 @@ async function loadJobPage(page = state.pages.pulseJobs || 1) {
   render();
 }
 
+async function loadJobStepPage(page = state.pages.pulseJobSteps || 1) {
+  const safePage = Math.max(1, Number(page || 1));
+  const response = await safeFetch(`/api/v1/system/job-steps?${jobStepHistoryQuery(safePage)}`, {
+    steps: [],
+    total: 0,
+    limit: jobStepPageSize,
+    offset: (safePage - 1) * jobStepPageSize,
+  });
+  state.data.jobSteps = response.steps || [];
+  state.data.jobStepCatalog = jobStepCatalogMeta(response);
+  state.pages.pulseJobSteps = jobStepPage(state.data.jobSteps, state.data.jobStepCatalog).page;
+  render();
+}
+
 function jobCatalogMeta(response = {}) {
   return {
     total: Number(response.total || 0),
@@ -5350,6 +6219,19 @@ function jobCatalogMeta(response = {}) {
 
 function jobPage(rows, catalog = {}) {
   return serverBackedPage(rows, Number(catalog.total ?? rows.length), Number(catalog.limit || jobPageSize), Number(catalog.offset || 0));
+}
+
+function jobStepCatalogMeta(response = {}) {
+  return {
+    total: Number(response.total || 0),
+    limit: Number(response.limit || jobStepPageSize),
+    offset: Number(response.offset || 0),
+    slow_phases: response.slow_phases || [],
+  };
+}
+
+function jobStepPage(rows, catalog = {}) {
+  return serverBackedPage(rows, Number(catalog.total ?? rows.length), Number(catalog.limit || jobStepPageSize), Number(catalog.offset || 0));
 }
 
 function reportCatalogMeta(response = {}) {
@@ -5404,6 +6286,7 @@ function reportSearchText(item) {
 
 function readinessBanner() {
   const overview = state.data.overview || {};
+  const overviewLoaded = overview.database_configured !== undefined || Boolean(overview.started_at);
   const analytics = overview.analytics || {};
   const coverage = state.data.archiveCoverage || {};
   const fast = fastReadiness();
@@ -5414,7 +6297,7 @@ function readinessBanner() {
   if (fetchErrors.length) {
     const first = fetchErrors[0];
     messages.push(`${formatNumber(fetchErrors.length)} dashboard request(s) failed while loading ${activeRangeLabel()}. First failure: ${first.message}.`);
-  } else if (!overview.database_configured) {
+  } else if (overviewLoaded && !overview.database_configured) {
     messages.push("DATABASE_URL is not set, so indexed analytics, persisted reports, users, alerts, and browser-push subscriptions are unavailable.");
   } else if (coverage.requires_archive_import) {
     const oldWindow = [shortTime(coverage.import_window_start), shortTime(coverage.import_window_end)].filter(Boolean).join(" to ");
@@ -5426,7 +6309,7 @@ function readinessBanner() {
     } else {
       messages.push(`${activeRangeLabel()} reaches beyond the hot ${coverage.hot_event_max_age || "event"} window, but no ready archives currently cover the old portion of this range.`);
     }
-  } else if (!hasRequests) {
+  } else if (overviewLoaded && !hasRequests) {
     messages.push(`No indexed requests in ${activeRangeLabel()}. Run pipeline/backfill, or choose a range that overlaps indexed hot data.`);
   } else if (fast.known && !fast.ready) {
     messages.push(`${activeRangeLabel()} is visible, but some dashboard reads are using raw event fallbacks instead of rollups. ${fast.rawFallbackSources.length ? `Raw fallback: ${fast.rawFallbackSources.join(", ")}.` : ""}`);
@@ -5448,17 +6331,22 @@ function readinessBanner() {
 function fastReadiness() {
   const audit = state.data.fastReadAudit || {};
   const known = Boolean(audit.range || audit.since || audit.until);
-  const rawFallbackSources = [
-    ["overview", audit.overview_source],
-    ["analysis", audit.access_analysis_source],
-    ["traffic", audit.traffic_source],
-    ["recent errors", audit.recent_errors_source],
-  ].filter(([, source]) => /raw|event/i.test(String(source || ""))).map(([label]) => label);
+  const rawFallbackSources = [];
+  if (usesRawFallback(audit.overview_source)) rawFallbackSources.push("overview");
+  if (usesRawFallback(audit.access_analysis_source)) rawFallbackSources.push("analysis");
+  if (usesRawFallback(audit.traffic_source)) rawFallbackSources.push("traffic");
+  if (Number(audit.recent_error_raw_gap_rows || audit.expected_raw_gap_rows || 0) > 0 || usesRawFallback(audit.recent_errors_source)) {
+    rawFallbackSources.push("recent errors");
+  }
   return {
     known,
     ready: known && audit.dimension_rollups_ready !== false && audit.status_rollups_ready !== false && !audit.expected_raw_range_aggregations && rawFallbackSources.length === 0,
     rawFallbackSources,
   };
+}
+
+function usesRawFallback(source) {
+  return /raw/i.test(String(source || ""));
 }
 
 function normalizeSeverity(value) {
@@ -5488,6 +6376,93 @@ function toast(message, error = false) {
   el.classList.remove("hidden");
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => el.classList.add("hidden"), 3200);
+}
+
+function requestLineHTML(row, includeMethod = true) {
+  const method = includeMethod ? `${escapeHTML(row.method || "GET")} ` : "";
+  return `${method}${escapeHTML(row.path || "/")}${queryBadgeHTML(row.query)}`;
+}
+
+function queryBadgeHTML(query) {
+  const family = queryFamily(query);
+  if (!family) return "";
+  return ` <span class="pill query-badge" title="${escapeAttr(family.title)}">${escapeHTML(family.label)}</span>`;
+}
+
+function queryFamilyLabel(query) {
+  const family = queryFamily(query);
+  return family ? escapeHTML(family.description || family.label) : "";
+}
+
+function queryFamilyMeta(value) {
+  const family = String(value || "").toLowerCase();
+  if (family === "srsltid") {
+    return {
+      label: "srsltid",
+      description: "Google search result tracking parameter",
+      title: "Google search result tracking parameter. Usually safe to ignore in cache keys.",
+    };
+  }
+  if (family === "utm" || family.startsWith("utm_")) {
+    return {
+      label: "utm",
+      description: "Marketing campaign tracking parameter",
+      title: "Marketing campaign tracking parameter. Can create many cache variants.",
+    };
+  }
+  if (family === "click-id" || ["gclid", "fbclid", "msclkid", "dclid", "gad_source", "gbraid", "wbraid", "gad_campaignid"].includes(family)) {
+    return {
+      label: "click-id",
+      description: "Ad/social click tracking parameter",
+      title: "Ad/social click tracking parameter. Can create many cache variants.",
+    };
+  }
+  if (family === "campaign" || ["campaign", "cid", "x-campaign"].includes(family)) {
+    return {
+      label: "campaign",
+      description: "Campaign tracking parameter",
+      title: "Campaign tracking parameter. Can create many cache variants.",
+    };
+  }
+  if (family === "wpv" || family.startsWith("wpv_")) {
+    return {
+      label: "wpv",
+      description: "WordPress Views query parameter",
+      title: "WordPress Views query parameter. Often changes filtered/paginated page variants.",
+    };
+  }
+  return {
+    label: family === "other" ? "query" : (family || "query"),
+    description: "Query string present",
+    title: "Request includes a query string.",
+  };
+}
+
+function queryFamily(query) {
+  const value = String(query || "").toLowerCase();
+  if (!value) return null;
+  if (/(^|&)srsltid=/.test(value)) {
+    return queryFamilyMeta("srsltid");
+  }
+  if (/(^|&)utm_[^=]+=/.test(value)) {
+    return queryFamilyMeta("utm");
+  }
+  if (/(^|&)(gclid|fbclid|msclkid|dclid|gad_source|gbraid|wbraid|gad_campaignid)=/.test(value)) {
+    return queryFamilyMeta("click-id");
+  }
+  if (/(^|&)(campaign|cid|x-campaign)=/.test(value)) {
+    return queryFamilyMeta("campaign");
+  }
+  if (/(^|&)wpv_/.test(value)) {
+    return queryFamilyMeta("wpv");
+  }
+  return queryFamilyMeta("query");
+}
+
+function shortToken(value, max = 28) {
+  const text = String(value || "");
+  if (!text) return "-";
+  return text.length > max ? `${text.slice(0, Math.max(0, max - 3))}...` : text;
 }
 
 function formatNumber(value) {
@@ -5520,6 +6495,7 @@ function shortTime(value) {
   if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
+  if (date.getFullYear() < 2000) return "-";
   return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 

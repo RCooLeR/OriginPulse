@@ -26,6 +26,7 @@ type Config struct {
 	Reports       ReportsConfig       `yaml:"reports" json:"reports"`
 	Notifications NotificationsConfig `yaml:"notifications" json:"notifications"`
 	GeoIP         GeoIPConfig         `yaml:"geoip" json:"geoip"`
+	IPIntel       IPIntelConfig       `yaml:"ip_intel" json:"ip_intel"`
 	IPAllowlist   IPAllowlistConfig   `yaml:"ip_allowlist" json:"ip_allowlist"`
 	Sites         []SiteConfig        `yaml:"sites" json:"sites"`
 }
@@ -77,12 +78,13 @@ type SSHConfig struct {
 }
 
 type CollectionConfig struct {
-	Enabled          bool          `yaml:"enabled" json:"enabled"`
-	Interval         time.Duration `yaml:"interval" json:"interval"`
-	TimeoutPerSite   time.Duration `yaml:"timeout_per_site" json:"timeout_per_site"`
-	MaxParallelSites int           `yaml:"max_parallel_sites" json:"max_parallel_sites"`
-	LogTypes         []string      `yaml:"log_types" json:"log_types"`
-	RawDir           string        `yaml:"raw_dir" json:"raw_dir"`
+	Enabled            bool          `yaml:"enabled" json:"enabled"`
+	Interval           time.Duration `yaml:"interval" json:"interval"`
+	TimeoutPerSite     time.Duration `yaml:"timeout_per_site" json:"timeout_per_site"`
+	ServerLockCooldown time.Duration `yaml:"server_lock_cooldown" json:"server_lock_cooldown"`
+	MaxParallelSites   int           `yaml:"max_parallel_sites" json:"max_parallel_sites"`
+	LogTypes           []string      `yaml:"log_types" json:"log_types"`
+	RawDir             string        `yaml:"raw_dir" json:"raw_dir"`
 }
 
 type CombinerConfig struct {
@@ -146,6 +148,17 @@ type GeoIPConfig struct {
 	LastModifiedEnv  string        `yaml:"last_modified_env" json:"last_modified_env"`
 }
 
+type IPIntelConfig struct {
+	Enabled               bool          `yaml:"enabled" json:"enabled"`
+	Interval              time.Duration `yaml:"interval" json:"interval"`
+	Range                 string        `yaml:"range" json:"range"`
+	Limit                 int           `yaml:"limit" json:"limit"`
+	StartupBackfill       bool          `yaml:"startup_backfill" json:"startup_backfill"`
+	StartupBackfillRange  string        `yaml:"startup_backfill_range" json:"startup_backfill_range"`
+	StartupBackfillLimit  int           `yaml:"startup_backfill_limit" json:"startup_backfill_limit"`
+	StartupUserAgentLimit int           `yaml:"startup_user_agent_limit" json:"startup_user_agent_limit"`
+}
+
 type IPAllowlistConfig struct {
 	Enabled bool               `yaml:"enabled" json:"enabled"`
 	Entries []IPAllowlistEntry `yaml:"entries" json:"entries"`
@@ -185,7 +198,10 @@ type PushNotificationConfig struct {
 type SiteConfig struct {
 	ID             string   `yaml:"id" json:"id"`
 	Name           string   `yaml:"name" json:"name"`
+	SourceType     string   `yaml:"source_type" json:"source_type"`
 	PantheonSiteID string   `yaml:"pantheon_site_id" json:"pantheon_site_id"`
+	LocalPath      string   `yaml:"local_path" json:"local_path"`
+	FilenameMasks  []string `yaml:"filename_masks" json:"filename_masks"`
 	Enabled        bool     `yaml:"enabled" json:"enabled"`
 	Envs           []string `yaml:"envs" json:"envs"`
 	Tags           []string `yaml:"tags" json:"tags"`
@@ -258,12 +274,13 @@ func Default() Config {
 			Model:      "gemma4:12b",
 		},
 		Collection: CollectionConfig{
-			Enabled:          false,
-			Interval:         10 * time.Minute,
-			TimeoutPerSite:   90 * time.Second,
-			MaxParallelSites: 4,
-			LogTypes:         []string{"nginx-access", "nginx-error", "php-error"},
-			RawDir:           "./data/raw",
+			Enabled:            false,
+			Interval:           10 * time.Minute,
+			TimeoutPerSite:     90 * time.Second,
+			ServerLockCooldown: 15 * time.Minute,
+			MaxParallelSites:   4,
+			LogTypes:           []string{"nginx-access", "nginx-error", "apache-access", "apache-error", "php-error"},
+			RawDir:             "./data/raw",
 		},
 		Combiner: CombinerConfig{
 			CombinedDir:    "./data/combined",
@@ -277,12 +294,12 @@ func Default() Config {
 		Retention: RetentionConfig{
 			Enabled:                true,
 			Interval:               24 * time.Hour,
-			MaxAge:                 2 * 365 * 24 * time.Hour,
+			MaxAge:                 60 * 24 * time.Hour,
 			RawFileMaxAge:          14 * 24 * time.Hour,
-			HotEventMaxAge:         90 * 24 * time.Hour,
-			DailyArchiveAfter:      14 * 24 * time.Hour,
-			WeeklyArchiveAfter:     90 * 24 * time.Hour,
-			ArchiveMaxAge:          2 * 365 * 24 * time.Hour,
+			HotEventMaxAge:         60 * 24 * time.Hour,
+			DailyArchiveAfter:      7 * 24 * time.Hour,
+			WeeklyArchiveAfter:     30 * 24 * time.Hour,
+			ArchiveMaxAge:          90 * 24 * time.Hour,
 			ReportMaxAge:           5 * 365 * 24 * time.Hour,
 			TemporaryImportMaxAge:  7 * 24 * time.Hour,
 			DeleteRawFiles:         true,
@@ -327,6 +344,16 @@ func Default() Config {
 			LastModifiedPath: "./data/GeoLite2-City.lastmod",
 			LastModifiedEnv:  "GEOIP_LAST_MODIFIED_PATH",
 		},
+		IPIntel: IPIntelConfig{
+			Enabled:               true,
+			Interval:              15 * time.Minute,
+			Range:                 "24h",
+			Limit:                 500,
+			StartupBackfill:       true,
+			StartupBackfillRange:  "365d",
+			StartupBackfillLimit:  5000,
+			StartupUserAgentLimit: 50000,
+		},
 		IPAllowlist: IPAllowlistConfig{
 			Enabled: true,
 		},
@@ -355,6 +382,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Collection.TimeoutPerSite <= 0 {
 		return errors.New("collection.timeout_per_site must be positive")
+	}
+	if c.Collection.ServerLockCooldown <= 0 {
+		return errors.New("collection.server_lock_cooldown must be positive")
 	}
 	if c.Collection.MaxParallelSites <= 0 {
 		return errors.New("collection.max_parallel_sites must be positive")
@@ -435,6 +465,28 @@ func (c *Config) Validate() error {
 			return errors.New("geoip.download_timeout must be positive")
 		}
 	}
+	if c.IPIntel.Enabled {
+		if c.IPIntel.Interval <= 0 {
+			return errors.New("ip_intel.interval must be positive")
+		}
+		if strings.TrimSpace(c.IPIntel.Range) == "" {
+			return errors.New("ip_intel.range is required when ip_intel is enabled")
+		}
+		if c.IPIntel.Limit <= 0 {
+			return errors.New("ip_intel.limit must be positive")
+		}
+		if c.IPIntel.StartupBackfill {
+			if strings.TrimSpace(c.IPIntel.StartupBackfillRange) == "" {
+				return errors.New("ip_intel.startup_backfill_range is required when startup backfill is enabled")
+			}
+			if c.IPIntel.StartupBackfillLimit <= 0 {
+				return errors.New("ip_intel.startup_backfill_limit must be positive")
+			}
+			if c.IPIntel.StartupUserAgentLimit <= 0 {
+				return errors.New("ip_intel.startup_user_agent_limit must be positive")
+			}
+		}
+	}
 	if c.IPAllowlist.Enabled {
 		for _, entry := range c.IPAllowlist.Entries {
 			value := strings.TrimSpace(entry.Value)
@@ -458,8 +510,24 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("duplicate site id %q", site.ID)
 		}
 		ids[site.ID] = struct{}{}
-		if site.Enabled && strings.TrimSpace(site.PantheonSiteID) == "" {
-			return fmt.Errorf("site %q is enabled but pantheon_site_id is empty", site.ID)
+		if site.Enabled {
+			switch normalizeSiteSourceType(site) {
+			case "pantheon":
+				if strings.TrimSpace(site.PantheonSiteID) == "" {
+					return fmt.Errorf("site %q is enabled but pantheon_site_id is empty", site.ID)
+				}
+			case "local":
+				if strings.TrimSpace(site.LocalPath) == "" {
+					return fmt.Errorf("site %q is enabled but local_path is empty", site.ID)
+				}
+				for _, mask := range site.FilenameMasks {
+					if _, err := filepath.Match(mask, "example.log"); err != nil {
+						return fmt.Errorf("site %q has invalid filename mask %q: %w", site.ID, mask, err)
+					}
+				}
+			default:
+				return fmt.Errorf("site %q has unsupported source_type %q", site.ID, site.SourceType)
+			}
 		}
 	}
 
@@ -764,11 +832,14 @@ func (c *Config) normalize() {
 	if c.Collection.TimeoutPerSite == 0 {
 		c.Collection.TimeoutPerSite = 90 * time.Second
 	}
+	if c.Collection.ServerLockCooldown == 0 {
+		c.Collection.ServerLockCooldown = 15 * time.Minute
+	}
 	if c.Collection.MaxParallelSites == 0 {
 		c.Collection.MaxParallelSites = 4
 	}
 	if len(c.Collection.LogTypes) == 0 {
-		c.Collection.LogTypes = []string{"nginx-access", "nginx-error", "php-error"}
+		c.Collection.LogTypes = []string{"nginx-access", "nginx-error", "apache-access", "apache-error", "php-error"}
 	}
 	if c.Collection.RawDir == "" {
 		c.Collection.RawDir = filepath.Join(c.App.DataDir, "raw")
@@ -792,7 +863,7 @@ func (c *Config) normalize() {
 		c.Retention.Interval = 24 * time.Hour
 	}
 	if c.Retention.MaxAge == 0 {
-		c.Retention.MaxAge = 2 * 365 * 24 * time.Hour
+		c.Retention.MaxAge = 60 * 24 * time.Hour
 	}
 	if c.Retention.ArchiveDir == "" {
 		c.Retention.ArchiveDir = filepath.Join(c.App.DataDir, "archives")
@@ -801,16 +872,16 @@ func (c *Config) normalize() {
 		c.Retention.RawFileMaxAge = 14 * 24 * time.Hour
 	}
 	if c.Retention.HotEventMaxAge == 0 {
-		c.Retention.HotEventMaxAge = 90 * 24 * time.Hour
+		c.Retention.HotEventMaxAge = 60 * 24 * time.Hour
 	}
 	if c.Retention.DailyArchiveAfter == 0 {
-		c.Retention.DailyArchiveAfter = 14 * 24 * time.Hour
+		c.Retention.DailyArchiveAfter = 7 * 24 * time.Hour
 	}
 	if c.Retention.WeeklyArchiveAfter == 0 {
-		c.Retention.WeeklyArchiveAfter = 90 * 24 * time.Hour
+		c.Retention.WeeklyArchiveAfter = 30 * 24 * time.Hour
 	}
 	if c.Retention.ArchiveMaxAge == 0 {
-		c.Retention.ArchiveMaxAge = 2 * 365 * 24 * time.Hour
+		c.Retention.ArchiveMaxAge = 90 * 24 * time.Hour
 	}
 	if c.Retention.ReportMaxAge == 0 {
 		c.Retention.ReportMaxAge = 5 * 365 * 24 * time.Hour
@@ -887,8 +958,32 @@ func (c *Config) normalize() {
 	if c.GeoIP.LastModifiedEnv == "" {
 		c.GeoIP.LastModifiedEnv = "GEOIP_LAST_MODIFIED_PATH"
 	}
+	if c.IPIntel.Interval == 0 {
+		c.IPIntel.Interval = 15 * time.Minute
+	}
+	if c.IPIntel.Range == "" {
+		c.IPIntel.Range = "24h"
+	}
+	if c.IPIntel.Limit == 0 {
+		c.IPIntel.Limit = 500
+	}
+	if c.IPIntel.StartupBackfillRange == "" {
+		c.IPIntel.StartupBackfillRange = "365d"
+	}
+	if c.IPIntel.StartupBackfillLimit == 0 {
+		c.IPIntel.StartupBackfillLimit = 5000
+	}
+	if c.IPIntel.StartupUserAgentLimit == 0 {
+		c.IPIntel.StartupUserAgentLimit = 50000
+	}
 	if !c.IPAllowlist.Enabled && len(c.IPAllowlist.Entries) > 0 {
 		c.IPAllowlist.Enabled = true
+	}
+	for i := range c.Sites {
+		c.Sites[i].SourceType = normalizeSiteSourceType(c.Sites[i])
+		c.Sites[i].LocalPath = strings.TrimSpace(c.Sites[i].LocalPath)
+		c.Sites[i].PantheonSiteID = strings.TrimSpace(c.Sites[i].PantheonSiteID)
+		c.Sites[i].FilenameMasks = normalizeStringList(c.Sites[i].FilenameMasks)
 	}
 }
 
@@ -897,4 +992,36 @@ func envSet(name string) bool {
 		return false
 	}
 	return strings.TrimSpace(os.Getenv(name)) != ""
+}
+
+func normalizeSiteSourceType(site SiteConfig) string {
+	sourceType := strings.ToLower(strings.TrimSpace(site.SourceType))
+	switch sourceType {
+	case "", "pantheon":
+		if sourceType == "" && strings.TrimSpace(site.PantheonSiteID) == "" && strings.TrimSpace(site.LocalPath) != "" {
+			return "local"
+		}
+		return "pantheon"
+	case "local", "direct", "apache", "file", "filesystem":
+		return "local"
+	default:
+		return sourceType
+	}
+}
+
+func normalizeStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }

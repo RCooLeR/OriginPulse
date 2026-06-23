@@ -73,6 +73,8 @@ func (s *Service) Combine(ctx context.Context, opts Options) (Result, error) {
 	if opts.From.IsZero() || opts.To.IsZero() || !opts.From.Before(opts.To) {
 		return Result{}, fmt.Errorf("combine requires a valid --from and --to range")
 	}
+	opts.From = opts.From.UTC().Truncate(time.Hour)
+	opts.To = opts.To.UTC()
 
 	sources, err := s.sources(ctx, opts)
 	if err != nil {
@@ -202,7 +204,7 @@ func (s *Service) readSource(ctx context.Context, source RawSource, opts Options
 
 		ts, err := parseSourceTimestamp(raw, source.LogType)
 		if err != nil {
-			if source.LogType != "nginx-access" && !lastTS.IsZero() && isContinuationLogLine(raw) {
+			if !isAccessLogType(source.LogType) && !lastTS.IsZero() && isContinuationLogLine(raw) {
 				ts = lastTS
 			} else {
 				result.LinesQuarantined++
@@ -423,7 +425,7 @@ func detectLogType(path string) string {
 		return "nginx-access"
 	case strings.HasPrefix(lower, "nginx-error.log"):
 		return "nginx-error"
-	case strings.HasPrefix(lower, "php-error.log"):
+	case strings.HasPrefix(lower, "php-error.log"), strings.HasPrefix(lower, "php-fpm-error.log"):
 		return "php-error"
 	case strings.HasPrefix(lower, "php-slow.log"):
 		return "php-slow"
@@ -431,16 +433,24 @@ func detectLogType(path string) string {
 		return "mysql-slow"
 	case strings.HasPrefix(lower, "mysql.log"), strings.HasPrefix(lower, "mysqld.log"):
 		return "mysql"
+	case strings.HasPrefix(lower, "apache-access.log"), strings.Contains(lower, "-access.log"), strings.Contains(lower, "_access.log"):
+		return "apache-access"
+	case strings.HasPrefix(lower, "apache-error.log"), strings.Contains(lower, "-error.log"), strings.Contains(lower, "_error.log"):
+		return "apache-error"
 	default:
 		return "unknown"
 	}
 }
 
 func parseSourceTimestamp(raw string, logType string) (time.Time, error) {
-	if logType == "nginx-access" {
+	if isAccessLogType(logType) {
 		return parser.ParseAccessTimestamp(raw)
 	}
 	return parser.ParseLogTimestamp(raw)
+}
+
+func isAccessLogType(logType string) bool {
+	return logType == "nginx-access" || logType == "apache-access"
 }
 
 func isContinuationLogLine(raw string) bool {

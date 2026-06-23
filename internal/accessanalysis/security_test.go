@@ -8,7 +8,7 @@ import (
 
 func TestPathTraversalRegexDoesNotMatchEllipsisURL(t *testing.T) {
 	re := regexp.MustCompile(pathTraversalRegex)
-	target := strings.ToLower("/life-sciences-healthcare/drg-is-now-example?lid=dProducts-and-Services/.../Orthopedics/Other-Orthopedics.aspx")
+	target := strings.ToLower("/products/example-service?lid=dProducts-and-Services/.../Category/Other-Category.aspx")
 
 	if re.MatchString(target) {
 		t.Fatalf("pathTraversalRegex matched ordinary ellipsis URL: %q", target)
@@ -43,7 +43,7 @@ func TestInjectionProbeLabelsAreCalmer(t *testing.T) {
 
 func TestSQLSelectRegexDoesNotMatchEnglishURL(t *testing.T) {
 	re := regexp.MustCompile(sqlSelectFromRegex)
-	target := strings.ToLower("/news/fujifilm-selects-ipfolio-from-example/")
+	target := strings.ToLower("/news/example-customer-selects-example-platform/")
 
 	if re.MatchString(target) {
 		t.Fatalf("sqlSelectFromRegex matched ordinary content URL: %q", target)

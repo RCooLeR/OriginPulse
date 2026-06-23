@@ -48,7 +48,7 @@ func DetectLogType(remotePath string) string {
 		return "nginx-access"
 	case strings.HasPrefix(base, "nginx-error.log"):
 		return "nginx-error"
-	case strings.HasPrefix(base, "php-error.log"):
+	case strings.HasPrefix(base, "php-error.log"), strings.HasPrefix(base, "php-fpm-error.log"):
 		return "php-error"
 	case strings.HasPrefix(base, "php-slow.log"):
 		return "php-slow"
@@ -56,6 +56,27 @@ func DetectLogType(remotePath string) string {
 		return "mysql-slow"
 	case strings.Contains(base, "mysql"):
 		return "mysql"
+	case strings.HasPrefix(base, "apache-access.log"):
+		return "apache-access"
+	case strings.HasPrefix(base, "apache-error.log"):
+		return "apache-error"
+	default:
+		return "unknown"
+	}
+}
+
+func DetectLocalLogType(localPath string) string {
+	logType := DetectLogType(localPath)
+	if logType != "unknown" {
+		return logType
+	}
+	base := strings.ToLower(path.Base(NormalizeRemotePath(localPath)))
+	base = strings.TrimSuffix(base, ".gz")
+	switch {
+	case strings.HasPrefix(base, "apache-access.log"), strings.Contains(base, "-access.log"), strings.Contains(base, "_access.log"):
+		return "apache-access"
+	case strings.HasPrefix(base, "apache-error.log"), strings.Contains(base, "-error.log"), strings.Contains(base, "_error.log"):
+		return "apache-error"
 	default:
 		return "unknown"
 	}

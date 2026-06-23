@@ -68,6 +68,49 @@ func TestCombineWritesDeterministicHourlySegment(t *testing.T) {
 	}
 }
 
+func TestCombinePartialRangeKeepsWholeTouchedHour(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := config.Default()
+	cfg.Collection.RawDir = filepath.Join(tmp, "raw")
+	cfg.Combiner.CombinedDir = filepath.Join(tmp, "combined")
+	cfg.Combiner.QuarantineDir = filepath.Join(tmp, "quarantine")
+
+	rawPath := filepath.Join(cfg.Collection.RawDir, "client-a", "live", "appserver-1", "nginx", "nginx-access.log")
+	if err := os.MkdirAll(filepath.Dir(rawPath), 0o750); err != nil {
+		t.Fatalf("mkdir raw: %v", err)
+	}
+
+	early := `203.0.113.1 - - [17/Jun/2026:14:01:00 +0000] "GET /early HTTP/1.1" 200 10 "-" "curl/8"`
+	late := `203.0.113.2 - - [17/Jun/2026:14:54:00 +0000] "GET /late HTTP/1.1" 200 20 "-" "curl/8"`
+	if err := os.WriteFile(rawPath, []byte(early+"\n"+late+"\n"), 0o640); err != nil {
+		t.Fatalf("write raw: %v", err)
+	}
+
+	service := NewService(cfg, nil)
+	hourStart := time.Date(2026, 6, 17, 14, 0, 0, 0, time.UTC)
+	first, err := service.Combine(t.Context(), Options{LogType: "nginx-access", From: hourStart, To: hourStart.Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("initial combine: %v", err)
+	}
+	if got := len(readCombinedLines(t, first.Segments[0].Path)); got != 2 {
+		t.Fatalf("initial combined lines = %d, want 2", got)
+	}
+
+	partialFrom := hourStart.Add(54 * time.Minute)
+	partialTo := hourStart.Add(59 * time.Minute)
+	second, err := service.Combine(t.Context(), Options{LogType: "nginx-access", From: partialFrom, To: partialTo})
+	if err != nil {
+		t.Fatalf("partial combine: %v", err)
+	}
+	lines := readCombinedLines(t, second.Segments[0].Path)
+	if len(lines) != 2 {
+		t.Fatalf("partial combined lines = %d, want full touched hour with 2 lines", len(lines))
+	}
+	if lines[0].Raw != early || lines[1].Raw != late {
+		t.Fatalf("partial combine lost full-hour ordering: %#v", lines)
+	}
+}
+
 func readCombinedLines(t *testing.T, path string) []CombinedLine {
 	t.Helper()
 	file, err := os.Open(path)

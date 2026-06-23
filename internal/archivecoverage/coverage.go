@@ -268,8 +268,12 @@ func parseRangeDuration(value string) (time.Duration, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "15m":
 		return 15 * time.Minute, nil
+	case "30m":
+		return 30 * time.Minute, nil
 	case "1h":
 		return time.Hour, nil
+	case "3h":
+		return 3 * time.Hour, nil
 	case "6h":
 		return 6 * time.Hour, nil
 	case "24h", "1d":

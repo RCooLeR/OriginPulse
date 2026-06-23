@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"originpulse/internal/combiner"
 	"originpulse/internal/config"
 	"originpulse/internal/indexer"
+	"originpulse/internal/investigation"
 	"originpulse/internal/ipintel"
 	"originpulse/internal/pipeline"
 	"originpulse/internal/reports"
@@ -75,6 +77,7 @@ func run() int {
 	includeAdmin := fs.Bool("include-admin", false, "include admin probe analysis")
 	includeInjection := fs.Bool("include-injection", false, "include injection probe analysis")
 	includeTor := fs.Bool("include-tor", false, "include Tor/source intelligence analysis")
+	includeQueryParams := fs.Bool("include-query-params", false, "include query parameter traffic analysis")
 	securityOnly := fs.Bool("security-only", false, "only run requested security analysis sections")
 	timings := fs.Bool("timings", false, "include maintenance timing output where supported")
 	probeCategory := fs.String("probe-category", "", "security probe category filter")
@@ -86,9 +89,19 @@ func run() int {
 	reportType := fs.String("report-type", "", "report type for generate-report")
 	reportID := fs.String("report-id", "", "stored report id")
 	alertID := fs.String("alert-id", "", "stored alert id")
+	healthURL := fs.String("url", "http://127.0.0.1:8080/health", "healthcheck URL")
+	healthTimeout := fs.Duration("timeout", 5*time.Second, "healthcheck timeout")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
+	}
+
+	if command == "healthcheck" {
+		if err := runHealthcheck(ctx, *healthURL, *healthTimeout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
 	}
 
 	if command == "web-push-keys" {
@@ -308,6 +321,48 @@ func run() int {
 		for _, timing := range result.Timings {
 			fmt.Printf("timing_%s_ms: %d\n", timing.Name, timing.DurationMS)
 		}
+	case "investigate-traffic":
+		var fromTime time.Time
+		var toTime time.Time
+		if *from != "" || *to != "" {
+			var err error
+			fromTime, err = parseCLITime(*from)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "invalid -from: %v\n", err)
+				return 2
+			}
+			toTime, err = parseCLITime(*to)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "invalid -to: %v\n", err)
+				return 2
+			}
+		}
+		result, err := runtime.InvestigateTraffic(ctx, investigation.Options{
+			Range:              *rangeValue,
+			SiteID:             *siteID,
+			Limit:              *maxSegments,
+			From:               fromTime,
+			To:                 toTime,
+			IncludeQueryParams: *includeQueryParams,
+			IncludeTimings:     *timings,
+		})
+		if err != nil {
+			log.Error().Err(err).Msg("traffic investigation failed")
+			return 1
+		}
+		fmt.Printf("range: %s\n", result.Range)
+		fmt.Printf("site_id: %s\n", result.SiteID)
+		fmt.Printf("since: %s\n", result.Since.Format(time.RFC3339))
+		fmt.Printf("until: %s\n", result.Until.Format(time.RFC3339))
+		fmt.Printf("top_ips: %d\n", len(result.TopIPs))
+		fmt.Printf("top_paths: %d\n", len(result.TopPaths))
+		fmt.Printf("recent_errors: %d\n", len(result.RecentErrors))
+		fmt.Printf("query_params: %d\n", len(result.QueryParams))
+		fmt.Printf("status_breakdown: %d\n", len(result.StatusBreakdown))
+		fmt.Printf("timeline: %d\n", len(result.Timeline))
+		for _, timing := range result.Timings {
+			fmt.Printf("timing_%s_ms: %d\n", timing.Name, timing.DurationMS)
+		}
 	case "reports-recent":
 		result, err := runtime.RecentReports(ctx, *maxSegments, *siteID)
 		if err != nil {
@@ -428,6 +483,8 @@ func run() int {
 		fmt.Printf("refreshed: %d\n", result.Refreshed)
 		fmt.Printf("failed: %d\n", result.Failed)
 		fmt.Printf("lookup_failed: %d\n", result.LookupFailed)
+		fmt.Printf("geoip_failed: %d\n", result.GeoIPFailed)
+		fmt.Printf("reverse_dns_failed: %d\n", result.ReverseDNSFailed)
 		fmt.Printf("items: %d\n", len(result.Items))
 	case "create-user":
 		userPassword := *password
@@ -751,7 +808,7 @@ func run() int {
 		fmt.Printf("archive_days: %.0f\n", result.Projection.ArchiveDays)
 		fmt.Printf("report_days: %.0f\n", result.Projection.ReportDays)
 		printProjection("current", result.Projection.CurrentSites)
-		printProjection("twenty_site_half_secondary-site", result.Projection.TwentySiteHalfsecondary-siteModel)
+		printProjection("twenty_site_blended", result.Projection.TwentySiteBlendedModel)
 	case "check-config":
 		summary := cfg.CredentialSummary()
 		fmt.Printf("config: ok\n")
@@ -767,6 +824,100 @@ func run() int {
 	}
 
 	return 0
+}
+
+func runHealthcheck(ctx context.Context, url string, timeout time.Duration) error {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return fmt.Errorf("healthcheck URL is required")
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("create healthcheck request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("healthcheck request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("healthcheck returned %s", resp.Status)
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return fmt.Errorf("decode healthcheck response: %w", err)
+	}
+	if ok, _ := body["ok"].(bool); !ok {
+		return fmt.Errorf("healthcheck response is not ok")
+	}
+	if database, _ := body["database"].(map[string]any); database != nil {
+		configured, _ := database["configured"].(bool)
+		databaseOK, _ := database["ok"].(bool)
+		if configured && !databaseOK {
+			return fmt.Errorf("healthcheck database ping failed")
+		}
+	}
+	if scheduler, _ := body["scheduler"].(map[string]any); scheduler != nil {
+		if failed := numericField(scheduler, "failed_since_start"); failed > 0 {
+			return fmt.Errorf("healthcheck scheduler has %.0f failed job(s) since start", failed)
+		}
+		if boolField(scheduler, "collection_enabled") {
+			intervalMS := numericField(scheduler, "collection_interval_ms")
+			uptimeSec := numericField(body, "uptime_sec")
+			if intervalMS > 0 {
+				staleAfter := time.Duration(intervalMS*3) * time.Millisecond
+				if time.Duration(uptimeSec)*time.Second > staleAfter {
+					finishedAt, ok := stringField(scheduler, "last_cycle_finished_at")
+					if !ok {
+						return fmt.Errorf("healthcheck scheduler has not completed a cycle within %s", staleAfter)
+					}
+					parsed, err := time.Parse(time.RFC3339Nano, finishedAt)
+					if err != nil {
+						return fmt.Errorf("parse scheduler last cycle time: %w", err)
+					}
+					if age := time.Since(parsed); age > staleAfter {
+						return fmt.Errorf("healthcheck scheduler last cycle is stale: %s old", age.Round(time.Second))
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func boolField(values map[string]any, key string) bool {
+	value, _ := values[key].(bool)
+	return value
+}
+
+func numericField(values map[string]any, key string) float64 {
+	switch value := values[key].(type) {
+	case float64:
+		return value
+	case float32:
+		return float64(value)
+	case int:
+		return float64(value)
+	case int64:
+		return float64(value)
+	case json.Number:
+		parsed, _ := value.Float64()
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func stringField(values map[string]any, key string) (string, bool) {
+	value, ok := values[key].(string)
+	return value, ok && strings.TrimSpace(value) != ""
 }
 
 func parseCLITime(value string) (time.Time, error) {

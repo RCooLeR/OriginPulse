@@ -84,7 +84,7 @@ type Projection struct {
 	ArchiveDays                float64              `json:"archive_days"`
 	ReportDays                 float64              `json:"report_days"`
 	CurrentSites               ProjectionScenario   `json:"current_sites"`
-	TwentySiteHalfsecondary-siteModel ProjectionScenario   `json:"twenty_site_half_secondary-site_model"`
+	TwentySiteBlendedModel     ProjectionScenario   `json:"twenty_site_blended_model"`
 	SiteRates                  []SiteProjectionRate `json:"site_rates"`
 	Assumptions                []string             `json:"assumptions"`
 }
@@ -317,15 +317,27 @@ FROM access_events`, r.Retention.HotEventCutoff).Scan(
 		r.Events.MaxTS = maxTS.Time
 	}
 	return q.QueryRow(ctx, `
+WITH pending AS (
+  SELECT id
+  FROM access_events
+  WHERE (client_ip IS NOT NULL AND ip_id IS NULL)
+     OR (path_hash IS NOT NULL AND path_id IS NULL)
+     OR (query IS NOT NULL AND query <> '' AND query_id IS NULL)
+     OR (user_agent_hash IS NOT NULL AND user_agent_id IS NULL)
+     OR rollups_1h_backfilled_at IS NULL
+  UNION
+  SELECT e.id
+  FROM access_events e
+  WHERE e.status >= 400
+    AND NOT EXISTS (SELECT 1 FROM error_events f WHERE f.event_id = e.id)
+  UNION
+  SELECT e.id
+  FROM access_events e
+  WHERE e.request_time_ms >= 1000
+    AND NOT EXISTS (SELECT 1 FROM slow_request_events f WHERE f.event_id = e.id)
+)
 SELECT count(*)::bigint
-FROM access_events
-WHERE (client_ip IS NOT NULL AND ip_id IS NULL)
-   OR (path_hash IS NOT NULL AND path_id IS NULL)
-   OR (query IS NOT NULL AND query <> '' AND query_id IS NULL)
-   OR (user_agent_hash IS NOT NULL AND user_agent_id IS NULL)
-   OR rollups_1h_backfilled_at IS NULL
-   OR (status >= 400 AND NOT EXISTS (SELECT 1 FROM error_events f WHERE f.event_id = access_events.id))
-   OR (request_time_ms >= 1000 AND NOT EXISTS (SELECT 1 FROM slow_request_events f WHERE f.event_id = access_events.id))`).Scan(&r.Events.BackfillRemaining)
+FROM pending`).Scan(&r.Events.BackfillRemaining)
 }
 
 func (r *Report) loadDimensions(ctx context.Context, q queryer) error {
@@ -544,33 +556,33 @@ func (r *Report) loadProjection(ctx context.Context, q queryer) error {
 	}); ok {
 		rows, err := rowsQueryer.Query(ctx, `
 SELECT site_id,
+       sum(requests)::bigint,
+       min(bucket_ts),
+       max(bucket_ts)
+FROM rollup_1m
+GROUP BY site_id
+ORDER BY sum(requests) DESC`)
+		if err != nil {
+			return err
+		}
+		if err := r.scanSiteProjectionRates(rows); err != nil {
+			return err
+		}
+		if len(r.Projection.SiteRates) == 0 {
+			rows, err := rowsQueryer.Query(ctx, `
+SELECT site_id,
        count(*)::bigint,
        min(ts),
        max(ts)
 FROM access_events
 GROUP BY site_id
 ORDER BY count(*) DESC`)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var item SiteProjectionRate
-			if err := rows.Scan(&item.SiteID, &item.Events, &item.FirstSeen, &item.LastSeen); err != nil {
+			if err != nil {
 				return err
 			}
-			days := item.LastSeen.Sub(item.FirstSeen).Hours() / 24
-			if days <= 0 {
-				days = r.Projection.ObservationDays
+			if err := r.scanSiteProjectionRates(rows); err != nil {
+				return err
 			}
-			if days <= 0 {
-				days = 1
-			}
-			item.EventsPerDay = float64(item.Events) / days
-			r.Projection.SiteRates = append(r.Projection.SiteRates, item)
-		}
-		if err := rows.Err(); err != nil {
-			return err
 		}
 	}
 
@@ -579,27 +591,47 @@ ORDER BY count(*) DESC`)
 		"Dimensions, rollups, and fact bytes are projected over the archive retention horizon because they remain online after hot access_events expire.",
 		"Raw downloaded files are projected only over raw_file_max_age.",
 		"Combined archive bytes use observed archive compression when available, otherwise a conservative 25% of raw source bytes.",
-		"Twenty-site model uses measured example-like and secondary-site-like rates, plus 16 smaller sites at half the measured secondary-site-like rate.",
+		"Twenty-site model uses the two busiest measured site rates, plus 16 smaller sites at half the second busiest measured rate.",
 	}
 	currentSites := len(r.Projection.SiteRates)
 	if currentSites == 0 && r.Events.AccessEvents > 0 {
 		currentSites = 1
 	}
 	r.Projection.CurrentSites = r.projectScenario("current configured sites", currentSites, r.Projection.EventsPerDay)
-	r.Projection.TwentySiteHalfsecondary-siteModel = r.projectScenario("20 sites: 2 example-like, 2 secondary-site-like, 16 half-secondary-site", 20, r.twentySiteEventsPerDay())
+	r.Projection.TwentySiteBlendedModel = r.projectScenario("20 sites: 2 primary-rate, 2 secondary-rate, 16 half-secondary", 20, r.twentySiteEventsPerDay())
 	return nil
+}
+
+func (r *Report) scanSiteProjectionRates(rows pgx.Rows) error {
+	defer rows.Close()
+	for rows.Next() {
+		var item SiteProjectionRate
+		if err := rows.Scan(&item.SiteID, &item.Events, &item.FirstSeen, &item.LastSeen); err != nil {
+			return err
+		}
+		days := item.LastSeen.Sub(item.FirstSeen).Hours() / 24
+		if days <= 0 {
+			days = r.Projection.ObservationDays
+		}
+		if days <= 0 {
+			days = 1
+		}
+		item.EventsPerDay = float64(item.Events) / days
+		r.Projection.SiteRates = append(r.Projection.SiteRates, item)
+	}
+	return rows.Err()
 }
 
 func (r Report) twentySiteEventsPerDay() float64 {
 	if len(r.Projection.SiteRates) == 0 {
 		return r.Projection.EventsPerDay
 	}
-	exampleRate := r.Projection.SiteRates[0].EventsPerDay
-	secondary-siteRate := exampleRate
+	primaryRate := r.Projection.SiteRates[0].EventsPerDay
+	secondaryRate := primaryRate
 	if len(r.Projection.SiteRates) > 1 {
-		secondary-siteRate = r.Projection.SiteRates[1].EventsPerDay
+		secondaryRate = r.Projection.SiteRates[1].EventsPerDay
 	}
-	return 2*exampleRate + 2*secondary-siteRate + 16*(secondary-siteRate*0.5)
+	return 2*primaryRate + 2*secondaryRate + 16*(secondaryRate*0.5)
 }
 
 func (r Report) projectScenario(name string, sites int, eventsPerDay float64) ProjectionScenario {

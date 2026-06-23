@@ -415,7 +415,7 @@ LIMIT $4`, adminPathPredicateSQL, adminPathPredicateSQL)
 		); err != nil {
 			return err
 		}
-		item.VerifiedSource = item.ForwardConfirmed || item.VerifiedActor
+		item.VerifiedSource = verifiedSource(item.KnownActor, item.ActorType, "", item.ForwardConfirmed, item.VerifiedActor)
 		if item.KnownActor == "" {
 			item.KnownActor = "Tor exit"
 		}
@@ -538,7 +538,7 @@ LIMIT $6`, report.Since, report.Until, report.SiteID, fullStart, fullEnd, limit)
 		); err != nil {
 			return err
 		}
-		item.VerifiedSource = item.ForwardConfirmed || item.VerifiedActor
+		item.VerifiedSource = verifiedSource(item.KnownActor, item.ActorType, "", item.ForwardConfirmed, item.VerifiedActor)
 		if item.KnownActor == "" {
 			item.KnownActor = "Tor exit"
 		}

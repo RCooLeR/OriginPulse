@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,10 +18,16 @@ import (
 )
 
 type Collector struct {
-	cfg        config.Config
-	jobs       *jobs.Store
-	rawFiles   *RawFileRepository
-	downloader *SFTPDownloader
+	cfg            config.Config
+	jobs           *jobs.Store
+	rawFiles       *RawFileRepository
+	downloader     logDownloader
+	cooldownMu     sync.Mutex
+	serverCooldown map[string]time.Time
+}
+
+type logDownloader interface {
+	DownloadLogs(ctx context.Context, jobID string, target Target, serverKind string, serverAddress string, containerID string, repo *RawFileRepository) (DownloadStats, error)
 }
 
 type Target struct {
@@ -37,10 +44,11 @@ type Target struct {
 
 func NewCollector(cfg config.Config, store *jobs.Store, rawFiles *RawFileRepository) *Collector {
 	return &Collector{
-		cfg:        cfg,
-		jobs:       store,
-		rawFiles:   rawFiles,
-		downloader: NewSFTPDownloader(cfg),
+		cfg:            cfg,
+		jobs:           store,
+		rawFiles:       rawFiles,
+		downloader:     NewSFTPDownloader(cfg, store),
+		serverCooldown: make(map[string]time.Time),
 	}
 }
 
@@ -113,20 +121,30 @@ func (c *Collector) CollectSiteEnv(ctx context.Context, site config.SiteConfig, 
 		"env":     env,
 	}
 	job := c.jobs.Start(ctx, "collect_site_env", triggeredBy, meta)
+	if site.SourceType == "local" {
+		return c.collectLocalSiteEnv(ctx, job.ID, site, env)
+	}
 
 	target := BuildTarget(site, env)
 	resolver := net.Resolver{}
 
+	appStep := c.jobs.StartStep(ctx, job.ID, "discover appservers", map[string]any{"site_id": site.ID, "env": env, "host": target.AppserverDNS})
 	appIPs, appErr := c.lookup(ctx, &resolver, target.AppserverDNS)
+	c.jobs.FinishStep(appStep, stepStatus(appErr), dnsStepMessage(appIPs, appErr), appErr, map[string]any{"addresses": appIPs, "address_count": len(appIPs)})
+	dbStep := c.jobs.StartStep(ctx, job.ID, "discover dbservers", map[string]any{"site_id": site.ID, "env": env, "host": target.DBServerDNS})
 	dbIPs, dbErr := c.lookup(ctx, &resolver, target.DBServerDNS)
+	c.jobs.FinishStep(dbStep, stepStatus(dbErr), dnsStepMessage(dbIPs, dbErr), dbErr, map[string]any{"addresses": dbIPs, "address_count": len(dbIPs)})
 	target.AppserverIPs = appIPs
 	target.DBServerIPs = dbIPs
 
+	dirStep := c.jobs.StartStep(ctx, job.ID, "prepare raw directory", map[string]any{"site_id": site.ID, "env": env})
 	siteDir := filepath.Join(c.cfg.RawDir(), site.ID, env)
 	if err := os.MkdirAll(siteDir, 0o750); err != nil {
+		c.jobs.FinishStep(dirStep, jobs.StatusFailed, "failed to create raw directory", err, map[string]any{"path": siteDir})
 		c.jobs.Finish(job.ID, jobs.StatusFailed, "failed to create raw archive directory", err)
 		return err
 	}
+	c.jobs.FinishStep(dirStep, jobs.StatusSuccess, "raw directory ready", nil, map[string]any{"path": siteDir})
 
 	if appErr != nil || dbErr != nil {
 		if len(appIPs) == 0 && len(dbIPs) == 0 {
@@ -143,12 +161,15 @@ func (c *Collector) CollectSiteEnv(ctx context.Context, site config.SiteConfig, 
 	}
 
 	manifestPath := filepath.Join(siteDir, "collection-plan.txt")
+	planStep := c.jobs.StartStep(ctx, job.ID, "write collection plan", map[string]any{"site_id": site.ID, "env": env, "path": manifestPath})
 	if err := os.WriteFile(manifestPath, []byte(target.Manifest(c.cfg.Pantheon.SFTPPort)), 0o640); err != nil {
+		c.jobs.FinishStep(planStep, jobs.StatusFailed, "failed to write collection plan", err, nil)
 		c.jobs.Finish(job.ID, jobs.StatusFailed, "failed to write collection plan", err)
 		return err
 	}
+	c.jobs.FinishStep(planStep, jobs.StatusSuccess, "collection plan written", nil, nil)
 
-	stats, err := c.downloadTargetLogs(ctx, target)
+	stats, err := c.downloadTargetLogs(ctx, job.ID, target)
 	if err != nil {
 		c.jobs.Finish(job.ID, jobs.StatusFailed, "SFTP log collection failed", err)
 		return err
@@ -164,12 +185,20 @@ func (c *Collector) CollectSiteEnv(ctx context.Context, site config.SiteConfig, 
 		Int("files_downloaded", stats.FilesDownloaded).
 		Int("files_skipped", stats.FilesSkipped).
 		Int("server_failures", stats.ServersFailed).
+		Int("servers_skipped", stats.ServersSkipped).
+		Int("servers_locked", stats.ServersLocked).
 		Int64("bytes_downloaded", stats.BytesDownloaded).
 		Msg("collection completed")
 
 	message := fmt.Sprintf("downloaded %d files, skipped %d", stats.FilesDownloaded, stats.FilesSkipped)
 	if stats.ServersFailed > 0 {
 		message = fmt.Sprintf("%s, server failures %d", message, stats.ServersFailed)
+	}
+	if stats.ServersSkipped > 0 {
+		message = fmt.Sprintf("%s, servers on cooldown %d", message, stats.ServersSkipped)
+	}
+	if stats.ServersLocked > 0 {
+		message = fmt.Sprintf("%s, servers locked %d", message, stats.ServersLocked)
 	}
 	c.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, message, nil, map[string]any{
 		"files_seen":        stats.FilesSeen,
@@ -179,58 +208,219 @@ func (c *Collector) CollectSiteEnv(ctx context.Context, site config.SiteConfig, 
 		"servers_attempted": stats.ServersAttempted,
 		"servers_succeeded": stats.ServersSucceeded,
 		"server_failures":   stats.ServersFailed,
+		"servers_skipped":   stats.ServersSkipped,
+		"servers_locked":    stats.ServersLocked,
 	})
 	return nil
 }
 
-func (c *Collector) downloadTargetLogs(ctx context.Context, target Target) (DownloadStats, error) {
+func (c *Collector) downloadTargetLogs(ctx context.Context, jobID string, target Target) (DownloadStats, error) {
+	type serverTarget struct {
+		kind        string
+		ip          string
+		containerID string
+	}
+	type serverResult struct {
+		target  serverTarget
+		stats   DownloadStats
+		err     error
+		skipped bool
+	}
+
+	servers := make([]serverTarget, 0, len(target.AppserverIPs)+len(target.DBServerIPs))
+	for _, ip := range target.AppserverIPs {
+		servers = append(servers, serverTarget{kind: "appserver", ip: ip, containerID: ContainerID("appserver", ip)})
+	}
+	for _, ip := range target.DBServerIPs {
+		servers = append(servers, serverTarget{kind: "dbserver", ip: ip, containerID: ContainerID("dbserver", ip)})
+	}
+
+	results := make(chan serverResult, len(servers))
+	var wg sync.WaitGroup
+	for _, server := range servers {
+		server := server
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if until, ok := c.cooldownUntil(ctx, target, server.kind, server.ip); ok {
+				meta := map[string]any{
+					"site_id":                    target.SiteID,
+					"env":                        target.Environment,
+					"server_kind":                server.kind,
+					"server":                     server.ip,
+					"container_id":               server.containerID,
+					"cooldown_until":             until.UTC().Format(time.RFC3339),
+					"cooldown_seconds_remaining": int(time.Until(until).Round(time.Second).Seconds()),
+				}
+				step := c.jobs.StartStep(ctx, jobID, "skip locked server", meta)
+				c.jobs.FinishStep(step, jobs.StatusSkipped, "Pantheon resource lock cooldown active", nil, meta)
+				results <- serverResult{target: server, skipped: true}
+				return
+			}
+			stats, err := c.downloader.DownloadLogs(ctx, jobID, target, server.kind, server.ip, server.containerID, c.rawFiles)
+			if isPantheonResourceLocked(err) {
+				until := c.markCooldown(ctx, target, server.kind, server.ip, err)
+				step := c.jobs.StartStep(ctx, jobID, "cooldown locked server", map[string]any{
+					"site_id":        target.SiteID,
+					"env":            target.Environment,
+					"server_kind":    server.kind,
+					"server":         server.ip,
+					"container_id":   server.containerID,
+					"cooldown_until": until.UTC().Format(time.RFC3339),
+				})
+				c.jobs.FinishStep(step, jobs.StatusSkipped, "Pantheon resource lock cooldown started", err, map[string]any{
+					"cooldown_until":   until.UTC().Format(time.RFC3339),
+					"cooldown_seconds": int(c.lockCooldown().Seconds()),
+				})
+			}
+			results <- serverResult{target: server, stats: stats, err: err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
 	var total DownloadStats
 	var firstErr error
-	attempted := 0
-	succeeded := 0
-
-	for _, ip := range target.AppserverIPs {
-		attempted++
-		total.ServersAttempted++
-		containerID := ContainerID("appserver", ip)
-		stats, err := c.downloader.DownloadLogs(ctx, target, "appserver", ip, containerID, c.rawFiles)
-		total.add(stats)
-		if err != nil {
-			total.ServersFailed++
-			total.ServerErrors = append(total.ServerErrors, fmt.Sprintf("appserver %s: %v", ip, err))
-			if firstErr == nil {
-				firstErr = fmt.Errorf("appserver %s: %w", ip, err)
-			}
-			log.Error().Err(err).Str("site_id", target.SiteID).Str("env", target.Environment).Str("server", ip).Msg("appserver log download failed")
+	for result := range results {
+		if result.skipped {
+			total.ServersSkipped++
 			continue
 		}
-		succeeded++
-		total.ServersSucceeded++
-	}
-
-	for _, ip := range target.DBServerIPs {
-		attempted++
 		total.ServersAttempted++
-		containerID := ContainerID("dbserver", ip)
-		stats, err := c.downloader.DownloadLogs(ctx, target, "dbserver", ip, containerID, c.rawFiles)
-		total.add(stats)
-		if err != nil {
-			total.ServersFailed++
-			total.ServerErrors = append(total.ServerErrors, fmt.Sprintf("dbserver %s: %v", ip, err))
-			if firstErr == nil {
-				firstErr = fmt.Errorf("dbserver %s: %w", ip, err)
-			}
-			log.Error().Err(err).Str("site_id", target.SiteID).Str("env", target.Environment).Str("server", ip).Msg("dbserver log download failed")
+		total.add(result.stats)
+		if result.err == nil {
+			total.ServersSucceeded++
 			continue
 		}
-		succeeded++
-		total.ServersSucceeded++
+
+		locked := isPantheonResourceLocked(result.err)
+		if locked {
+			total.ServersLocked++
+		} else {
+			total.ServersFailed++
+			total.ServerErrors = append(total.ServerErrors, fmt.Sprintf("%s %s: %v", result.target.kind, result.target.ip, result.err))
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%s %s: %w", result.target.kind, result.target.ip, result.err)
+			}
+		}
+		event := log.Error().Err(result.err).Str("site_id", target.SiteID).Str("env", target.Environment).Str("server", result.target.ip)
+		if locked {
+			event = log.Warn().Err(result.err).Str("site_id", target.SiteID).Str("env", target.Environment).Str("server", result.target.ip)
+		}
+		if result.target.kind == "appserver" {
+			if locked {
+				event.Msg("appserver log download locked; cooldown started")
+			} else {
+				event.Msg("appserver log download failed")
+			}
+		} else {
+			if locked {
+				event.Msg("dbserver log download locked; cooldown started")
+			} else {
+				event.Msg("dbserver log download failed")
+			}
+		}
 	}
 
-	if attempted > 0 && succeeded == 0 && firstErr != nil {
+	if total.ServersAttempted > 0 && total.ServersSucceeded == 0 && firstErr != nil {
 		return total, firstErr
 	}
 	return total, nil
+}
+
+func (c *Collector) cooldownUntil(ctx context.Context, target Target, serverKind string, serverIP string) (time.Time, bool) {
+	key := cooldownKey(target, serverKind, serverIP)
+	now := time.Now()
+	c.cooldownMu.Lock()
+	until, ok := c.serverCooldown[key]
+	if ok && !now.Before(until) {
+		delete(c.serverCooldown, key)
+		ok = false
+	}
+	c.cooldownMu.Unlock()
+
+	if ok {
+		return until, true
+	}
+	if c.rawFiles == nil {
+		return time.Time{}, false
+	}
+
+	until, ok, err := c.rawFiles.ServerCooldownUntil(ctx, target.SiteID, target.Environment, serverKind, serverIP)
+	if err != nil {
+		log.Warn().
+			Err(err).
+			Str("site_id", target.SiteID).
+			Str("env", target.Environment).
+			Str("server_kind", serverKind).
+			Str("server", serverIP).
+			Msg("failed to read persisted Pantheon server cooldown")
+		return time.Time{}, false
+	}
+	if ok {
+		c.cooldownMu.Lock()
+		c.serverCooldown[key] = until
+		c.cooldownMu.Unlock()
+	}
+	return until, ok
+}
+
+func (c *Collector) markCooldown(ctx context.Context, target Target, serverKind string, serverIP string, reason error) time.Time {
+	key := cooldownKey(target, serverKind, serverIP)
+	until := time.Now().Add(c.lockCooldown())
+	c.cooldownMu.Lock()
+	c.serverCooldown[key] = until
+	c.cooldownMu.Unlock()
+	if c.rawFiles != nil {
+		reasonText := ""
+		if reason != nil {
+			reasonText = reason.Error()
+		}
+		if err := c.rawFiles.MarkServerCooldown(ctx, target.SiteID, target.Environment, serverKind, serverIP, until, reasonText); err != nil {
+			log.Warn().
+				Err(err).
+				Str("site_id", target.SiteID).
+				Str("env", target.Environment).
+				Str("server_kind", serverKind).
+				Str("server", serverIP).
+				Msg("failed to persist Pantheon server cooldown")
+		}
+	}
+	return until
+}
+
+func (c *Collector) lockCooldown() time.Duration {
+	if c.cfg.Collection.ServerLockCooldown > 0 {
+		return c.cfg.Collection.ServerLockCooldown
+	}
+	return 15 * time.Minute
+}
+
+func cooldownKey(target Target, serverKind string, serverIP string) string {
+	return target.SiteID + "|" + target.Environment + "|" + serverKind + "|" + serverIP
+}
+
+func isPantheonResourceLocked(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "requested resource is locked") ||
+		(strings.Contains(message, "administratively prohibited") && strings.Contains(message, "pantheon"))
+}
+
+func stepStatus(err error) jobs.Status {
+	if err != nil {
+		return jobs.StatusFailed
+	}
+	return jobs.StatusSuccess
+}
+
+func dnsStepMessage(addresses []string, err error) string {
+	if err != nil {
+		return "DNS discovery failed"
+	}
+	return fmt.Sprintf("resolved %d address(es)", len(addresses))
 }
 
 func (c *Collector) Plan(ctx context.Context) ([]Target, error) {

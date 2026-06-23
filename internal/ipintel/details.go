@@ -172,6 +172,12 @@ type StoredIntel struct {
 	KnownActor       string    `json:"known_actor,omitempty"`
 	ActorType        string    `json:"actor_type,omitempty"`
 	VerifiedActor    bool      `json:"verified_actor"`
+	ProviderVerified bool      `json:"provider_verified"`
+	ProviderID       string    `json:"provider_id,omitempty"`
+	ProviderName     string    `json:"provider_name,omitempty"`
+	ProviderSource   string    `json:"provider_source_url,omitempty"`
+	ProviderRange    string    `json:"provider_range,omitempty"`
+	ProviderAt       time.Time `json:"provider_refreshed_at,omitempty"`
 	IsTorExit        bool      `json:"is_tor_exit"`
 	IsDatacenter     bool      `json:"is_datacenter"`
 	ManualLabel      string    `json:"manual_label,omitempty"`
@@ -448,6 +454,12 @@ SELECT coalesce(asn, 0),
        coalesce(known_actor, ''),
        coalesce(actor_type, ''),
        coalesce(verified_actor, false),
+       coalesce(provider_verified, false),
+       coalesce(provider_id, ''),
+       coalesce(provider_name, ''),
+       coalesce(provider_source_url, ''),
+       coalesce(provider_range::text, ''),
+       coalesce(provider_refreshed_at, '0001-01-01T00:00:00Z'::timestamptz),
        coalesce(is_tor_exit, false),
        coalesce(is_datacenter, false),
        coalesce(manual_label, ''),
@@ -466,6 +478,12 @@ WHERE ip = $1::inet`, out.IP).Scan(
 		&out.StoredIntel.KnownActor,
 		&out.StoredIntel.ActorType,
 		&out.StoredIntel.VerifiedActor,
+		&out.StoredIntel.ProviderVerified,
+		&out.StoredIntel.ProviderID,
+		&out.StoredIntel.ProviderName,
+		&out.StoredIntel.ProviderSource,
+		&out.StoredIntel.ProviderRange,
+		&out.StoredIntel.ProviderAt,
 		&out.StoredIntel.IsTorExit,
 		&out.StoredIntel.IsDatacenter,
 		&out.StoredIntel.ManualLabel,
@@ -1071,7 +1089,22 @@ func (s *Service) cacheExternalIntel(ctx context.Context, out Detail) error {
 		knownActor = fingerprint.KnownActor
 		actorType = fingerprint.ActorType
 		riskScore = fingerprint.RiskScore
-		isDatacenter = fingerprint.ActorType == "datacenter"
+		isDatacenter = isInfrastructureActorType(fingerprint.ActorType)
+	}
+	provider, providerVerified := s.officialProviderMatch(ctx, out.IP)
+	if providerVerified {
+		knownActor = provider.Name
+		actorType = provider.ActorType
+		if baseline := providerBaselineRisk(provider.ActorType); riskScore < baseline {
+			riskScore = baseline
+		}
+		isDatacenter = isInfrastructureActorType(provider.ActorType)
+		if out.Traffic.Requests >= 100 {
+			errors := out.Traffic.Status4xx + out.Traffic.Status5xx
+			if errors >= 50 && float64(errors)/float64(out.Traffic.Requests) >= 0.80 && riskScore < 85 {
+				riskScore = 85
+			}
+		}
 	}
 
 	source := map[string]any{
@@ -1116,6 +1149,16 @@ func (s *Service) cacheExternalIntel(ctx context.Context, out Detail) error {
 			"verified_actor": fingerprintVerified,
 		}
 	}
+	if providerVerified {
+		source["provider"] = map[string]any{
+			"verified":     true,
+			"id":           provider.ID,
+			"name":         provider.Name,
+			"range":        provider.Range,
+			"source_url":   provider.SourceURL,
+			"refreshed_at": provider.FetchedAt,
+		}
+	}
 	sourceJSON, err := json.Marshal(source)
 	if err != nil {
 		return err
@@ -1123,9 +1166,9 @@ func (s *Service) cacheExternalIntel(ctx context.Context, out Detail) error {
 
 	_, err = pool.Exec(ctx, `
 INSERT INTO ip_intel (
-  ip, asn, asn_org, network, country_code, reverse_dns, forward_confirmed, known_actor, actor_type, verified_actor, is_datacenter, risk_score, source, refreshed_at
+  ip, asn, asn_org, network, country_code, reverse_dns, forward_confirmed, known_actor, actor_type, verified_actor, provider_verified, provider_id, provider_name, provider_source_url, provider_range, provider_refreshed_at, is_datacenter, risk_score, source, refreshed_at
 ) VALUES (
-  $1::inet, nullif($2, 0), nullif($3, ''), nullif($4, '')::cidr, nullif($5, ''), nullif($6, ''), $7, nullif($8, ''), nullif($9, ''), $10, $11, nullif($12, 0), $13::jsonb, $14
+  $1::inet, nullif($2, 0), nullif($3, ''), nullif($4, '')::cidr, nullif($5, ''), nullif($6, ''), $7, nullif($8, ''), nullif($9, ''), $10, $11, nullif($12, ''), nullif($13, ''), nullif($14, ''), nullif($15, '')::cidr, CASE WHEN $16::timestamptz = '0001-01-01T00:00:00Z'::timestamptz THEN NULL ELSE $16::timestamptz END, $17, nullif($18, 0), $19::jsonb, $20
 )
 ON CONFLICT (ip) DO UPDATE SET
   asn = coalesce(EXCLUDED.asn, ip_intel.asn),
@@ -1137,6 +1180,12 @@ ON CONFLICT (ip) DO UPDATE SET
   known_actor = CASE WHEN ip_intel.is_tor_exit THEN ip_intel.known_actor ELSE coalesce(EXCLUDED.known_actor, ip_intel.known_actor) END,
   actor_type = CASE WHEN ip_intel.is_tor_exit THEN ip_intel.actor_type ELSE coalesce(EXCLUDED.actor_type, ip_intel.actor_type) END,
   verified_actor = EXCLUDED.verified_actor OR ip_intel.verified_actor,
+  provider_verified = EXCLUDED.provider_verified,
+  provider_id = EXCLUDED.provider_id,
+  provider_name = EXCLUDED.provider_name,
+  provider_source_url = EXCLUDED.provider_source_url,
+  provider_range = EXCLUDED.provider_range,
+  provider_refreshed_at = EXCLUDED.provider_refreshed_at,
   is_datacenter = coalesce(EXCLUDED.is_datacenter, ip_intel.is_datacenter),
   risk_score = CASE WHEN ip_intel.is_tor_exit THEN ip_intel.risk_score ELSE coalesce(EXCLUDED.risk_score, ip_intel.risk_score) END,
   source = ip_intel.source || EXCLUDED.source,
@@ -1151,6 +1200,12 @@ ON CONFLICT (ip) DO UPDATE SET
 		knownActor,
 		actorType,
 		fingerprintVerified,
+		providerVerified,
+		provider.ID,
+		provider.Name,
+		provider.SourceURL,
+		provider.Range,
+		provider.FetchedAt,
 		isDatacenter,
 		riskScore,
 		string(sourceJSON),
@@ -1176,13 +1231,13 @@ func applyExternalServiceFingerprint(out *Detail) {
 
 func externalServiceFingerprint(out Detail) (servicefingerprints.Match, bool, bool) {
 	if match, ok := servicefingerprints.MatchReverseDNS(out.DNS.ReverseNames); ok {
-		return match, out.DNS.ForwardConfirmed && match.KnownActor != "", true
+		return match, out.DNS.ForwardConfirmed && match.KnownActor != "" && !isInfrastructureActorType(match.ActorType), true
 	}
 	if match, ok := servicefingerprints.MatchASNOrg(out.ASN.Name); ok {
-		return match, true, true
+		return match, false, true
 	}
 	if match, ok := servicefingerprints.MatchASNOrg(out.RDAP.Name); ok {
-		return match, true, true
+		return match, false, true
 	}
 	return servicefingerprints.Match{}, false, false
 }
@@ -1258,6 +1313,9 @@ func lookupASNDetails(ctx context.Context, addr netip.Addr) ASNDetails {
 		if len(fields) > 5 {
 			name = strings.TrimSpace(fields[5])
 		}
+		if name == "" {
+			name = lookupASNName(ctx, asn)
+		}
 		return ASNDetails{
 			ASN:         asn,
 			Prefix:      strings.TrimSpace(fields[1]),
@@ -1269,6 +1327,28 @@ func lookupASNDetails(ctx context.Context, addr netip.Addr) ASNDetails {
 		}
 	}
 	return ASNDetails{Source: "Team Cymru", Error: "ASN response was empty"}
+}
+
+func lookupASNName(ctx context.Context, asn int64) string {
+	if asn <= 0 {
+		return ""
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	txts, err := net.DefaultResolver.LookupTXT(lookupCtx, fmt.Sprintf("AS%d.asn.cymru.com", asn))
+	if err != nil {
+		return ""
+	}
+	for _, txt := range txts {
+		fields := strings.Split(txt, "|")
+		if len(fields) < 5 {
+			continue
+		}
+		if name := strings.TrimSpace(fields[4]); name != "" {
+			return name
+		}
+	}
+	return ""
 }
 
 func lookupRDAPDetails(ctx context.Context, ip string) RDAPDetails {

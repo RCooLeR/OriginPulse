@@ -36,34 +36,40 @@ ollama:
 
 collection:
   enabled: false
-  interval: "10m"
-  timeout_per_site: "90s"
-  max_parallel_sites: 4
+  interval: "6m"
+  timeout_per_site: "16m"
+  server_lock_cooldown: "15m"
+  max_parallel_sites: 2
   log_types:
     - "nginx-access"
     - "nginx-error"
+    - "apache-access"
+    - "apache-error"
     - "php-error"
+    - "php-slow"
+    - "mysql"
+    - "mysql-slow"
   raw_dir: "./data/raw"
 
 combiner:
   combined_dir: "./data/combined"
   quarantine_dir: "./data/quarantine"
-  settling_window: "2h"
-  finalize_after: "3h"
+  settling_window: "5m"
+  finalize_after: "15m"
 
 pipeline:
-  index_workers: 2
+  index_workers: 3
 
 retention:
   enabled: true
   interval: "24h"
-  max_age: "17520h"
+  max_age: "1440h"
   archive_dir: "./data/archives"
   raw_file_max_age: "336h"
-  hot_event_max_age: "2160h"
-  daily_archive_after: "336h"
-  weekly_archive_after: "2160h"
-  archive_max_age: "17520h"
+  hot_event_max_age: "1440h"
+  daily_archive_after: "168h"
+  weekly_archive_after: "720h"
+  archive_max_age: "2160h"
   report_max_age: "43800h"
   temporary_import_max_age: "168h"
   delete_raw_files: true
@@ -112,6 +118,16 @@ geoip:
   last_modified_env: "GEOIP_LAST_MODIFIED_PATH"
   last_modified_path: "./data/GeoLite2-City.lastmod"
 
+ip_intel:
+  enabled: true
+  interval: "15m"
+  range: "24h"
+  limit: 500
+  startup_backfill: true
+  startup_backfill_range: "365d"
+  startup_backfill_limit: 5000
+  startup_user_agent_limit: 50000
+
 ip_allowlist:
   enabled: true
   entries: []
@@ -129,7 +145,17 @@ ip_allowlist:
 sites:
   - id: "example-site"
     name: "Example Site"
+    source_type: "pantheon"
     pantheon_site_id: "12345678-1234-1234-abcd-0123456789ab"
     enabled: false
     envs: ["live"]
     tags: ["pantheon"]
+  - id: "example-apache"
+    name: "Example Apache Logs"
+    source_type: "local"
+    local_path: "./tmp/example.com"
+    filename_masks:
+      - "example-*"
+    enabled: false
+    envs: ["live"]
+    tags: ["direct", "apache"]

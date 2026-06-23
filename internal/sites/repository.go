@@ -14,7 +14,10 @@ import (
 type Site struct {
 	ID             string   `json:"id"`
 	Name           string   `json:"name"`
+	SourceType     string   `json:"source_type"`
 	PantheonSiteID string   `json:"pantheon_site_id"`
+	LocalPath      string   `json:"local_path"`
+	FilenameMasks  []string `json:"filename_masks"`
 	Enabled        bool     `json:"enabled"`
 	Envs           []string `json:"envs"`
 	Tags           []string `json:"tags"`
@@ -40,11 +43,13 @@ func (r *Repository) List(ctx context.Context) ([]Site, error) {
 	}
 
 	rows, err := pool.Query(ctx, `
-SELECT s.id, s.name, s.pantheon_site_id, s.enabled, s.tags, coalesce(array_agg(se.env ORDER BY se.env) FILTER (WHERE se.enabled), '{}')
+SELECT s.id, s.name, coalesce(s.source_type, 'pantheon'), coalesce(s.pantheon_site_id, ''), coalesce(s.local_path, ''),
+       coalesce(s.filename_masks, '{}'), s.enabled, s.tags,
+       coalesce(array_agg(se.env ORDER BY se.env) FILTER (WHERE se.enabled), '{}')
 FROM sites s
 LEFT JOIN site_envs se ON se.site_id = s.id
 WHERE s.enabled = true
-GROUP BY s.id, s.name, s.pantheon_site_id, s.enabled, s.tags
+GROUP BY s.id, s.name, s.source_type, s.pantheon_site_id, s.local_path, s.filename_masks, s.enabled, s.tags
 ORDER BY s.name`)
 	if err != nil {
 		return nil, err
@@ -54,7 +59,7 @@ ORDER BY s.name`)
 	out := make([]Site, 0)
 	for rows.Next() {
 		var site Site
-		if err := rows.Scan(&site.ID, &site.Name, &site.PantheonSiteID, &site.Enabled, &site.Tags, &site.Envs); err != nil {
+		if err := rows.Scan(&site.ID, &site.Name, &site.SourceType, &site.PantheonSiteID, &site.LocalPath, &site.FilenameMasks, &site.Enabled, &site.Tags, &site.Envs); err != nil {
 			return nil, err
 		}
 		out = append(out, site)
@@ -89,15 +94,18 @@ func (r *Repository) SeedFromConfig(ctx context.Context) error {
 			tags = []string{}
 		}
 		if _, err := tx.Exec(ctx, `
-INSERT INTO sites (id, name, pantheon_site_id, enabled, tags)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO sites (id, name, source_type, pantheon_site_id, local_path, filename_masks, enabled, tags)
+VALUES ($1, $2, $3, nullif($4, ''), nullif($5, ''), $6, $7, $8)
 ON CONFLICT (id) DO UPDATE
 SET name = EXCLUDED.name,
+    source_type = EXCLUDED.source_type,
     pantheon_site_id = EXCLUDED.pantheon_site_id,
+    local_path = EXCLUDED.local_path,
+    filename_masks = EXCLUDED.filename_masks,
     enabled = EXCLUDED.enabled,
     tags = EXCLUDED.tags,
     updated_at = now()`,
-			site.ID, site.Name, site.PantheonSiteID, site.Enabled, tags); err != nil {
+			site.ID, site.Name, site.SourceType, site.PantheonSiteID, site.LocalPath, site.FilenameMasks, site.Enabled, tags); err != nil {
 			return err
 		}
 
@@ -134,7 +142,10 @@ func fromConfig(cfg config.Config) []Site {
 		out = append(out, Site{
 			ID:             site.ID,
 			Name:           site.Name,
+			SourceType:     site.SourceType,
 			PantheonSiteID: site.PantheonSiteID,
+			LocalPath:      site.LocalPath,
+			FilenameMasks:  append([]string(nil), site.FilenameMasks...),
 			Enabled:        site.Enabled,
 			Envs:           append([]string(nil), envs...),
 			Tags:           append([]string(nil), site.Tags...),

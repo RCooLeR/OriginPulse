@@ -128,6 +128,11 @@ type SourceIPSummary struct {
 	ForwardConfirmed bool      `json:"forward_confirmed"`
 	VerifiedActor    bool      `json:"verified_actor"`
 	VerifiedSource   bool      `json:"verified_source"`
+	ProviderVerified bool      `json:"provider_verified"`
+	ProviderID       string    `json:"provider_id,omitempty"`
+	ProviderName     string    `json:"provider_name,omitempty"`
+	ProviderSource   string    `json:"provider_source_url,omitempty"`
+	ProviderRange    string    `json:"provider_range,omitempty"`
 	IsTorExit        bool      `json:"is_tor_exit"`
 	ManualLabel      string    `json:"manual_label,omitempty"`
 	ManualAction     string    `json:"manual_action,omitempty"`
@@ -861,13 +866,18 @@ SELECT host(e.client_ip),
        coalesce(ii.risk_score, -1),
        coalesce(ii.forward_confirmed, false),
        coalesce(ii.verified_actor, false),
+       coalesce(ii.provider_verified, false),
+       coalesce(ii.provider_id, ''),
+       coalesce(ii.provider_name, ''),
+       coalesce(ii.provider_source_url, ''),
+       coalesce(ii.provider_range::text, ''),
        coalesce(ii.is_tor_exit, false),
        coalesce(ii.manual_label, ''),
        coalesce(ii.manual_action, '')
 FROM access_events e
 LEFT JOIN ip_intel ii ON ii.ip = e.client_ip
 WHERE e.ts >= $1 AND e.ts < $2 AND ($3 = '' OR e.site_id = $3) AND e.client_ip IS NOT NULL
-GROUP BY e.client_ip, ii.reverse_dns, ii.asn, ii.asn_org, ii.network, ii.country_code, ii.known_actor, ii.actor_type, ii.risk_score, ii.forward_confirmed, ii.verified_actor, ii.is_tor_exit, ii.manual_label, ii.manual_action
+GROUP BY e.client_ip, ii.reverse_dns, ii.asn, ii.asn_org, ii.network, ii.country_code, ii.known_actor, ii.actor_type, ii.risk_score, ii.forward_confirmed, ii.verified_actor, ii.provider_verified, ii.provider_id, ii.provider_name, ii.provider_source_url, ii.provider_range, ii.is_tor_exit, ii.manual_label, ii.manual_action
 ORDER BY count(*) DESC
 LIMIT $4`, report.Since, report.Until, report.SiteID, limit)
 	if err != nil {
@@ -896,6 +906,11 @@ LIMIT $4`, report.Since, report.Until, report.SiteID, limit)
 			&riskScore,
 			&item.ForwardConfirmed,
 			&item.VerifiedActor,
+			&item.ProviderVerified,
+			&item.ProviderID,
+			&item.ProviderName,
+			&item.ProviderSource,
+			&item.ProviderRange,
 			&item.IsTorExit,
 			&item.ManualLabel,
 			&item.ManualAction,
@@ -905,7 +920,7 @@ LIMIT $4`, report.Since, report.Until, report.SiteID, limit)
 		if riskScore >= 0 {
 			item.RiskScore = &riskScore
 		}
-		item.VerifiedSource = item.ForwardConfirmed || item.VerifiedActor
+		item.VerifiedSource = verifiedSource(item.KnownActor, item.ActorType, item.ManualAction, item.ForwardConfirmed, item.VerifiedActor)
 		report.SourceIPs = append(report.SourceIPs, item)
 	}
 	return rows.Err()
@@ -985,6 +1000,11 @@ SELECT host(coalesce(d.ip, t.raw_ip)),
        coalesce(ii.risk_score, -1),
        coalesce(ii.forward_confirmed, false),
        coalesce(ii.verified_actor, false),
+       coalesce(ii.provider_verified, false),
+       coalesce(ii.provider_id, ''),
+       coalesce(ii.provider_name, ''),
+       coalesce(ii.provider_source_url, ''),
+       coalesce(ii.provider_range::text, ''),
        coalesce(ii.is_tor_exit, false),
        coalesce(ii.manual_label, ''),
        coalesce(ii.manual_action, '')
@@ -1018,6 +1038,11 @@ ORDER BY t.requests DESC`, report.Since, report.Until, report.SiteID, limit, ful
 			&riskScore,
 			&item.ForwardConfirmed,
 			&item.VerifiedActor,
+			&item.ProviderVerified,
+			&item.ProviderID,
+			&item.ProviderName,
+			&item.ProviderSource,
+			&item.ProviderRange,
 			&item.IsTorExit,
 			&item.ManualLabel,
 			&item.ManualAction,
@@ -1027,7 +1052,7 @@ ORDER BY t.requests DESC`, report.Since, report.Until, report.SiteID, limit, ful
 		if riskScore >= 0 {
 			item.RiskScore = &riskScore
 		}
-		item.VerifiedSource = item.ForwardConfirmed || item.VerifiedActor
+		item.VerifiedSource = verifiedSource(item.KnownActor, item.ActorType, item.ManualAction, item.ForwardConfirmed, item.VerifiedActor)
 		report.SourceIPs = append(report.SourceIPs, item)
 	}
 	return rows.Err()
@@ -1058,8 +1083,8 @@ SELECT left(coalesce(max(d.user_agent), max(e.user_agent), ''), 300),
        count(DISTINCT e.client_ip)::bigint,
        count(*) FILTER (WHERE e.status >= 400 AND e.status < 500)::bigint,
        count(*) FILTER (WHERE e.status >= 500 AND e.status < 600)::bigint,
-       count(DISTINCT e.client_ip) FILTER (WHERE coalesce(ii.forward_confirmed, false) OR coalesce(ii.verified_actor, false))::bigint,
-       count(*) FILTER (WHERE coalesce(ii.forward_confirmed, false) OR coalesce(ii.verified_actor, false))::bigint,
+       count(DISTINCT e.client_ip) FILTER (WHERE coalesce(ii.manual_action, '') IN ('allowlisted', 'verified') OR (coalesce(ii.manual_action, '') <> 'suspicious' AND lower(coalesce(ii.actor_type, '')) NOT IN ('', 'datacenter', 'unknown', 'tor') AND (coalesce(ii.verified_actor, false) OR (coalesce(ii.forward_confirmed, false) AND nullif(ii.known_actor, '') IS NOT NULL))))::bigint,
+       count(*) FILTER (WHERE coalesce(ii.manual_action, '') IN ('allowlisted', 'verified') OR (coalesce(ii.manual_action, '') <> 'suspicious' AND lower(coalesce(ii.actor_type, '')) NOT IN ('', 'datacenter', 'unknown', 'tor') AND (coalesce(ii.verified_actor, false) OR (coalesce(ii.forward_confirmed, false) AND nullif(ii.known_actor, '') IS NOT NULL))))::bigint,
        min(e.ts),
        max(e.ts)
 FROM access_events e
@@ -1195,8 +1220,8 @@ agent_ip_rows AS (
 agent_ip_stats AS (
   SELECT rows.agent_key,
          count(DISTINCT rows.ip)::bigint AS unique_ips,
-         count(DISTINCT rows.ip) FILTER (WHERE coalesce(ii.forward_confirmed, false) OR coalesce(ii.verified_actor, false))::bigint AS verified_ips,
-         coalesce(sum(rows.requests) FILTER (WHERE coalesce(ii.forward_confirmed, false) OR coalesce(ii.verified_actor, false)), 0)::bigint AS verified_requests
+         count(DISTINCT rows.ip) FILTER (WHERE coalesce(ii.manual_action, '') IN ('allowlisted', 'verified') OR (coalesce(ii.manual_action, '') <> 'suspicious' AND lower(coalesce(ii.actor_type, '')) NOT IN ('', 'datacenter', 'unknown', 'tor') AND (coalesce(ii.verified_actor, false) OR (coalesce(ii.forward_confirmed, false) AND nullif(ii.known_actor, '') IS NOT NULL))))::bigint AS verified_ips,
+         coalesce(sum(rows.requests) FILTER (WHERE coalesce(ii.manual_action, '') IN ('allowlisted', 'verified') OR (coalesce(ii.manual_action, '') <> 'suspicious' AND lower(coalesce(ii.actor_type, '')) NOT IN ('', 'datacenter', 'unknown', 'tor') AND (coalesce(ii.verified_actor, false) OR (coalesce(ii.forward_confirmed, false) AND nullif(ii.known_actor, '') IS NOT NULL)))), 0)::bigint AS verified_requests
   FROM agent_ip_rows rows
   LEFT JOIN ip_intel ii ON ii.ip = rows.ip
   GROUP BY rows.agent_key
@@ -1299,6 +1324,33 @@ func applyUserAgentAnalysis(item *UserAgentSummary) {
 	item.IsTool = item.IsTool || analysis.IsTool
 	if item.RiskScore <= 0 {
 		item.RiskScore = analysis.RiskScore
+	}
+}
+
+func verifiedSource(knownActor string, actorType string, manualAction string, forwardConfirmed bool, verifiedActor bool) bool {
+	action := strings.ToLower(strings.TrimSpace(manualAction))
+	if action == "suspicious" {
+		return false
+	}
+	if action == "allowlisted" || action == "verified" {
+		return true
+	}
+	if !trustedActorType(actorType) {
+		return false
+	}
+	if verifiedActor {
+		return true
+	}
+	actor := strings.ToLower(strings.TrimSpace(knownActor))
+	return forwardConfirmed && actor != "" && actor != "tor exit"
+}
+
+func trustedActorType(actorType string) bool {
+	switch strings.ToLower(strings.TrimSpace(actorType)) {
+	case "cloud", "datacenter", "edge", "hosting", "vps", "unknown", "tor", "":
+		return false
+	default:
+		return true
 	}
 }
 
@@ -2185,6 +2237,10 @@ func parseRange(value string) (time.Duration, string) {
 	switch value {
 	case "15m":
 		return 15 * time.Minute, "15m"
+	case "30m":
+		return 30 * time.Minute, "30m"
+	case "3h":
+		return 3 * time.Hour, "3h"
 	case "6h":
 		return 6 * time.Hour, "6h"
 	case "24h", "daily", "day":

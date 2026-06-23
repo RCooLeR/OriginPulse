@@ -881,6 +881,10 @@ func parseRange(value string) (time.Duration, string) {
 	switch value {
 	case "15m":
 		return 15 * time.Minute, "15m"
+	case "30m":
+		return 30 * time.Minute, "30m"
+	case "3h":
+		return 3 * time.Hour, "3h"
 	case "6h":
 		return 6 * time.Hour, "6h"
 	case "24h":

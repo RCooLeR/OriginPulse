@@ -164,6 +164,7 @@ func (r *Runtime) RunServer(ctx context.Context) error {
 		go r.geoIPUpdater.Run(ctx, r.geoIP)
 	}
 	r.scheduler.Start(ctx)
+	r.startStartupIntelBackfill(ctx)
 
 	handler := httpapi.NewRouter(httpapi.Dependencies{
 		Config:          r.cfg,
@@ -222,6 +223,52 @@ func (r *Runtime) RunServer(ctx context.Context) error {
 		}
 		return err
 	}
+}
+
+func (r *Runtime) startStartupIntelBackfill(ctx context.Context) {
+	if r == nil || r.db == nil || !r.db.Enabled() || !r.cfg.IPIntel.Enabled || !r.cfg.IPIntel.StartupBackfill {
+		return
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+		job := r.jobs.Start(ctx, "startup_backfill_intel", "startup", map[string]any{
+			"range":            r.cfg.IPIntel.StartupBackfillRange,
+			"ip_limit":         r.cfg.IPIntel.StartupBackfillLimit,
+			"user_agent_limit": r.cfg.IPIntel.StartupUserAgentLimit,
+		})
+		uaUpdated, err := r.backfill.ReclassifyUserAgents(ctx, r.cfg.IPIntel.StartupUserAgentLimit)
+		if err != nil {
+			r.jobs.Finish(job.ID, jobs.StatusFailed, "startup user-agent backfill failed", err)
+			log.Error().Err(err).Msg("startup user-agent backfill failed")
+			return
+		}
+		providers, providerErr := r.ipIntel.RefreshOfficialProviderRanges(ctx)
+		providerMatches, err := r.ipIntel.BackfillProviderMatches(ctx, r.cfg.IPIntel.StartupBackfillRange, r.cfg.IPIntel.StartupBackfillLimit)
+		if err != nil || (providerErr != nil && providers.Providers == 0) {
+			if err == nil {
+				err = providerErr
+			}
+			r.jobs.Finish(job.ID, jobs.StatusFailed, "startup IP intel backfill failed", err)
+			log.Error().Err(err).Msg("startup IP intel backfill failed")
+			return
+		}
+		r.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, "startup intel backfill completed", nil, map[string]any{
+			"user_agents_reclassified": uaUpdated,
+			"provider_matched_ips":     providerMatches,
+			"provider_ranges":          providers.Ranges,
+			"provider_failed":          providers.Failed,
+		})
+		log.Info().
+			Int64("user_agents_reclassified", uaUpdated).
+			Int64("provider_matched_ips", providerMatches).
+			Int("provider_ranges", providers.Ranges).
+			Int("provider_failed", providers.Failed).
+			Msg("startup intel backfill completed")
+	}()
 }
 
 func (r *Runtime) CollectOnce(ctx context.Context) error {
@@ -519,6 +566,10 @@ func (r *Runtime) AlertDetail(ctx context.Context, id string, limit int) (alerts
 
 func (r *Runtime) AnalyzeAccess(ctx context.Context, opts accessanalysis.Options) (accessanalysis.Report, error) {
 	return r.accessAnalysis.Analyze(ctx, opts)
+}
+
+func (r *Runtime) InvestigateTraffic(ctx context.Context, opts investigation.Options) (investigation.Traffic, error) {
+	return r.investigation.Traffic(ctx, opts)
 }
 
 func (r *Runtime) RecentReports(ctx context.Context, limit int, siteID string) ([]reports.Report, error) {

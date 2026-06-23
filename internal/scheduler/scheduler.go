@@ -38,6 +38,7 @@ func New(cfg config.Config, store *jobs.Store, collector *pantheon.Collector, pi
 
 func (s *Scheduler) Start(ctx context.Context) {
 	go s.loop(ctx)
+	go s.ipIntelLoop(ctx)
 }
 
 func (s *Scheduler) loop(ctx context.Context) {
@@ -48,6 +49,8 @@ func (s *Scheduler) loop(ctx context.Context) {
 		Bool("retention_enabled", s.cfg.Retention.Enabled).
 		Dur("reports_interval", s.cfg.Reports.Interval).
 		Bool("reports_enabled", s.cfg.Reports.Enabled).
+		Dur("ip_intel_interval", s.cfg.IPIntel.Interval).
+		Bool("ip_intel_enabled", s.cfg.IPIntel.Enabled).
 		Msg("background scheduler started")
 
 	ticker := time.NewTicker(s.cfg.Collection.Interval)
@@ -68,12 +71,36 @@ func (s *Scheduler) loop(ctx context.Context) {
 			}
 			s.runPipeline(ctx)
 			s.evaluateAlerts(ctx)
-			s.refreshIPIntel(ctx)
 		case <-retentionTicker.C:
 			s.runArchive(ctx)
 			s.runRetention(ctx)
 		case <-reportTicker.C:
 			s.runReports(ctx)
+		}
+	}
+}
+
+func (s *Scheduler) ipIntelLoop(ctx context.Context) {
+	if s.ipIntel == nil || !s.ipIntel.Enabled() || !s.cfg.IPIntel.Enabled {
+		return
+	}
+	log.Info().
+		Dur("interval", s.cfg.IPIntel.Interval).
+		Str("range", s.ipIntelRange()).
+		Int("limit", s.ipIntelLimit()).
+		Msg("IP intelligence background refresh started")
+
+	s.refreshIPIntel(ctx)
+
+	ticker := time.NewTicker(s.cfg.IPIntel.Interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info().Msg("IP intelligence background refresh stopped")
+			return
+		case <-ticker.C:
+			s.refreshIPIntel(ctx)
 		}
 	}
 }
@@ -151,22 +178,55 @@ func (s *Scheduler) refreshIPIntel(ctx context.Context) {
 	if s.ipIntel == nil || !s.ipIntel.Enabled() {
 		return
 	}
-	job := s.jobs.Start(ctx, "refresh_ip_intel", "scheduler", map[string]any{"range": "24h"})
-	result, err := s.ipIntel.RefreshTop(ctx, ipintel.Options{Range: "24h", Limit: ipintel.ResultMaxLimit})
-	if err != nil {
+	refreshRange := s.ipIntelRange()
+	limit := s.ipIntelLimit()
+	job := s.jobs.Start(ctx, "refresh_ip_intel", "scheduler", map[string]any{"range": refreshRange, "limit": limit})
+	providers, providerErr := s.ipIntel.RefreshOfficialProviderRanges(ctx)
+	result, err := s.ipIntel.RefreshTop(ctx, ipintel.Options{Range: refreshRange, Limit: limit})
+	result.ProviderRanges = providers.Ranges
+	result.ProviderFailed = providers.Failed
+	if err != nil || (providerErr != nil && providers.Providers == 0) {
+		if err == nil && providers.Providers == 0 {
+			err = providerErr
+		}
 		s.jobs.Finish(job.ID, jobs.StatusFailed, "IP intelligence refresh failed", err)
 		return
 	}
 	s.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, "IP intelligence refresh completed", nil, map[string]any{
-		"refreshed":     result.Refreshed,
-		"failed":        result.Failed,
-		"lookup_failed": result.LookupFailed,
+		"refreshed":          result.Refreshed,
+		"failed":             result.Failed,
+		"lookup_failed":      result.LookupFailed,
+		"geoip_failed":       result.GeoIPFailed,
+		"reverse_dns_failed": result.ReverseDNSFailed,
+		"providers":          providers.Providers,
+		"provider_ranges":    providers.Ranges,
+		"provider_failed":    providers.Failed,
 	})
 	log.Info().
 		Int("refreshed", result.Refreshed).
-		Int("failed", result.Failed).
-		Int("lookup_failed", result.LookupFailed).
+		Int("hard_failures", result.Failed).
+		Int("dns_geoip_misses", result.LookupFailed).
+		Int("geoip_misses", result.GeoIPFailed).
+		Int("reverse_dns_misses", result.ReverseDNSFailed).
+		Int("providers", providers.Providers).
+		Int("provider_ranges", providers.Ranges).
+		Int("provider_failed", providers.Failed).
 		Msg("scheduled IP intelligence refresh completed")
+}
+
+func (s *Scheduler) ipIntelRange() string {
+	value := strings.TrimSpace(s.cfg.IPIntel.Range)
+	if value == "" {
+		return "24h"
+	}
+	return value
+}
+
+func (s *Scheduler) ipIntelLimit() int {
+	if s.cfg.IPIntel.Limit > 0 {
+		return s.cfg.IPIntel.Limit
+	}
+	return ipintel.ResultMaxLimit
 }
 
 func (s *Scheduler) runRetention(ctx context.Context) {

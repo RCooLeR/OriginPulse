@@ -19,6 +19,7 @@ type LogEvent struct {
 
 var (
 	nginxErrorTSRe = regexp.MustCompile(`^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\s+\[([a-z]+)\]\s*(.*)$`)
+	apacheErrorRe  = regexp.MustCompile(`^\[([A-Z][a-z]{2} [A-Z][a-z]{2}\s+\d{1,2} \d{2}:\d{2}:\d{2}(?:\.\d+)? \d{4})\]\s*(.*)$`)
 	phpBracketRe   = regexp.MustCompile(`^\[([0-9]{2}-[A-Za-z]{3}-[0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2}(?: [A-Z]{2,4})?)\]\s*(.*)$`)
 	isoLogTSRe     = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.\d+)?(?:Z|[+-][0-9]{2}:?[0-9]{2})?)\s*(.*)$`)
 	mysqlLongRe    = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2}:\d{2})\s*(.*)$`)
@@ -32,6 +33,9 @@ func ParseLogLine(line string, logType string) (LogEvent, error) {
 		return LogEvent{}, ErrInvalidLogLine
 	}
 	if ts, severity, message, ok := parseNginxError(raw); ok {
+		return newLogEvent(ts, logType, severity, message, raw), nil
+	}
+	if ts, severity, message, ok := parseApacheError(raw); ok {
 		return newLogEvent(ts, logType, severity, message, raw), nil
 	}
 	if ts, message, ok := parsePHPLog(raw); ok {
@@ -67,6 +71,31 @@ func parseNginxError(line string) (time.Time, string, string, bool) {
 		return time.Time{}, "", "", false
 	}
 	return ts.UTC(), strings.ToLower(match[2]), strings.TrimSpace(match[3]), true
+}
+
+func parseApacheError(line string) (time.Time, string, string, bool) {
+	match := apacheErrorRe.FindStringSubmatch(line)
+	if match == nil {
+		return time.Time{}, "", "", false
+	}
+	var ts time.Time
+	var err error
+	for _, layout := range []string{"Mon Jan _2 15:04:05.999999 2006", "Mon Jan _2 15:04:05 2006"} {
+		ts, err = time.ParseInLocation(layout, match[1], time.UTC)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return time.Time{}, "", "", false
+	}
+	message := strings.TrimSpace(match[2])
+	severity := severityFromText(message)
+	if bracket := bracketLevelRe.FindStringSubmatch(message); bracket != nil {
+		parts := strings.Split(bracket[1], ":")
+		severity = normalizeSeverity(parts[len(parts)-1])
+	}
+	return ts.UTC(), severity, message, true
 }
 
 func parsePHPLog(line string) (time.Time, string, bool) {

@@ -13,6 +13,7 @@ import (
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5"
 
 	"originpulse/internal/accessanalysis"
 	"originpulse/internal/alerts"
@@ -171,6 +172,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/system/geoip", api.geoIPStatus)
 			r.Get("/system/collector-health", api.collectorHealth)
 			r.Get("/system/jobs", api.recentJobs)
+			r.Get("/system/job-steps", api.recentJobSteps)
 			r.Get("/system/retention", api.retentionDryRun)
 			r.Get("/system/archives", api.recentArchives)
 			r.Get("/system/archive-imports", api.recentArchiveImports)
@@ -205,7 +207,7 @@ func (api API) healthz(w http.ResponseWriter, r *http.Request) {
 	if api.db != nil && api.db.Enabled() {
 		dbOK = api.db.Ping(r.Context()) == nil
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"ok":         true,
 		"service":    "originpulse",
 		"started_at": api.startedAt,
@@ -214,7 +216,128 @@ func (api API) healthz(w http.ResponseWriter, r *http.Request) {
 			"configured": api.db != nil && api.db.Enabled(),
 			"ok":         dbOK,
 		},
-	})
+	}
+	if dbOK {
+		body["data"] = api.dataFreshness(r.Context())
+	}
+	if api.jobs != nil {
+		body["scheduler"] = schedulerHealth(api.jobs.SchedulerSummary(r.Context(), api.startedAt, api.cfg.Collection.Interval), api.cfg.Collection.Enabled)
+	}
+	if api.rawFiles != nil {
+		body["collector"] = api.collectorSnapshot(r.Context())
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+func (api API) collectorSnapshot(ctx context.Context) map[string]any {
+	out := map[string]any{
+		"raw_files": map[string]any{
+			"enabled": api.rawFiles != nil && api.rawFiles.Enabled(),
+		},
+	}
+	if api.rawFiles == nil || !api.rawFiles.Enabled() {
+		return out
+	}
+	stats, err := api.rawFiles.Stats(ctx)
+	if err != nil {
+		out["raw_files"] = map[string]any{
+			"enabled": true,
+			"error":   "raw file stats unavailable",
+		}
+		return out
+	}
+	cooldowns, err := api.rawFiles.ActiveServerCooldowns(ctx, 100)
+	if err != nil {
+		out["server_cooldowns_error"] = "server cooldowns unavailable"
+	} else {
+		out["active_server_cooldowns"] = len(cooldowns)
+	}
+	rawFiles := map[string]any{
+		"enabled": true,
+		"stats":   stats,
+	}
+	if lastDownloadAt, err := api.rawFiles.LastDownloadAt(ctx); err == nil && lastDownloadAt != nil {
+		rawFiles["last_download_at"] = lastDownloadAt
+	}
+	out["raw_files"] = rawFiles
+	return out
+}
+
+func (api API) dataFreshness(ctx context.Context) map[string]any {
+	out := map[string]any{"available": false}
+	if api.db == nil || !api.db.Enabled() {
+		return out
+	}
+	pool, err := api.db.Pool()
+	if err != nil {
+		return out
+	}
+	var latestEvent *time.Time
+	if err := pool.QueryRow(ctx, `
+SELECT ts
+FROM access_events
+ORDER BY ts DESC
+LIMIT 1`).Scan(&latestEvent); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		out["error"] = "freshness query failed"
+		return out
+	}
+	var latestInsert *time.Time
+	if err := pool.QueryRow(ctx, `
+SELECT created_at
+FROM access_events
+ORDER BY created_at DESC
+LIMIT 1`).Scan(&latestInsert); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		out["error"] = "freshness query failed"
+		return out
+	}
+	out["available"] = latestEvent != nil || latestInsert != nil
+	now := time.Now().UTC()
+	if latestEvent != nil {
+		eventAt := latestEvent.UTC()
+		out["latest_event_at"] = eventAt
+		out["event_lag_seconds"] = int64(now.Sub(eventAt).Seconds())
+	}
+	if latestInsert != nil {
+		insertAt := latestInsert.UTC()
+		out["latest_insert_at"] = insertAt
+		out["insert_lag_seconds"] = int64(now.Sub(insertAt).Seconds())
+	}
+	return out
+}
+
+func schedulerHealth(summary jobs.SchedulerSummary, collectionEnabled bool) map[string]any {
+	out := map[string]any{
+		"collection_interval_ms":  summary.CollectionIntervalMS,
+		"collection_enabled":      collectionEnabled,
+		"running_since_start":     summary.RunningSinceStart,
+		"failed_since_start":      summary.FailedSinceStart,
+		"interrupted_since_start": summary.InterruptedSinceStart,
+	}
+	if !summary.LastCycleStartedAt.IsZero() {
+		out["last_cycle_started_at"] = summary.LastCycleStartedAt
+	}
+	if !summary.LastCycleFinishedAt.IsZero() {
+		out["last_cycle_finished_at"] = summary.LastCycleFinishedAt
+	}
+	if summary.LastCycleDurationMS > 0 {
+		out["last_cycle_duration_ms"] = summary.LastCycleDurationMS
+	}
+	if summary.LastCycleUtilization > 0 {
+		out["last_cycle_utilization"] = summary.LastCycleUtilization
+	}
+	if summary.CollectionJobs > 0 {
+		out["collection_jobs"] = summary.CollectionJobs
+	}
+	if summary.PipelineDurationMS > 0 {
+		out["pipeline_duration_ms"] = summary.PipelineDurationMS
+	}
+	if summary.PostPipelineDurationMS > 0 {
+		out["post_pipeline_duration_ms"] = summary.PostPipelineDurationMS
+	}
+	if !summary.LatestPipelineAt.IsZero() {
+		out["latest_pipeline_at"] = summary.LatestPipelineAt
+	}
+	return out
 }
 
 func (api API) dashboardOverview(w http.ResponseWriter, r *http.Request) {
@@ -244,6 +367,8 @@ func (api API) dashboardOverview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service":             "OriginPulse",
 		"api_base":            "/api/v1",
+		"started_at":          api.startedAt,
+		"uptime_sec":          int64(time.Since(api.startedAt).Seconds()),
 		"auth_required":       api.auth.Enabled(),
 		"database_configured": api.db != nil && api.db.Enabled(),
 		"sites_enabled":       len(siteList),
@@ -261,6 +386,7 @@ func (api API) dashboardOverview(w http.ResponseWriter, r *http.Request) {
 			"success": int(stats[jobs.StatusSuccess]),
 			"failed":  int(stats[jobs.StatusFailed]),
 		},
+		"scheduler": api.jobs.SchedulerSummary(r.Context(), api.startedAt, api.cfg.Collection.Interval),
 		"next_steps": []string{
 			"Add real site UUIDs in config.yml",
 			"Mount an SSH private key accepted by Pantheon",
@@ -307,6 +433,7 @@ func (api API) investigateTraffic(w http.ResponseWriter, r *http.Request) {
 			"top_ips":          []investigation.IPSummary{},
 			"top_paths":        []investigation.PathSummary{},
 			"recent_errors":    []investigation.EventSummary{},
+			"query_params":     []investigation.QueryParamSummary{},
 			"status_breakdown": []investigation.StatusSummary{},
 			"timeline":         []investigation.TimelineBucket{},
 		})
@@ -319,11 +446,13 @@ func (api API) investigateTraffic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	traffic, err := api.investigation.Traffic(r.Context(), investigation.Options{
-		Range:  r.URL.Query().Get("range"),
-		Limit:  parseLimit(r, 100, investigation.DetailMaxLimit),
-		SiteID: r.URL.Query().Get("site_id"),
-		From:   from,
-		To:     to,
+		Range:              r.URL.Query().Get("range"),
+		Limit:              parseLimit(r, 100, investigation.DetailMaxLimit),
+		SiteID:             r.URL.Query().Get("site_id"),
+		From:               from,
+		To:                 to,
+		IncludeQueryParams: parseBool(r.URL.Query().Get("include_query_params")),
+		IncludeTimings:     parseBool(r.URL.Query().Get("include_timings")),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "investigation_failed", err.Error())
@@ -600,11 +729,17 @@ func (api API) refreshIPIntel(w http.ResponseWriter, r *http.Request) {
 		req.Limit = parseLimit(r, 100, ipintel.ResultMaxLimit)
 	}
 
+	providers, providerErr := api.ipIntel.RefreshOfficialProviderRanges(r.Context())
 	result, err := api.ipIntel.RefreshTop(r.Context(), ipintel.Options{
 		Range: req.Range,
 		Limit: req.Limit,
 	})
-	if err != nil {
+	result.ProviderRanges = providers.Ranges
+	result.ProviderFailed = providers.Failed
+	if err != nil || (providerErr != nil && providers.Providers == 0) {
+		if err == nil {
+			err = providerErr
+		}
 		writeError(w, http.StatusInternalServerError, "ip_intel_refresh_failed", err.Error())
 		return
 	}
@@ -857,6 +992,11 @@ func (api API) recentJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, api.jobs.RecentPage(limit, parseOffset(r)))
 }
 
+func (api API) recentJobSteps(w http.ResponseWriter, r *http.Request) {
+	limit := parseLimit(r, 100, 1000)
+	writeJSON(w, http.StatusOK, api.jobs.StepsPage(r.Context(), limit, parseOffset(r), r.URL.Query().Get("job_id"), api.startedAt))
+}
+
 func (api API) collectorHealth(w http.ResponseWriter, r *http.Request) {
 	stats, err := api.rawFiles.Stats(r.Context())
 	if err != nil {
@@ -864,21 +1004,37 @@ func (api API) collectorHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	recent, err := api.rawFiles.RecentPage(r.Context(), parseLimit(r, 100, pantheon.RawFileRecentMaxLimit), parseOffset(r))
+	recent, err := api.rawFiles.RecentPage(r.Context(), parseLimit(r, 100, pantheon.RawFileRecentMaxLimit), parseOffset(r), r.URL.Query().Get("status"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "collector_health_failed", err.Error())
 		return
 	}
 
+	cooldowns, err := api.rawFiles.ActiveServerCooldowns(r.Context(), 100)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "collector_health_failed", err.Error())
+		return
+	}
+	lastDownloadAt, err := api.rawFiles.LastDownloadAt(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "collector_health_failed", err.Error())
+		return
+	}
+
+	rawFiles := map[string]any{
+		"stats":  stats,
+		"recent": recent.Recent,
+		"total":  recent.Total,
+		"limit":  recent.Limit,
+		"offset": recent.Offset,
+	}
+	if lastDownloadAt != nil {
+		rawFiles["last_download_at"] = lastDownloadAt
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"database_configured": api.db != nil && api.db.Enabled(),
-		"raw_files": map[string]any{
-			"stats":  stats,
-			"recent": recent.Recent,
-			"total":  recent.Total,
-			"limit":  recent.Limit,
-			"offset": recent.Offset,
-		},
+		"server_cooldowns":    cooldowns,
+		"raw_files":           rawFiles,
 	})
 }
 

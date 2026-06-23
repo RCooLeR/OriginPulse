@@ -46,6 +46,9 @@ func Open(ctx context.Context, cfg config.DatabaseConfig) (*Store, error) {
 	if strings.TrimSpace(poolCfg.ConnConfig.RuntimeParams["application_name"]) == "" {
 		poolCfg.ConnConfig.RuntimeParams["application_name"] = fmt.Sprintf("originpulse-%d", os.Getpid())
 	}
+	if strings.TrimSpace(poolCfg.ConnConfig.RuntimeParams["jit"]) == "" {
+		poolCfg.ConnConfig.RuntimeParams["jit"] = "off"
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {

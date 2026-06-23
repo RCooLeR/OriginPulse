@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -24,23 +25,30 @@ type Options struct {
 	Limit int    `json:"limit"`
 }
 
-const ResultMaxLimit = 500
+const ResultMaxLimit = 5000
 
 type Result struct {
-	Range           string        `json:"range"`
-	Since           time.Time     `json:"since"`
-	GeneratedAt     time.Time     `json:"generated_at"`
-	DatabaseEnabled bool          `json:"database_enabled"`
-	Refreshed       int           `json:"refreshed"`
-	Failed          int           `json:"failed"`
-	LookupFailed    int           `json:"lookup_failed"`
-	Items           []RefreshedIP `json:"items"`
+	Range            string        `json:"range"`
+	Since            time.Time     `json:"since"`
+	GeneratedAt      time.Time     `json:"generated_at"`
+	DatabaseEnabled  bool          `json:"database_enabled"`
+	Refreshed        int           `json:"refreshed"`
+	Failed           int           `json:"failed"`
+	LookupFailed     int           `json:"lookup_failed"`
+	GeoIPFailed      int           `json:"geoip_failed"`
+	ReverseDNSFailed int           `json:"reverse_dns_failed"`
+	ProviderRanges   int           `json:"provider_ranges"`
+	ProviderFailed   int           `json:"provider_failed"`
+	Items            []RefreshedIP `json:"items"`
 }
 
 type RefreshedIP struct {
 	IP               string    `json:"ip"`
 	Requests         int64     `json:"requests"`
 	ReverseDNS       string    `json:"reverse_dns,omitempty"`
+	ASN              int64     `json:"asn,omitempty"`
+	ASNOrg           string    `json:"asn_org,omitempty"`
+	Network          string    `json:"network,omitempty"`
 	CountryCode      string    `json:"country_code,omitempty"`
 	CityName         string    `json:"city_name,omitempty"`
 	TimeZone         string    `json:"time_zone,omitempty"`
@@ -49,8 +57,16 @@ type RefreshedIP struct {
 	RiskScore        int       `json:"risk_score"`
 	ForwardConfirmed bool      `json:"forward_confirmed"`
 	VerifiedActor    bool      `json:"verified_actor"`
+	ProviderVerified bool      `json:"provider_verified"`
+	ProviderID       string    `json:"provider_id,omitempty"`
+	ProviderName     string    `json:"provider_name,omitempty"`
+	ProviderSource   string    `json:"provider_source_url,omitempty"`
+	ProviderRange    string    `json:"provider_range,omitempty"`
+	ProviderAt       time.Time `json:"provider_refreshed_at,omitempty"`
 	IsTorExit        bool      `json:"is_tor_exit"`
 	IsDatacenter     bool      `json:"is_datacenter"`
+	Status4xx        int64     `json:"status_4xx"`
+	Status5xx        int64     `json:"status_5xx"`
 	DNSErrors        []string  `json:"dns_errors,omitempty"`
 	RefreshedAt      time.Time `json:"refreshed_at"`
 }
@@ -61,9 +77,11 @@ const (
 )
 
 type refreshOutcome struct {
-	item         RefreshedIP
-	lookupFailed int
-	err          error
+	item             RefreshedIP
+	lookupFailed     int
+	geoIPFailed      int
+	reverseDNSFailed int
+	err              error
 }
 
 type Service struct {
@@ -129,6 +147,8 @@ func (s *Service) RefreshTop(ctx context.Context, opts Options) (Result, error) 
 		}
 		result.Refreshed++
 		result.LookupFailed += outcome.lookupFailed
+		result.GeoIPFailed += outcome.geoIPFailed
+		result.ReverseDNSFailed += outcome.reverseDNSFailed
 		result.Items = append(result.Items, outcome.item)
 	}
 	if err != nil {
@@ -193,16 +213,30 @@ func (s *Service) refreshOneIP(ctx context.Context, item RefreshedIP, torExits m
 		item.DNSErrors = append(item.DNSErrors, geoErr)
 		lookupFailed++
 	}
+	geoIPFailed := lookupFailed
 
+	reverseDNSFailed := 0
 	names, lookupErr := lookupReverse(ctx, item.IP)
 	if lookupErr != "" {
 		item.DNSErrors = append(item.DNSErrors, lookupErr)
 		lookupFailed++
+		reverseDNSFailed++
 	}
 	item.ReverseDNS = firstName(names)
 	item.ActorType, item.KnownActor, item.RiskScore = classify(names, item.Requests)
 	item.ForwardConfirmed = forwardConfirms(ctx, names, item.IP)
-	item.VerifiedActor = item.ForwardConfirmed && item.KnownActor != ""
+	item.VerifiedActor = item.ForwardConfirmed && item.KnownActor != "" && !isInfrastructureActorType(item.ActorType)
+	if addr, err := netip.ParseAddr(item.IP); err == nil {
+		asn := lookupASNDetails(ctx, addr)
+		if asn.Error == "" {
+			item.ASN = asn.ASN
+			item.ASNOrg = asn.Name
+			item.Network = validCIDR(asn.Prefix)
+			if item.CountryCode == "" {
+				item.CountryCode = asn.CountryCode
+			}
+		}
+	}
 	if torCheckAvailable {
 		_, item.IsTorExit = torExits[item.IP]
 		if item.IsTorExit {
@@ -213,7 +247,22 @@ func (s *Service) refreshOneIP(ctx context.Context, item RefreshedIP, torExits m
 			}
 		}
 	}
-	item.IsDatacenter = item.ActorType == "datacenter"
+	applyASNFingerprint(&item)
+	if match, ok := s.officialProviderMatch(ctx, item.IP); ok {
+		item.ProviderVerified = true
+		item.ProviderID = match.ID
+		item.ProviderName = match.Name
+		item.ProviderSource = match.SourceURL
+		item.ProviderRange = match.Range
+		item.ProviderAt = match.FetchedAt
+		item.KnownActor = match.Name
+		item.ActorType = match.ActorType
+		if baseline := providerBaselineRisk(match.ActorType); item.RiskScore < baseline {
+			item.RiskScore = baseline
+		}
+	}
+	item.IsDatacenter = isInfrastructureActorType(item.ActorType)
+	applyTrafficRisk(&item)
 	if match, ok := matchAllowlist(item.IP, s.allowlist); ok {
 		item.KnownActor = match.label
 		item.ActorType = match.actorType
@@ -224,9 +273,9 @@ func (s *Service) refreshOneIP(ctx context.Context, item RefreshedIP, torExits m
 	}
 
 	if err := s.upsert(ctx, item, names, torCheckAvailable); err != nil {
-		return refreshOutcome{item: item, lookupFailed: lookupFailed, err: err}
+		return refreshOutcome{item: item, lookupFailed: lookupFailed, geoIPFailed: geoIPFailed, reverseDNSFailed: reverseDNSFailed, err: err}
 	}
-	return refreshOutcome{item: item, lookupFailed: lookupFailed}
+	return refreshOutcome{item: item, lookupFailed: lookupFailed, geoIPFailed: geoIPFailed, reverseDNSFailed: reverseDNSFailed}
 }
 
 func refreshWorkerCount(itemCount int) int {
@@ -252,7 +301,10 @@ func loadRefreshTopIPs(ctx context.Context, pool *pgxpool.Pool, since time.Time,
 
 func loadRefreshTopIPsFromRaw(ctx context.Context, pool *pgxpool.Pool, since time.Time, until time.Time, limit int) ([]RefreshedIP, error) {
 	rows, err := pool.Query(ctx, `
-SELECT host(client_ip), count(*)::bigint
+SELECT host(client_ip),
+       count(*)::bigint,
+       count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint,
+       count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint
 FROM access_events
 WHERE ts >= $1 AND ts < $3 AND client_ip IS NOT NULL
 GROUP BY client_ip
@@ -266,7 +318,7 @@ LIMIT $2`, since, limit, until)
 	items := make([]RefreshedIP, 0, limit)
 	for rows.Next() {
 		var item RefreshedIP
-		if err := rows.Scan(&item.IP, &item.Requests); err != nil {
+		if err := rows.Scan(&item.IP, &item.Requests, &item.Status4xx, &item.Status5xx); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -278,14 +330,20 @@ func loadRefreshTopIPsFromRollups(ctx context.Context, pool *pgxpool.Pool, since
 	fullStart, fullEnd, _ := rollups.FullHourRange(since, until)
 	rows, err := pool.Query(ctx, `
 WITH rollup_rows AS (
-  SELECT d.ip, sum(r.requests)::bigint AS requests
+  SELECT d.ip,
+         sum(r.requests)::bigint AS requests,
+         sum(r.status_4xx)::bigint AS status_4xx,
+         sum(r.status_5xx)::bigint AS status_5xx
   FROM rollup_ip_1h r
   JOIN dim_ips d ON d.id = r.ip_id
   WHERE r.bucket_ts >= $3 AND r.bucket_ts < $4
   GROUP BY d.ip
 ),
 edge_rows AS (
-  SELECT client_ip AS ip, count(*)::bigint AS requests
+  SELECT client_ip AS ip,
+         count(*)::bigint AS requests,
+         count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint AS status_4xx,
+         count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint AS status_5xx
   FROM access_events
   WHERE ts >= $1 AND ts < $2
     AND client_ip IS NOT NULL
@@ -297,7 +355,10 @@ combined AS (
   UNION ALL
   SELECT * FROM edge_rows
 )
-SELECT host(ip), sum(requests)::bigint
+SELECT host(ip),
+       sum(requests)::bigint,
+       sum(status_4xx)::bigint,
+       sum(status_5xx)::bigint
 FROM combined
 GROUP BY ip
 ORDER BY sum(requests) DESC
@@ -310,7 +371,7 @@ LIMIT $5`, since, until, fullStart, fullEnd, limit)
 	items := make([]RefreshedIP, 0, limit)
 	for rows.Next() {
 		var item RefreshedIP
-		if err := rows.Scan(&item.IP, &item.Requests); err != nil {
+		if err := rows.Scan(&item.IP, &item.Requests, &item.Status4xx, &item.Status5xx); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -327,10 +388,25 @@ func (s *Service) upsert(ctx context.Context, item RefreshedIP, reverseNames []s
 	source := map[string]any{
 		"strategy":      "reverse_dns_top_ips",
 		"requests":      item.Requests,
+		"status_4xx":    item.Status4xx,
+		"status_5xx":    item.Status5xx,
 		"reverse_names": reverseNames,
 		"dns_errors":    item.DNSErrors,
-		"tor_checked":   torCheckAvailable,
-		"is_tor_exit":   item.IsTorExit,
+		"asn": map[string]any{
+			"asn":     item.ASN,
+			"asn_org": item.ASNOrg,
+			"network": item.Network,
+		},
+		"tor_checked": torCheckAvailable,
+		"is_tor_exit": item.IsTorExit,
+		"provider": map[string]any{
+			"verified":     item.ProviderVerified,
+			"id":           item.ProviderID,
+			"name":         item.ProviderName,
+			"range":        item.ProviderRange,
+			"source_url":   item.ProviderSource,
+			"refreshed_at": item.ProviderAt,
+		},
 		"geoip": map[string]any{
 			"country_code": item.CountryCode,
 			"city_name":    item.CityName,
@@ -344,18 +420,27 @@ func (s *Service) upsert(ctx context.Context, item RefreshedIP, reverseNames []s
 
 	_, err = pool.Exec(ctx, `
 INSERT INTO ip_intel (
-  ip, country_code, reverse_dns, known_actor, actor_type, forward_confirmed, verified_actor, is_tor_exit, is_datacenter, risk_score, source, refreshed_at
+  ip, asn, asn_org, network, country_code, reverse_dns, known_actor, actor_type, forward_confirmed, verified_actor, provider_verified, provider_id, provider_name, provider_source_url, provider_range, provider_refreshed_at, is_tor_exit, is_datacenter, risk_score, source, refreshed_at
 ) VALUES (
-  $1::inet, nullif($2, ''), $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12
+  $1::inet, nullif($2, 0), nullif($3, ''), nullif($4, '')::cidr, nullif($5, ''), $6, $7, $8, $9, $10, $11, nullif($12, ''), nullif($13, ''), nullif($14, ''), nullif($15, '')::cidr, CASE WHEN $16::timestamptz = '0001-01-01T00:00:00Z'::timestamptz THEN NULL ELSE $16::timestamptz END, $17, $18, $19, $20::jsonb, $21
 )
 ON CONFLICT (ip) DO UPDATE SET
+  asn = coalesce(EXCLUDED.asn, ip_intel.asn),
+  asn_org = coalesce(EXCLUDED.asn_org, ip_intel.asn_org),
+  network = coalesce(EXCLUDED.network, ip_intel.network),
   country_code = coalesce(EXCLUDED.country_code, ip_intel.country_code),
   reverse_dns = EXCLUDED.reverse_dns,
   known_actor = CASE WHEN ip_intel.manual_action = 'allowlisted' THEN coalesce(ip_intel.manual_label, ip_intel.known_actor) ELSE EXCLUDED.known_actor END,
   actor_type = CASE WHEN ip_intel.manual_action = 'allowlisted' THEN coalesce(ip_intel.actor_type, 'allowlist') ELSE EXCLUDED.actor_type END,
   forward_confirmed = EXCLUDED.forward_confirmed,
   verified_actor = CASE WHEN ip_intel.manual_action IN ('allowlisted', 'verified') THEN true ELSE EXCLUDED.verified_actor END,
-  is_tor_exit = CASE WHEN $13 THEN EXCLUDED.is_tor_exit ELSE ip_intel.is_tor_exit END,
+  provider_verified = EXCLUDED.provider_verified,
+  provider_id = EXCLUDED.provider_id,
+  provider_name = EXCLUDED.provider_name,
+  provider_source_url = EXCLUDED.provider_source_url,
+  provider_range = EXCLUDED.provider_range,
+  provider_refreshed_at = EXCLUDED.provider_refreshed_at,
+  is_tor_exit = CASE WHEN $22 THEN EXCLUDED.is_tor_exit ELSE ip_intel.is_tor_exit END,
   is_datacenter = EXCLUDED.is_datacenter,
   risk_score = CASE
     WHEN ip_intel.manual_action = 'allowlisted' THEN least(coalesce(EXCLUDED.risk_score, ip_intel.risk_score, 10), 10)
@@ -365,12 +450,21 @@ ON CONFLICT (ip) DO UPDATE SET
   source = EXCLUDED.source,
   refreshed_at = EXCLUDED.refreshed_at`,
 		item.IP,
+		item.ASN,
+		item.ASNOrg,
+		item.Network,
 		item.CountryCode,
 		emptyToNil(item.ReverseDNS),
 		emptyToNil(item.KnownActor),
 		emptyToNil(item.ActorType),
 		item.ForwardConfirmed,
 		item.VerifiedActor,
+		item.ProviderVerified,
+		item.ProviderID,
+		item.ProviderName,
+		item.ProviderSource,
+		item.ProviderRange,
+		item.ProviderAt,
 		item.IsTorExit,
 		item.IsDatacenter,
 		item.RiskScore,
@@ -500,6 +594,55 @@ func classify(names []string, requests int64) (string, string, int) {
 	}
 }
 
+func applyASNFingerprint(item *RefreshedIP) {
+	if item == nil || item.IsTorExit {
+		return
+	}
+	match, ok := servicefingerprints.MatchASNOrg(item.ASNOrg)
+	if !ok {
+		return
+	}
+	item.ActorType = match.ActorType
+	item.KnownActor = match.KnownActor
+	item.RiskScore = match.RiskScore
+}
+
+func providerBaselineRisk(actorType string) int {
+	switch strings.ToLower(strings.TrimSpace(actorType)) {
+	case "cloud", "datacenter":
+		return 55
+	case "edge":
+		return 45
+	default:
+		return 25
+	}
+}
+
+func isInfrastructureActorType(actorType string) bool {
+	switch strings.ToLower(strings.TrimSpace(actorType)) {
+	case "cloud", "datacenter", "edge", "hosting", "vps":
+		return true
+	default:
+		return false
+	}
+}
+
+func applyTrafficRisk(item *RefreshedIP) {
+	if item == nil || item.Requests <= 0 {
+		return
+	}
+	errors := item.Status4xx + item.Status5xx
+	if errors < 50 {
+		return
+	}
+	errorRate := float64(errors) / float64(item.Requests)
+	if errorRate >= 0.80 && (item.ProviderVerified || item.IsDatacenter || isInfrastructureActorType(item.ActorType)) {
+		if item.RiskScore < 85 {
+			item.RiskScore = 85
+		}
+	}
+}
+
 func emptyToNil(value string) any {
 	if strings.TrimSpace(value) == "" {
 		return nil
@@ -521,6 +664,10 @@ func parseRange(value string) (time.Duration, string) {
 	switch value {
 	case "15m":
 		return 15 * time.Minute, "15m"
+	case "30m":
+		return 30 * time.Minute, "30m"
+	case "3h":
+		return 3 * time.Hour, "3h"
 	case "6h":
 		return 6 * time.Hour, "6h"
 	case "24h":
@@ -529,6 +676,10 @@ func parseRange(value string) (time.Duration, string) {
 		return 7 * 24 * time.Hour, "7d"
 	case "30d":
 		return 30 * 24 * time.Hour, "30d"
+	case "90d":
+		return 90 * 24 * time.Hour, "90d"
+	case "365d":
+		return 365 * 24 * time.Hour, "365d"
 	case "1h", "":
 		return time.Hour, "1h"
 	default:

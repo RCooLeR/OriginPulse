@@ -98,7 +98,7 @@ func (s *Service) Run(ctx context.Context, opts Options) (Result, error) {
 	var result Result
 	err := s.segments.WithPipelineLock(ctx, func(ctx context.Context) error {
 		var runErr error
-		result, runErr = s.run(ctx, opts)
+		result, runErr = s.run(ctx, opts, job.ID)
 		return runErr
 	})
 	if s.jobs != nil {
@@ -149,7 +149,7 @@ func (s *Service) RunRecentWithOptions(ctx context.Context, triggeredBy string, 
 	return s.Run(ctx, opts)
 }
 
-func (s *Service) run(ctx context.Context, opts Options) (Result, error) {
+func (s *Service) run(ctx context.Context, opts Options, jobID string) (Result, error) {
 	result := Result{
 		From:     opts.From,
 		To:       opts.To,
@@ -158,6 +158,12 @@ func (s *Service) run(ctx context.Context, opts Options) (Result, error) {
 
 	if !opts.SkipCombine {
 		for _, logType := range opts.LogTypes {
+			step := s.startStep(ctx, jobID, "combine "+logType, map[string]any{
+				"log_type": logType,
+				"from":     opts.From.Format(time.RFC3339),
+				"to":       opts.To.Format(time.RFC3339),
+				"force":    opts.Force,
+			})
 			combineResult, err := s.combiner.Combine(ctx, combiner.Options{
 				LogType: logType,
 				From:    opts.From,
@@ -165,8 +171,14 @@ func (s *Service) run(ctx context.Context, opts Options) (Result, error) {
 				Force:   opts.Force,
 			})
 			if err != nil {
+				s.finishStep(step, jobs.StatusFailed, "combine failed", err, nil)
 				return result, err
 			}
+			s.finishStep(step, jobs.StatusSuccess, "combine completed", nil, map[string]any{
+				"segments_written":  combineResult.SegmentsWritten,
+				"lines_combined":    combineResult.LinesCombined,
+				"lines_quarantined": combineResult.LinesQuarantined,
+			})
 			result.CombineResults = append(result.CombineResults, combineResult)
 			result.CombinedSegments += combineResult.SegmentsWritten
 			result.LinesCombined += combineResult.LinesCombined
@@ -174,14 +186,17 @@ func (s *Service) run(ctx context.Context, opts Options) (Result, error) {
 		}
 	}
 
+	pendingStep := s.startStep(ctx, jobID, "load pending segments", map[string]any{"max_segments": opts.MaxSegments})
 	pending, err := s.segments.PendingIndexSegments(ctx, opts.MaxSegments)
 	if err != nil {
+		s.finishStep(pendingStep, jobs.StatusFailed, "pending segment load failed", err, nil)
 		return result, err
 	}
+	s.finishStep(pendingStep, jobs.StatusSuccess, "pending segments loaded", nil, map[string]any{"pending_segments": len(pending)})
 	var repairStart time.Time
 	var repairEnd time.Time
 	repairedSegmentIDs := make([]string, 0, len(pending))
-	indexResults, indexErr := s.indexPendingSegments(ctx, pending, opts)
+	indexResults, indexErr := s.indexPendingSegments(ctx, jobID, pending, opts)
 	for _, indexResult := range indexResults {
 		result.IndexResults = append(result.IndexResults, indexResult)
 		result.IndexedSegments++
@@ -193,7 +208,7 @@ func (s *Service) run(ctx context.Context, opts Options) (Result, error) {
 		result.SecurityProbes += indexResult.SecurityProbes
 		result.ErrorEvents += indexResult.ErrorEvents
 		result.SlowRequests += indexResult.SlowRequestEvents
-		if indexResult.LogType == "nginx-access" && !indexResult.RangeStart.IsZero() && !indexResult.RangeEnd.IsZero() {
+		if isAccessLogType(indexResult.LogType) && !indexResult.RangeStart.IsZero() && !indexResult.RangeEnd.IsZero() {
 			if repairStart.IsZero() || indexResult.RangeStart.Before(repairStart) {
 				repairStart = indexResult.RangeStart
 			}
@@ -201,26 +216,38 @@ func (s *Service) run(ctx context.Context, opts Options) (Result, error) {
 				repairEnd = indexResult.RangeEnd
 			}
 		}
-		if indexResult.LogType == "nginx-access" && indexResult.SegmentID != "" && !indexResult.AlreadyIndexed {
+		if isAccessLogType(indexResult.LogType) && indexResult.SegmentID != "" && !indexResult.AlreadyIndexed {
 			repairedSegmentIDs = append(repairedSegmentIDs, indexResult.SegmentID)
 		}
 	}
 	if result.IndexedSegments > 0 && !repairStart.IsZero() && repairEnd.After(repairStart) {
+		step := s.startStep(ctx, jobID, "rebuild rollups", map[string]any{
+			"from": repairStart.Format(time.RFC3339),
+			"to":   repairEnd.Format(time.RFC3339),
+		})
 		repaired, err := s.indexer.RebuildRollups(ctx, repairStart, repairEnd)
 		if err != nil {
+			s.finishStep(step, jobs.StatusFailed, "rollup rebuild failed", err, nil)
 			return result, err
 		}
+		s.finishStep(step, jobs.StatusSuccess, "rollups rebuilt", nil, map[string]any{"rollups_repaired": repaired})
+		markStep := s.startStep(ctx, jobID, "mark rollups backfilled", map[string]any{"segment_count": len(repairedSegmentIDs)})
 		if err := s.indexer.MarkRollupsBackfilledForSegments(ctx, repairedSegmentIDs); err != nil {
+			s.finishStep(markStep, jobs.StatusFailed, "failed to mark rollups backfilled", err, nil)
 			return result, err
 		}
+		s.finishStep(markStep, jobs.StatusSuccess, "rollups marked backfilled", nil, nil)
 		result.RollupsRepaired = repaired
 		result.RollupsUpdated += repaired
 	}
 	if hasAccessLogType(opts.LogTypes) {
+		step := s.startStep(ctx, jobID, "recover unbackfilled rollups", nil)
 		recovered, err := s.indexer.RepairUnbackfilledRollups(ctx)
 		if err != nil {
+			s.finishStep(step, jobs.StatusFailed, "rollup recovery failed", err, nil)
 			return result, err
 		}
+		s.finishStep(step, jobs.StatusSuccess, "rollup recovery completed", nil, map[string]any{"rollups_recovered": recovered})
 		result.RollupsRecovered = recovered
 		result.RollupsUpdated += recovered
 	}
@@ -248,11 +275,15 @@ func (s *Service) run(ctx context.Context, opts Options) (Result, error) {
 
 func hasAccessLogType(logTypes []string) bool {
 	for _, logType := range logTypes {
-		if logType == "nginx-access" {
+		if isAccessLogType(logType) {
 			return true
 		}
 	}
 	return false
+}
+
+func isAccessLogType(logType string) bool {
+	return logType == "nginx-access" || logType == "apache-access"
 }
 
 func (s *Service) normalizeOptions(opts Options) Options {
@@ -288,7 +319,7 @@ type indexedSegmentResult struct {
 	err    error
 }
 
-func (s *Service) indexPendingSegments(ctx context.Context, pending []combiner.SegmentManifest, opts Options) ([]indexer.Result, error) {
+func (s *Service) indexPendingSegments(ctx context.Context, jobID string, pending []combiner.SegmentManifest, opts Options) ([]indexer.Result, error) {
 	if len(pending) == 0 {
 		return []indexer.Result{}, nil
 	}
@@ -301,16 +332,38 @@ func (s *Service) indexPendingSegments(ctx context.Context, pending []combiner.S
 	if workers > len(pending) {
 		workers = len(pending)
 	}
-	jobs := make(chan int)
+	work := make(chan int)
 	results := make(chan indexedSegmentResult, len(pending))
 	var wg sync.WaitGroup
 	for worker := 0; worker < workers; worker++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for idx := range jobs {
+			for idx := range work {
 				segment := pending[idx]
+				step := s.startStep(ctx, jobID, "index segment", map[string]any{
+					"segment_id":   segment.ID,
+					"log_type":     segment.LogType,
+					"bucket_start": segment.BucketStart.Format(time.RFC3339),
+					"bucket_end":   segment.BucketEnd.Format(time.RFC3339),
+					"path":         segment.Path,
+					"force":        opts.Force,
+				})
 				indexResult, err := s.indexSegmentWithRetry(ctx, segment, opts)
+				if err != nil {
+					s.finishStep(step, jobs.StatusFailed, "segment index failed", err, nil)
+				} else {
+					s.finishStep(step, jobs.StatusSuccess, "segment indexed", nil, map[string]any{
+						"events_inserted":     indexResult.EventsInserted,
+						"log_events_inserted": indexResult.LogEventsInserted,
+						"events_stored":       indexResult.EventsStored,
+						"events_skipped":      indexResult.EventsSkipped,
+						"security_probes":     indexResult.SecurityProbes,
+						"error_events":        indexResult.ErrorEvents,
+						"slow_request_events": indexResult.SlowRequestEvents,
+						"already_indexed":     indexResult.AlreadyIndexed,
+					})
+				}
 				results <- indexedSegmentResult{index: idx, result: indexResult, err: err}
 				if err != nil {
 					cancel()
@@ -320,12 +373,12 @@ func (s *Service) indexPendingSegments(ctx context.Context, pending []combiner.S
 		}()
 	}
 	go func() {
-		defer close(jobs)
+		defer close(work)
 		for idx := range pending {
 			select {
 			case <-ctx.Done():
 				return
-			case jobs <- idx:
+			case work <- idx:
 			}
 		}
 	}()
@@ -362,6 +415,20 @@ func (s *Service) indexPendingSegments(ctx context.Context, pending []combiner.S
 		return ordered[:seen], err
 	}
 	return ordered[:seen], nil
+}
+
+func (s *Service) startStep(ctx context.Context, jobID string, name string, meta map[string]any) jobs.Step {
+	if s.jobs == nil {
+		return jobs.Step{}
+	}
+	return s.jobs.StartStep(ctx, jobID, name, meta)
+}
+
+func (s *Service) finishStep(step jobs.Step, status jobs.Status, message string, err error, meta map[string]any) {
+	if s.jobs == nil {
+		return
+	}
+	s.jobs.FinishStep(step, status, message, err, meta)
 }
 
 func (s *Service) indexSegmentWithRetry(ctx context.Context, segment combiner.SegmentManifest, opts Options) (indexer.Result, error) {

@@ -14,7 +14,7 @@ func TestDefaultPipelineUsesParallelIndexing(t *testing.T) {
 	}
 }
 
-func TestDefaultRetentionMatchesScenarioCStoragePlan(t *testing.T) {
+func TestDefaultRetentionMatchesCurrentStoragePlan(t *testing.T) {
 	cfg := Default()
 
 	tests := []struct {
@@ -23,10 +23,10 @@ func TestDefaultRetentionMatchesScenarioCStoragePlan(t *testing.T) {
 		want time.Duration
 	}{
 		{name: "raw files", got: cfg.Retention.RawFileMaxAge, want: 14 * 24 * time.Hour},
-		{name: "hot events", got: cfg.Retention.HotEventMaxAge, want: 90 * 24 * time.Hour},
-		{name: "daily archive after", got: cfg.Retention.DailyArchiveAfter, want: 14 * 24 * time.Hour},
-		{name: "weekly archive after", got: cfg.Retention.WeeklyArchiveAfter, want: 90 * 24 * time.Hour},
-		{name: "weekly archive retention", got: cfg.Retention.ArchiveMaxAge, want: 2 * 365 * 24 * time.Hour},
+		{name: "hot events", got: cfg.Retention.HotEventMaxAge, want: 60 * 24 * time.Hour},
+		{name: "daily archive after", got: cfg.Retention.DailyArchiveAfter, want: 7 * 24 * time.Hour},
+		{name: "weekly archive after", got: cfg.Retention.WeeklyArchiveAfter, want: 30 * 24 * time.Hour},
+		{name: "archive retention", got: cfg.Retention.ArchiveMaxAge, want: 90 * 24 * time.Hour},
 		{name: "serialized reports", got: cfg.Retention.ReportMaxAge, want: 5 * 365 * 24 * time.Hour},
 		{name: "temporary imports", got: cfg.Retention.TemporaryImportMaxAge, want: 7 * 24 * time.Hour},
 	}
@@ -65,5 +65,85 @@ func TestDefaultGeoIPCanSeedBeforeMaxMindDownload(t *testing.T) {
 	}
 	if !strings.Contains(cfg.GeoIP.DownloadURL, "GeoLite2-City") {
 		t.Fatalf("GeoIP.DownloadURL = %q, want GeoLite2-City download", cfg.GeoIP.DownloadURL)
+	}
+}
+
+func TestDefaultIPIntelBackgroundRefresh(t *testing.T) {
+	cfg := Default()
+	if !cfg.IPIntel.Enabled {
+		t.Fatal("IP intel background refresh should be enabled by default")
+	}
+	if cfg.IPIntel.Interval != 15*time.Minute {
+		t.Fatalf("IPIntel.Interval = %s, want 15m", cfg.IPIntel.Interval)
+	}
+	if cfg.IPIntel.Range != "24h" {
+		t.Fatalf("IPIntel.Range = %q, want 24h", cfg.IPIntel.Range)
+	}
+	if cfg.IPIntel.Limit != 500 {
+		t.Fatalf("IPIntel.Limit = %d, want 500", cfg.IPIntel.Limit)
+	}
+	if !cfg.IPIntel.StartupBackfill {
+		t.Fatal("IP intel startup backfill should be enabled by default")
+	}
+	if cfg.IPIntel.StartupBackfillRange != "365d" {
+		t.Fatalf("IPIntel.StartupBackfillRange = %q, want 365d", cfg.IPIntel.StartupBackfillRange)
+	}
+	if cfg.IPIntel.StartupBackfillLimit != 5000 {
+		t.Fatalf("IPIntel.StartupBackfillLimit = %d, want 5000", cfg.IPIntel.StartupBackfillLimit)
+	}
+	if cfg.IPIntel.StartupUserAgentLimit != 50000 {
+		t.Fatalf("IPIntel.StartupUserAgentLimit = %d, want 50000", cfg.IPIntel.StartupUserAgentLimit)
+	}
+}
+
+func TestLocalSiteDoesNotRequirePantheonSiteID(t *testing.T) {
+	cfg := Default()
+	cfg.Sites = []SiteConfig{{
+		ID:         "example-apache-site",
+		Name:       "Example Apache Site",
+		SourceType: "local",
+		LocalPath:  "./tmp/example.com",
+		Enabled:    true,
+		Envs:       []string{"live"},
+	}}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate local site: %v", err)
+	}
+	if got := cfg.Sites[0].SourceType; got != "local" {
+		t.Fatalf("SourceType = %q, want local", got)
+	}
+}
+
+func TestLocalSiteCanBeInferredFromLocalPath(t *testing.T) {
+	cfg := Default()
+	cfg.Sites = []SiteConfig{{
+		ID:        "apache-direct",
+		Name:      "Apache Direct",
+		LocalPath: "./tmp/apache-direct",
+		Enabled:   true,
+	}}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate inferred local site: %v", err)
+	}
+	if got := cfg.Sites[0].SourceType; got != "local" {
+		t.Fatalf("SourceType = %q, want local", got)
+	}
+}
+
+func TestLocalSiteValidatesFilenameMasks(t *testing.T) {
+	cfg := Default()
+	cfg.Sites = []SiteConfig{{
+		ID:            "apache-direct",
+		Name:          "Apache Direct",
+		SourceType:    "local",
+		LocalPath:     "./tmp/apache-direct",
+		FilenameMasks: []string{"["},
+		Enabled:       true,
+	}}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid filename mask error")
 	}
 }
