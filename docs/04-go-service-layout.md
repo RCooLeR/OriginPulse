@@ -26,7 +26,7 @@
 │   └── users/
 ├── migrations/
 ├── web/
-├── dev-docs/
+├── docs/
 ├── docker/
 │   ├── Dockerfile
 │   └── docker-compose.yml
