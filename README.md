@@ -1,111 +1,98 @@
 # OriginPulse
 
-OriginPulse is a single-binary Go app for collecting and analyzing Pantheon origin logs.
+OriginPulse is a self-hosted log intelligence app for origin traffic. It collects Pantheon and local web server logs, normalizes them into searchable events, enriches IPs and user agents, and provides a dashboard for traffic, security, bot, error, retention, and archive investigations.
 
-This first slice serves:
+It is designed for operators who need to quickly answer:
 
-- embedded frontend UI at `/`
-- JSON API under `/api/v1/*`
-- in-process background scheduler
-- Pantheon collection planning based on the current SFTP/SSH log-download model
+- who is sending traffic
+- which paths and query parameters are hot
+- whether sources are trusted, provider-verified, suspicious, or unknown
+- whether errors are caused by attacks, blocked probes, timeouts, or app behavior
+- how much data is hot, archived, or ready for cleanup
 
-## Run locally
+## Documentation
 
-```bash
-go run ./cmd/originpulse server -config config.example.yml
+Start with [docs/README.md](docs/README.md).
+
+Key pages:
+
+- [Getting Started](docs/getting-started.md)
+- [Configuration](docs/configuration.md)
+- [Operations](docs/operations.md)
+- [Traffic Analysis](docs/traffic-analysis.md)
+- [IP And Bot Intelligence](docs/ip-and-bot-intelligence.md)
+- [Storage And Retention](docs/storage-and-retention.md)
+- [API Reference](docs/api.md)
+- [Security](docs/security.md)
+
+## Run With Docker
+
+Create a local Docker env file:
+
+```powershell
+Copy-Item docker\.env.example docker\.env
 ```
 
-Open:
+Edit `docker\.env`, then start the stack:
+
+```powershell
+docker compose --env-file docker/.env -f docker/docker-compose.yml up --build -d
+```
+
+Open the UI:
 
 ```text
 http://localhost:8080
 ```
 
-Useful API endpoints:
+Create an initial user:
 
-```text
-GET  /api/v1/healthz
-GET  /api/v1/dashboard/overview
-GET  /api/v1/analysis/access-log
-GET  /api/v1/reports/recent
-POST /api/v1/reports/generate
-GET  /api/v1/notifications
-POST /api/v1/notifications/send
-POST /api/v1/notifications/test
-GET  /api/v1/notifications/web-push/public-key
-POST /api/v1/notifications/web-push/subscribe
-DEL  /api/v1/notifications/web-push/subscribe
-GET  /api/v1/sites
-GET  /api/v1/system/credentials
-GET  /api/v1/system/jobs
-GET  /api/v1/system/retention
-GET  /api/v1/system/storage
-GET  /api/v1/system/archives
-GET  /api/v1/system/archive-imports
-POST /api/v1/system/collect
-POST /api/v1/system/pipeline
-POST /api/v1/system/backfill-dimensions
+```powershell
+docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse originpulse create-user -config /app/config.yml -email admin@example.com -password "change-me"
 ```
 
-## Pantheon credentials
+See [Docker setup](docker/README.md) for volume and command details.
 
-For log downloads, Pantheon's published automation uses SSH/SFTP or rsync:
+## Run The Binary
 
-```text
-env.site_uuid@appserver.env.site_uuid.drush.in:2222
-env.site_uuid@dbserver.env.site_uuid.drush.in:2222
+```powershell
+go run ./cmd/originpulse server -config config.example.yml
 ```
 
-So the MVP needs:
+`DATABASE_URL` enables Postgres-backed auth, sessions, sites, migrations, analytics, reports, retention, and jobs.
 
-- Pantheon site UUID
-- environment name such as `live`, `test`, `dev`, or a Multidev
-- an SSH private key whose public key is attached to a Pantheon user with access to those sites
+## Common Commands
 
-A Pantheon machine token is optional for this first downloader. Add one when OriginPulse starts using Terminus/API automation to discover sites, list environments, or manage Pantheon resources.
-
-## Commands
-
-```bash
+```powershell
 originpulse server -config config.yml
-originpulse migrate -config config.yml
+originpulse check-config -config config.yml
 originpulse create-user -config config.yml -email admin@example.com -password "change-me"
 originpulse collect -config config.yml
-originpulse combine -config config.yml -log-type nginx-access -from 2026-06-17T14:00:00Z -to 2026-06-17T15:00:00Z
-originpulse index -config config.yml -segment /data/combined/nginx-access/2026/06/17/14.log.gz
 originpulse pipeline -config config.yml
 originpulse retention -config config.yml -dry-run
+originpulse archive-logs -config config.yml -dry-run
 originpulse storage-audit -config config.yml
 originpulse web-push-keys
-originpulse check-config -config config.yml
 ```
 
-`DATABASE_URL` enables Postgres-backed auth, sessions, site storage, migrations, and the analytics schema. Without it, the app runs in a degraded local mode for frontend/API development.
+## Supported Sources
 
-## GeoIP / MaxMind
+- Pantheon logs over SSH/SFTP
+- local/direct log directories, including Apache access and error logs selected by filename masks
 
-OriginPulse can enrich IP intelligence with GeoLite2 City. On startup it loads `GEOIP_DB_PATH` or `geoip.db_path`; if the file is missing, it first copies the bundled `geoip.seed_path` database into place. If no seed database is available and `MAXMIND_ACCOUNT_ID` plus `MAXMIND_LICENSE_KEY` are set, it downloads `GeoLite2-City.mmdb` and refreshes it on `geoip.update_interval`.
+Both source types feed the same collection, combine, index, rollup, archive, and retention pipeline.
 
-Downloaded `.mmdb` files are runtime data and are ignored by git.
+## Public Repository Notes
 
-## Notifications
+Real runtime configuration and data are ignored by Git:
 
-SMTP credentials come from `ORIGINPULSE_SMTP_USERNAME` and `ORIGINPULSE_SMTP_PASSWORD`.
-Webhook push targets can be provided as a comma-separated `ORIGINPULSE_PUSH_WEBHOOK_URLS` value.
+- `config.yml`
+- `docker/.env`
+- `data/`
+- `tmp/`
+- downloaded logs
+- runtime GeoIP files
+- database volumes
+- private keys and credentials
 
-Browser push uses VAPID keys. Generate a pair with:
-
-```bash
-originpulse web-push-keys
-```
-
-Then set `ORIGINPULSE_VAPID_PUBLIC_KEY`, `ORIGINPULSE_VAPID_PRIVATE_KEY`, and optionally `ORIGINPULSE_VAPID_SUBJECT` before starting the server. Keep the private key in the environment rather than in source-controlled config.
-
-## Docker
-
-Docker files live under `docker/`.
-
-```bash
-docker compose -f docker/docker-compose.yml up --build
-docker compose -f docker/docker-compose.yml exec originpulse originpulse check-config -config /app/config.yml
-```
+Use synthetic examples in docs and tests.
