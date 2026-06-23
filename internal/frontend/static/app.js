@@ -2,7 +2,7 @@ const qs = (selector, root = document) => root.querySelector(selector);
 const qsa = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
 const routes = [
-  { id: "overview", path: "/", title: "Overview", subtitle: "Real-time operations across your OriginPulse estate.", icon: "fa-grid-2" },
+  { id: "overview", path: "/", title: "Overview", subtitle: "Real-time operations across your OriginPulse estate.", icon: "fa-table-cells-large" },
   { id: "sites", path: "/sites", title: "Projects / Sites", subtitle: "Monitor and manage project health across environments.", icon: "fa-diagram-project" },
   { id: "logs", path: "/logs", title: "Live Logs", subtitle: "Recent evidence, source IPs, paths, and status pressure.", icon: "fa-rectangle-list" },
   { id: "search", path: "/search", title: "Advanced Log Search", subtitle: "Facet access events by status, host, path, and source.", icon: "fa-magnifying-glass" },
@@ -15,7 +15,7 @@ const routes = [
   { id: "bots", path: "/bots", title: "Bot / Crawler Analysis", subtitle: "Verified services, suspicious crawlers, and scripted clients.", icon: "fa-robot" },
   { id: "reports", path: "/reports", title: "Reports", subtitle: "Recent generated summaries and operational narratives.", icon: "fa-file-lines" },
   { id: "alerts", path: "/alerts", title: "Alert Center", subtitle: "Detect, triage, and respond to active issues.", icon: "fa-bell" },
-  { id: "pulse", path: "/pulse-logs", title: "Pulse Logs", subtitle: "Collector jobs, indexed segments, raw files, and delivery history.", icon: "fa-wave-pulse" },
+  { id: "pulse", path: "/pulse-logs", title: "Pulse Logs", subtitle: "Collector jobs, indexed segments, raw files, and delivery history.", icon: "fa-chart-line" },
   { id: "settings", path: "/settings", title: "Settings", subtitle: "User, notification, collection, and system status.", icon: "fa-gear" },
 ];
 
@@ -559,7 +559,7 @@ function syncSiteSelect() {
 function pageActions() {
   if (state.route === "alerts") {
     return `
-      <button class="button outline" type="button" data-action="evaluate-alerts">${iconHTML("fa-wave-pulse")}Evaluate Alerts</button>
+      <button class="button outline" type="button" data-action="evaluate-alerts">${iconHTML("fa-chart-line")}Evaluate Alerts</button>
       <button class="button primary" type="button" data-action="send-notifications">${iconHTML("fa-paper-plane")}Notify</button>
     `;
   }
@@ -1031,7 +1031,7 @@ function renderSlow() {
     ${metricGrid([
       metric("Slow Requests", state.data.analysis?.totals?.slow_requests, "fa-stopwatch", "amber"),
       metric("Slow Rate", formatPercent(state.data.analysis?.totals?.slow_requests_rate), "fa-gauge", "amber"),
-      metric("P95", formatMs(state.data.analysis?.totals?.p95_request_time_ms), "fa-timer", "purple"),
+      metric("P95", formatMs(state.data.analysis?.totals?.p95_request_time_ms), "fa-stopwatch", "purple"),
       metric("Avg Time", formatMs(state.data.analysis?.totals?.avg_request_time_ms), "fa-clock", "cyan"),
     ])}
     <article class="panel">
@@ -1106,7 +1106,7 @@ function renderBots() {
   return `
     ${metricGrid([
       metric("Bot Traffic Ratio", formatPercent(ratio(sum(agents, "requests"), state.data.analysis?.totals?.requests)), "fa-robot", "green"),
-      metric("Verified Bots", sum(verified, "requests"), "fa-shield-check", "green"),
+      metric("Verified Bots", sum(verified, "requests"), "fa-shield-halved", "green"),
       metric("Suspicious Bots", sum(suspicious, "requests"), "fa-triangle-exclamation", "amber"),
       metric("Blocked / Watch", ips.filter((item) => item.manual_action === "suspicious" || item.risk_score >= 70).length, "fa-ban", "red"),
     ])}
@@ -6313,7 +6313,7 @@ function readinessBanner() {
     messages.push(`No indexed requests in ${activeRangeLabel()}. Run pipeline/backfill, or choose a range that overlaps indexed hot data.`);
   } else if (fast.known && !fast.ready) {
     messages.push(`${activeRangeLabel()} is visible, but some dashboard reads are using raw event fallbacks instead of rollups. ${fast.rawFallbackSources.length ? `Raw fallback: ${fast.rawFallbackSources.join(", ")}.` : ""}`);
-    actions.push(`<button class="button small" type="button" data-route="pulse">${iconHTML("fa-wave-pulse")}Pulse Logs</button>`);
+    actions.push(`<button class="button small" type="button" data-route="pulse">${iconHTML("fa-chart-line")}Pulse Logs</button>`);
   }
   if (!messages.length) return "";
   return `
