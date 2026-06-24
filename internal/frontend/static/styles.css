@@ -1222,6 +1222,20 @@ td {
   background: #020812;
 }
 
+.markdown-table-wrap {
+  margin: 0 0 14px;
+}
+
+.markdown-table {
+  min-width: 720px;
+}
+
+.markdown-table th,
+.markdown-table td {
+  vertical-align: top;
+  white-space: normal;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

@@ -98,7 +98,7 @@ func NewService(
 		investigation:  investigation,
 		alerts:         alerts,
 		backfill:       backfillService,
-		client:         &http.Client{Timeout: 180 * time.Second},
+		client:         &http.Client{Timeout: cfg.OllamaTimeout()},
 	}
 }
 
@@ -533,6 +533,7 @@ Make it concrete, action-oriented, and useful for a human who will drill into ch
 Include an executive summary, reliability notes, security signals, source IP and user-agent observations, likely causes, open alerts, and immediate next checks.
 Use the report_summary, report_charts, and report_drilldowns facts as evidence.
 Clearly distinguish observed facts from hypotheses.
+Use plain Markdown only. Do not use emoji, decorative icons, LaTeX math, or HTML.
 Report type: ` + reportType + `
 Return only the report. Do not mention prompts, JSON, schemas, or hidden reasoning.
 /no_think
@@ -565,6 +566,7 @@ func cleanText(value string) string {
 	if value == "" {
 		return ""
 	}
+	value = cleanReportMarkup(value)
 
 	var cleaned strings.Builder
 	cleaned.Grow(len(value))
@@ -580,6 +582,20 @@ func cleanText(value string) string {
 		value = value[size:]
 	}
 	return strings.TrimSpace(cleaned.String())
+}
+
+func cleanReportMarkup(value string) string {
+	replacer := strings.NewReplacer(
+		"рџљЁ", "",
+		"рџ“€", "",
+		"рџ›ЎпёЏ", "",
+		"рџ”¬", "",
+		"рџљЂ", "",
+		"$\\approx$", "approximately",
+		"$\\le$", "<=",
+		"$\\ge$", ">=",
+	)
+	return replacer.Replace(value)
 }
 
 func isMetaResponse(value string) bool {

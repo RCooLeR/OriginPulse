@@ -39,6 +39,18 @@ auth:
 
 Set `secure_cookies: true` when serving through HTTPS.
 
+## Ollama
+
+```yaml
+ollama:
+  base_url_env: "OLLAMA_BASE_URL"
+  model_env: "OLLAMA_MODEL"
+  timeout_env: "OLLAMA_TIMEOUT"
+  timeout: "10m"
+```
+
+`OLLAMA_TIMEOUT` controls how long report generation waits for Ollama. CPU-only servers may need a longer value such as `20m`.
+
 ## Collection
 
 ```yaml

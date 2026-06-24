@@ -33,6 +33,8 @@ ollama:
   base_url: ""
   model_env: "OLLAMA_MODEL"
   model: "gemma4:12b"
+  timeout_env: "OLLAMA_TIMEOUT"
+  timeout: "10m"
 
 collection:
   enabled: false

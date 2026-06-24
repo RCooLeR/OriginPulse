@@ -65,10 +65,12 @@ type PantheonConfig struct {
 }
 
 type OllamaConfig struct {
-	BaseURL    string `yaml:"base_url" json:"-"`
-	BaseURLEnv string `yaml:"base_url_env" json:"base_url_env"`
-	Model      string `yaml:"model" json:"model"`
-	ModelEnv   string `yaml:"model_env" json:"model_env"`
+	BaseURL    string        `yaml:"base_url" json:"-"`
+	BaseURLEnv string        `yaml:"base_url_env" json:"base_url_env"`
+	Model      string        `yaml:"model" json:"model"`
+	ModelEnv   string        `yaml:"model_env" json:"model_env"`
+	Timeout    time.Duration `yaml:"timeout" json:"timeout"`
+	TimeoutEnv string        `yaml:"timeout_env" json:"timeout_env"`
 }
 
 type SSHConfig struct {
@@ -272,6 +274,8 @@ func Default() Config {
 			BaseURLEnv: "OLLAMA_BASE_URL",
 			ModelEnv:   "OLLAMA_MODEL",
 			Model:      "gemma4:12b",
+			Timeout:    10 * time.Minute,
+			TimeoutEnv: "OLLAMA_TIMEOUT",
 		},
 		Collection: CollectionConfig{
 			Enabled:            false,
@@ -606,6 +610,20 @@ func (c Config) OllamaModel() string {
 	return strings.TrimSpace(c.Ollama.Model)
 }
 
+func (c Config) OllamaTimeout() time.Duration {
+	if c.Ollama.TimeoutEnv != "" {
+		if value := strings.TrimSpace(os.Getenv(c.Ollama.TimeoutEnv)); value != "" {
+			if parsed, err := time.ParseDuration(value); err == nil && parsed > 0 {
+				return parsed
+			}
+		}
+	}
+	if c.Ollama.Timeout > 0 {
+		return c.Ollama.Timeout
+	}
+	return 10 * time.Minute
+}
+
 func (c Config) SMTPUsername() string {
 	if c.Notifications.Email.UsernameEnv != "" {
 		if value := strings.TrimSpace(os.Getenv(c.Notifications.Email.UsernameEnv)); value != "" {
@@ -825,6 +843,12 @@ func (c *Config) normalize() {
 	}
 	if c.Ollama.Model == "" {
 		c.Ollama.Model = "gemma4:12b"
+	}
+	if c.Ollama.TimeoutEnv == "" {
+		c.Ollama.TimeoutEnv = "OLLAMA_TIMEOUT"
+	}
+	if c.Ollama.Timeout == 0 {
+		c.Ollama.Timeout = 10 * time.Minute
 	}
 	if c.Collection.Interval == 0 {
 		c.Collection.Interval = 10 * time.Minute

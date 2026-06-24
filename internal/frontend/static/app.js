@@ -5085,7 +5085,7 @@ function deterministicReportSummary(item) {
 }
 
 function renderMarkdown(value) {
-  const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+  const lines = normalizeMarkdownLines(repairReportText(String(value || "")));
   const html = [];
   let list = "";
   let inCode = false;
@@ -5106,7 +5106,8 @@ function renderMarkdown(value) {
     code = [];
     inCode = false;
   };
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     const trimmed = line.trim();
     if (/^```/.test(trimmed)) {
       if (inCode) closeCode();
@@ -5118,6 +5119,13 @@ function renderMarkdown(value) {
     }
     if (inCode) {
       code.push(line);
+      continue;
+    }
+    const table = readMarkdownTable(lines, index);
+    if (table) {
+      closeList();
+      html.push(table.html);
+      index = table.nextIndex - 1;
       continue;
     }
     if (!trimmed) {
@@ -5149,6 +5157,74 @@ function renderMarkdown(value) {
   if (inCode) closeCode();
   closeList();
   return html.join("") || "<p>No summary text available.</p>";
+}
+
+function repairReportText(value) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/рџљЁ|рџ“€|рџ›ЎпёЏ|рџ”¬|рџљЂ/g, "")
+    .replace(/\$\\approx\$/g, "approximately")
+    .replace(/\$\\le\$/g, "<=")
+    .replace(/\$\\ge\$/g, ">=");
+}
+
+function normalizeMarkdownLines(value) {
+  const raw = String(value || "").split("\n");
+  const lines = [];
+  for (let index = 0; index < raw.length; index += 1) {
+    const line = raw[index];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      const previousIsTable = lines.length && isMarkdownTableLine(lines[lines.length - 1]);
+      let nextIndex = index + 1;
+      while (nextIndex < raw.length && !raw[nextIndex].trim()) nextIndex += 1;
+      if (previousIsTable && nextIndex < raw.length && isMarkdownTableLine(raw[nextIndex])) continue;
+      lines.push(line);
+      continue;
+    }
+    if (isMarkdownTableLine(line) && lines.length && isMarkdownTableLine(lines[lines.length - 1]) && !lines[lines.length - 1].trim().endsWith("|")) {
+      lines[lines.length - 1] = `${lines[lines.length - 1].trimEnd()} | ${trimmed.replace(/^\|\s*/, "")}`;
+      continue;
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
+function isMarkdownTableLine(line) {
+  const trimmed = String(line || "").trim();
+  return trimmed.startsWith("|") && trimmed.includes("|", 1);
+}
+
+function isMarkdownTableSeparator(line) {
+  return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(String(line || "").trim());
+}
+
+function markdownTableCells(line) {
+  return String(line || "")
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function readMarkdownTable(lines, startIndex) {
+  if (!isMarkdownTableLine(lines[startIndex]) || !isMarkdownTableSeparator(lines[startIndex + 1])) return null;
+  const headers = markdownTableCells(lines[startIndex]);
+  const rows = [];
+  let index = startIndex + 2;
+  while (index < lines.length && isMarkdownTableLine(lines[index]) && !isMarkdownTableSeparator(lines[index])) {
+    const cells = markdownTableCells(lines[index]);
+    while (cells.length < headers.length) cells.push("");
+    rows.push(cells.slice(0, headers.length));
+    index += 1;
+  }
+  if (!headers.length || !rows.length) return null;
+  return {
+    nextIndex: index,
+    html: `<div class="table-wrap markdown-table-wrap"><table class="markdown-table"><thead><tr>${headers.map((header) => `<th>${renderInlineMarkdown(header)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${renderInlineMarkdown(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`,
+  };
 }
 
 function renderInlineMarkdown(value) {
