@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -2151,15 +2152,9 @@ func uniqueStrings(values []string) []string {
 }
 
 func sortIssues(issues []Issue) {
-	for i := 1; i < len(issues); i++ {
-		item := issues[i]
-		j := i - 1
-		for j >= 0 && issueLess(item, issues[j]) {
-			issues[j+1] = issues[j]
-			j--
-		}
-		issues[j+1] = item
-	}
+	sort.Slice(issues, func(i, j int) bool {
+		return issueLess(issues[i], issues[j])
+	})
 }
 
 func issueLess(a Issue, b Issue) bool {

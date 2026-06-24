@@ -93,6 +93,7 @@ button {
 
 .login-logo-wrap {
   width: fit-content;
+  margin: 0 auto;
   padding: 8px 10px;
   border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 14px;
@@ -866,6 +867,17 @@ td {
   color: var(--faint) !important;
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 0.7rem !important;
+}
+
+.query-sample {
+  max-width: 360px;
+}
+
+.query-sample strong,
+.query-sample span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .job-meta {

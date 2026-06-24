@@ -1,0 +1,14 @@
+.git
+.github
+.idea
+.vscode
+claude-review
+data
+tmp
+*.log
+*.tmp
+docker/.env
+.env
+.env.*
+!.env.example
+**/.DS_Store

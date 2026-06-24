@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,12 @@ import (
 	"originpulse/internal/retention"
 	"originpulse/internal/sites"
 	"originpulse/internal/storageaudit"
+)
+
+const (
+	maxRequestBodyBytes     int64 = 1 << 20
+	sameOriginRequestHeader       = "X-OriginPulse-Request"
+	sameOriginRequestValue        = "same-origin"
 )
 
 type Dependencies struct {
@@ -136,6 +143,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(secureHeaders)
+	r.Use(limitRequestBody)
 
 	r.Get("/health", api.healthz)
 
@@ -147,6 +155,7 @@ func NewRouter(deps Dependencies) http.Handler {
 
 		r.Group(func(r chi.Router) {
 			r.Use(api.requireAuth)
+			r.Use(requireSameOrigin)
 			r.Get("/dashboard/overview", api.dashboardOverview)
 			r.Get("/analysis/access-log", api.accessLogAnalysis)
 			r.Get("/investigate/traffic", api.investigateTraffic)
@@ -1612,10 +1621,7 @@ func (api API) collectNow(w http.ResponseWriter, r *http.Request) {
 
 func (api API) me(w http.ResponseWriter, r *http.Request) {
 	if !api.auth.Enabled() {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"authenticated": false,
-			"auth_required": false,
-		})
+		writeError(w, http.StatusServiceUnavailable, "auth_unavailable", "authentication requires DATABASE_URL")
 		return
 	}
 
@@ -1640,10 +1646,7 @@ func (api API) me(w http.ResponseWriter, r *http.Request) {
 
 func (api API) login(w http.ResponseWriter, r *http.Request) {
 	if !api.auth.Enabled() {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"authenticated": false,
-			"auth_required": false,
-		})
+		writeError(w, http.StatusServiceUnavailable, "auth_unavailable", "authentication requires DATABASE_URL")
 		return
 	}
 
@@ -1780,7 +1783,7 @@ func (api API) deleteUser(w http.ResponseWriter, r *http.Request) {
 func (api API) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !api.auth.Enabled() {
-			next.ServeHTTP(w, r)
+			writeError(w, http.StatusServiceUnavailable, "auth_unavailable", "authentication requires DATABASE_URL")
 			return
 		}
 
@@ -1795,6 +1798,46 @@ func (api API) requireAuth(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func requireSameOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isSafeMethod(r.Method) || isSameOriginRequest(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		writeError(w, http.StatusForbidden, "cross_site_request", "unsafe API requests must be same-origin")
+	})
+}
+
+func isSafeMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	default:
+		return false
+	}
+}
+
+func isSameOriginRequest(r *http.Request) bool {
+	if r.Header.Get(sameOriginRequestHeader) == sameOriginRequestValue {
+		return true
+	}
+	if origin := r.Header.Get("Origin"); origin != "" {
+		return requestHostMatchesURL(r, origin)
+	}
+	if referer := r.Header.Get("Referer"); referer != "" {
+		return requestHostMatchesURL(r, referer)
+	}
+	return false
+}
+
+func requestHostMatchesURL(r *http.Request, raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return strings.EqualFold(parsed.Host, r.Host)
 }
 
 func (api API) authenticatedUser(r *http.Request) (auth.User, error) {
@@ -1919,6 +1962,17 @@ func secureHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "same-origin")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func limitRequestBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		}
 		next.ServeHTTP(w, r)
 	})
 }

@@ -174,7 +174,7 @@ WHERE site_id = $1
 		return time.Time{}, false, err
 	}
 	if !time.Now().UTC().Before(until) {
-		_, _ = pool.Exec(context.Background(), `
+		_, _ = pool.Exec(ctx, `
 DELETE FROM pantheon_server_cooldowns
 WHERE site_id = $1
   AND env = $2

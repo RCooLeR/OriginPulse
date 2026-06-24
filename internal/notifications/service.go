@@ -1036,10 +1036,14 @@ func defaultString(value string, fallback string) string {
 
 func truncate(value string, limit int) string {
 	value = strings.TrimSpace(value)
-	if limit <= 0 || len(value) <= limit {
+	if limit <= 0 {
 		return value
 	}
-	return strings.TrimSpace(value[:limit-1]) + "..."
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return strings.TrimSpace(string(runes[:limit-1])) + "..."
 }
 
 func sanitizeHeader(value string) string {

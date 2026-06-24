@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,6 +71,94 @@ func TestRootHealthAliasReturnsJSON(t *testing.T) {
 	}
 	if body["service"] != "originpulse" {
 		t.Fatalf("service = %#v, want originpulse", body["service"])
+	}
+}
+
+func TestSecurityHeadersAreSet(t *testing.T) {
+	handler := NewRouter(Dependencies{})
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+
+	if rec.Header().Get("Content-Security-Policy") == "" {
+		t.Fatal("Content-Security-Policy header was not set")
+	}
+	if rec.Header().Get("Strict-Transport-Security") == "" {
+		t.Fatal("Strict-Transport-Security header was not set")
+	}
+	if rec.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("X-Frame-Options = %q, want DENY", rec.Header().Get("X-Frame-Options"))
+	}
+}
+
+func TestProtectedAPIFailsClosedWhenAuthUnavailable(t *testing.T) {
+	handler := NewRouter(Dependencies{})
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/api/v1/sites", nil))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestRequireSameOriginRejectsUnsafeCrossSiteRequests(t *testing.T) {
+	handler := requireSameOrigin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	cases := []struct {
+		name    string
+		request *http.Request
+		want    int
+	}{
+		{
+			name:    "safe get",
+			request: httptest.NewRequest("GET", "http://originpulse.local/api/v1/sites", nil),
+			want:    http.StatusNoContent,
+		},
+		{
+			name:    "missing same-origin proof",
+			request: httptest.NewRequest("POST", "http://originpulse.local/api/v1/system/collect", strings.NewReader("{}")),
+			want:    http.StatusForbidden,
+		},
+		{
+			name: "frontend marker",
+			request: func() *http.Request {
+				req := httptest.NewRequest("POST", "http://originpulse.local/api/v1/system/collect", strings.NewReader("{}"))
+				req.Header.Set(sameOriginRequestHeader, sameOriginRequestValue)
+				return req
+			}(),
+			want: http.StatusNoContent,
+		},
+		{
+			name: "matching origin",
+			request: func() *http.Request {
+				req := httptest.NewRequest("POST", "http://originpulse.local/api/v1/system/collect", strings.NewReader("{}"))
+				req.Header.Set("Origin", "http://originpulse.local")
+				return req
+			}(),
+			want: http.StatusNoContent,
+		},
+		{
+			name: "mismatched origin",
+			request: func() *http.Request {
+				req := httptest.NewRequest("POST", "http://originpulse.local/api/v1/system/collect", strings.NewReader("{}"))
+				req.Header.Set("Origin", "https://attacker.example")
+				return req
+			}(),
+			want: http.StatusForbidden,
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, tt.request)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
+			}
+		})
 	}
 }
 

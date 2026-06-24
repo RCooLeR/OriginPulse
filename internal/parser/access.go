@@ -13,6 +13,11 @@ import (
 
 var bracketTimestamp = regexp.MustCompile(`\[(\d{2}/[A-Za-z]{3}/\d{4}:\d{2}:\d{2}:\d{2} [+-]\d{4})\]`)
 
+const (
+	maxHTTPStatusCode = 999
+	maxDurationMS     = 24 * 60 * 60 * 1000
+)
+
 var ErrTimestampNotFound = errors.New("timestamp not found")
 var ErrInvalidAccessLine = errors.New("invalid access log line")
 
@@ -84,7 +89,7 @@ func ParseAccessLine(line string) (AccessEvent, error) {
 		return AccessEvent{}, ErrInvalidAccessLine
 	}
 
-	status, _ := strconv.Atoi(fields[requestIndex+1])
+	status := parseHTTPStatus(fields[requestIndex+1])
 	bytesSent := parseBytes(fields[requestIndex+2])
 
 	event := AccessEvent{
@@ -255,6 +260,14 @@ func parseBytes(value string) int64 {
 	return parsed
 }
 
+func parseHTTPStatus(value string) int {
+	status, err := strconv.Atoi(value)
+	if err != nil || status < 0 || status > maxHTTPStatusCode {
+		return 0
+	}
+	return status
+}
+
 func parseDurationMS(value string) int {
 	value = strings.TrimSpace(value)
 	if value == "" || value == "-" {
@@ -286,14 +299,17 @@ func parseDurationMS(value string) int {
 
 func parseSingleDurationMS(value string) (int, bool) {
 	seconds, err := strconv.ParseFloat(value, 64)
-	if err != nil || seconds <= 0 {
+	if err != nil || seconds <= 0 || math.IsNaN(seconds) || math.IsInf(seconds, 0) {
 		return 0, false
 	}
-	ms := int(math.Round(seconds * 1000))
-	if ms == 0 {
+	ms := math.Round(seconds * 1000)
+	if ms <= 0 {
 		return 1, true
 	}
-	return ms, true
+	if ms > maxDurationMS {
+		return maxDurationMS, true
+	}
+	return int(ms), true
 }
 
 func dashToEmpty(value string) string {

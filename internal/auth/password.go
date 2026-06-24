@@ -89,6 +89,9 @@ func parseParams(value string) (argonParams, error) {
 		case "t":
 			out.time = uint32(parsed)
 		case "p":
+			if parsed > 255 {
+				return out, ErrInvalidHash
+			}
 			out.threads = uint8(parsed)
 		default:
 			return out, ErrInvalidHash

@@ -37,6 +37,7 @@ const securitySignalDetailPageSize = 6;
 const ipDetailPageSize = 6;
 const drawerHistoryLimit = 500;
 const analysisHistoryLimit = 500;
+const dashboardAutoRefreshMs = 60 * 1000;
 const PHP_LOG_TYPES = ["php-error", "php-slow"];
 const MYSQL_LOG_TYPES = ["mysql", "mysql-slow"];
 
@@ -53,6 +54,8 @@ const state = {
   },
   currentUser: null,
   loading: false,
+  refreshing: false,
+  autoRefreshTimer: null,
   securityAnalysisLoading: false,
   securityAnalysisKey: "",
   estateDataLoading: false,
@@ -132,10 +135,15 @@ async function fetchJSON(path, options = {}) {
   const { timeoutMs = 0, ...fetchOptions } = options;
   const controller = timeoutMs ? new AbortController() : null;
   const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  const method = String(fetchOptions.method || "GET").toUpperCase();
+  const headers = { "Content-Type": "application/json", ...(fetchOptions.headers || {}) };
+  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+    headers["X-OriginPulse-Request"] = "same-origin";
+  }
   beginRequest();
   try {
     const response = await fetch(path, {
-      headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
+      headers,
       ...fetchOptions,
       ...(controller ? { signal: controller.signal } : {}),
     });
@@ -299,17 +307,21 @@ function wireEvents() {
   window.addEventListener("resize", drawCharts);
 }
 
-async function refreshAll() {
-  if (state.loading) {
+async function refreshAll(options = {}) {
+  const background = Boolean(options.background);
+  if (state.refreshing) {
     state.refreshQueued = true;
     return;
   }
-  state.loading = true;
+  state.refreshing = true;
+  state.loading = !background;
   state.fetchErrors = [];
   state.estateDataKey = "";
   state.securityAnalysisKey = "";
-  document.body.classList.add("busy");
-  render();
+  if (!background) {
+    document.body.classList.add("busy");
+    render();
+  }
   try {
     const filter = buildFilterQuery();
     const analysisFilter = buildFilterQuery({ limit: analysisHistoryLimit });
@@ -387,15 +399,30 @@ async function refreshAll() {
     }
     toast(error.message, true);
   } finally {
+    state.refreshing = false;
     state.loading = false;
     document.body.classList.remove("busy");
     if (state.refreshQueued) {
       state.refreshQueued = false;
-      void refreshAll();
+      void refreshAll({ background });
     } else {
       render();
     }
   }
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh();
+  state.autoRefreshTimer = window.setInterval(() => {
+    if (!state.currentUser || document.visibilityState === "hidden") return;
+    void refreshAll({ background: true });
+  }, dashboardAutoRefreshMs);
+}
+
+function stopAutoRefresh() {
+  if (!state.autoRefreshTimer) return;
+  window.clearInterval(state.autoRefreshTimer);
+  state.autoRefreshTimer = null;
 }
 
 async function ensureRouteData() {
@@ -486,6 +513,7 @@ function mergeIssues(base, extra) {
 }
 
 function render() {
+  state.detailCache = {};
   collectIPTrust();
   renderNav();
   renderChrome();
@@ -2345,7 +2373,7 @@ function deliveryRow(item) {
     <div class="list-row">
       <div>
         <strong>${escapeHTML(item.title || formatChannel(item.channel))}</strong>
-        <span>${escapeHTML(formatChannel(item.channel))} / ${escapeHTML(item.target || "-")} / ${shortTime(item.created_at)}${item.error ? ` / ${item.error}` : ""}</span>
+        <span>${escapeHTML(formatChannel(item.channel))} / ${escapeHTML(item.target || "-")} / ${shortTime(item.created_at)}${item.error ? ` / ${escapeHTML(item.error)}` : ""}</span>
       </div>
       <span class="status ${status}">${escapeHTML(item.status || "pending")}</span>
     </div>
@@ -2519,6 +2547,9 @@ function queryParamsTable(rows) {
         <tbody>${rows.map((item) => {
           const family = queryFamilyMeta(item.family || item.param || "");
           const valueState = queryValueState(item);
+          const samplePath = item.example_path || "/";
+          const sampleQuery = item.example_query || "";
+          const sampleTitle = [samplePath, sampleQuery].filter(Boolean).join("\n");
           return `
           <tr>
             <td><span class="row-title"><strong>${escapeHTML(item.param || "-")}</strong><span class="pill query-badge" title="${escapeAttr(family.title)}">${escapeHTML(family.label)}</span></span></td>
@@ -2535,7 +2566,7 @@ function queryParamsTable(rows) {
             <td>${formatNumber(item.unique_ips)}</td>
             <td>${formatNumber(item.unique_paths)}</td>
             <td>${formatMs(item.avg_request_time_ms)}</td>
-            <td><span class="row-title"><strong>${escapeHTML(item.example_path || "/")}</strong><span>${queryBadgeHTML(item.example_query)} ${escapeHTML(item.example_query || "")}</span></span></td>
+            <td><span class="row-title query-sample" title="${escapeAttr(sampleTitle)}"><strong>${escapeHTML(shortToken(samplePath, 72))}</strong><span>${queryBadgeHTML(sampleQuery)} ${escapeHTML(shortToken(sampleQuery, 96))}</span></span></td>
           </tr>`;
         }).join("")}</tbody>
       </table>
@@ -3258,13 +3289,13 @@ function renderAlertDetail(item) {
       <article class="detail-card">
         <h3>Alert Context</h3>
         ${factsRich([
-          ["Title", escapeHTML(item.title || item.rule_key || "Alert")],
-          ["Severity", `<span class="severity ${sev}">${escapeHTML(sev)}</span>`],
-          ["Status", escapeHTML(item.status || "open")],
-          ["Rule", escapeHTML(item.rule_key || "-")],
-          ["Project", escapeHTML(item.site_id || "-")],
-          ["Environment", escapeHTML(item.env || "-")],
-          ["Actor", alertActorLink(item)],
+          ["Title", item.title || item.rule_key || "Alert"],
+          ["Severity", htmlSafe(`<span class="severity ${sev}">${escapeHTML(sev)}</span>`)],
+          ["Status", item.status || "open"],
+          ["Rule", item.rule_key || "-"],
+          ["Project", item.site_id || "-"],
+          ["Environment", item.env || "-"],
+          ["Actor", htmlSafe(alertActorLink(item))],
         ])}
       </article>
       <article class="detail-card">
@@ -3337,10 +3368,10 @@ function renderAlertRuleDetail(item) {
       <article class="detail-card">
         <h3>Rule Context</h3>
         ${factsRich([
-          ["Rule", escapeHTML(item.rule_key || "-")],
-          ["Title", escapeHTML(item.title || item.rule_key || "Alert rule")],
-          ["Severity", `<span class="severity ${normalizeSeverity(item.severity)}">${escapeHTML(normalizeSeverity(item.severity))}</span>`],
-          ["Last Seen", escapeHTML(shortTime(item.last_seen_at))],
+          ["Rule", item.rule_key || "-"],
+          ["Title", item.title || item.rule_key || "Alert rule"],
+          ["Severity", htmlSafe(`<span class="severity ${normalizeSeverity(item.severity)}">${escapeHTML(normalizeSeverity(item.severity))}</span>`)],
+          ["Last Seen", shortTime(item.last_seen_at)],
         ])}
       </article>
       <article class="detail-card">
@@ -4460,7 +4491,7 @@ function renderIPDetail(detail, summary = {}) {
       <article class="detail-card">
         <h3>WHOIS / Reputation</h3>
         ${factsRich([
-          ["IP Address", ipLink(detail.ip || summary.ip, detail.ip || summary.ip, detail)],
+          ["IP Address", htmlSafe(ipLink(detail.ip || summary.ip, detail.ip || summary.ip, detail))],
           ["Known Actor", intel.known_actor || summary.known_actor || "-"],
           ["Actor Type", intel.actor_type || summary.actor_type || "-"],
           ["Reverse DNS", intel.reverse_dns || summary.reverse_dns || "-"],
@@ -4582,7 +4613,7 @@ function renderRequestDetail(item) {
           ["Time", shortTime(item.ts)],
           ["Project", item.site_id || "-"],
           ["Environment", item.env || "-"],
-          ["Source IP", ipLink(item.client_ip)],
+          ["Source IP", htmlSafe(ipLink(item.client_ip))],
           ["Host", item.host || item.site_id || "-"],
           ["Bytes Sent", formatBytes(item.bytes_sent)],
           ["Container", item.container_id || "-"],
@@ -4591,11 +4622,11 @@ function renderRequestDetail(item) {
       <article class="detail-card">
         <h3>Risk Summary</h3>
         ${factsRich([
-          ["Status class", escapeHTML(status >= 500 ? "Server error" : status >= 400 ? "Client error" : "Success")],
+          ["Status class", status >= 500 ? "Server error" : status >= 400 ? "Client error" : "Success"],
           ["Query Family", queryFamilyLabel(item.query) || "-"],
-          ["Query string", escapeHTML(item.query || "-")],
-          ["Referer", escapeHTML(item.referer || "-")],
-          ["User Agent", item.user_agent ? userAgentLink(item.user_agent, item.user_agent) : "-"],
+          ["Query string", item.query || "-"],
+          ["Referer", item.referer || "-"],
+          ["User Agent", item.user_agent ? htmlSafe(userAgentLink(item.user_agent, item.user_agent)) : "-"],
         ])}
       </article>
     </section>
@@ -4647,14 +4678,14 @@ function renderReportDetail(item) {
     <article class="detail-card">
       <h3>Traffic & Risk Summary</h3>
       ${factsRich([
-        ["Range", escapeHTML(summary.range || item.range || "-")],
-        ["Generated", escapeHTML(shortTime(summary.generated_at || item.generated_at || item.created_at))],
-        ["4xx", escapeHTML(`${formatNumber(summary.status_4xx)} (${formatPercent(summary.status_4xx_rate)})`)],
-        ["5xx", escapeHTML(`${formatNumber(summary.status_5xx)} (${formatPercent(summary.status_5xx_rate)})`)],
-        ["Issues", escapeHTML(formatNumber(summary.issue_count))],
-        ["Top Site", escapeHTML(summary.top_site || "-")],
-        ["Top Path", escapeHTML(summary.top_path || "-")],
-        ["Top Source IP", summary.top_source_ip ? ipLink(summary.top_source_ip) : "-"],
+        ["Range", summary.range || item.range || "-"],
+        ["Generated", shortTime(summary.generated_at || item.generated_at || item.created_at)],
+        ["4xx", `${formatNumber(summary.status_4xx)} (${formatPercent(summary.status_4xx_rate)})`],
+        ["5xx", `${formatNumber(summary.status_5xx)} (${formatPercent(summary.status_5xx_rate)})`],
+        ["Issues", formatNumber(summary.issue_count)],
+        ["Top Site", summary.top_site || "-"],
+        ["Top Path", summary.top_path || "-"],
+        ["Top Source IP", summary.top_source_ip ? htmlSafe(ipLink(summary.top_source_ip)) : "-"],
       ])}
     </article>
     <section class="detail-grid two report-detail-grid">
@@ -4684,9 +4715,9 @@ function reportChartCard(chart, index = 0) {
         <span>${escapeHTML(chart.kind || "chart")} / ${escapeHTML(chart.unit || "count")}</span>
       </div>
       ${factsRich([
-        ["Points", escapeHTML(formatNumber(points.length))],
-        ["Total", escapeHTML(formatNumber(total))],
-        ["Peak", peak.label ? `${linkifyIPs(peak.label)} / ${escapeHTML(formatNumber(peak.value))}` : "-"],
+        ["Points", formatNumber(points.length)],
+        ["Total", formatNumber(total)],
+        ["Peak", peak.label ? htmlSafe(`${linkifyIPs(peak.label)} / ${escapeHTML(formatNumber(peak.value))}`) : "-"],
       ])}
       ${reportChartVisual(chart, points)}
       <div class="list compact-list">${page.rows.map((point) => `
@@ -4907,13 +4938,13 @@ function renderSecuritySignalDetail(item) {
       <article class="detail-card">
         <h3>Signal Context</h3>
         ${factsRich([
-          ["Type", escapeHTML(signal.title || signal.kind || "Security signal")],
-          ["Category", escapeHTML(signal.category || signal.rule_key || signal.kind || "-")],
-          ["Project", escapeHTML(signal.site_id || "-")],
-          ["Environment", escapeHTML(signal.env || "-")],
-          ["Source IP", signal.ip ? ipLink(signal.ip) : "-"],
-          ["Path", escapeHTML(signal.path || "-")],
-          ["Evidence", escapeHTML(item.source || "loaded view")],
+          ["Type", signal.title || signal.kind || "Security signal"],
+          ["Category", signal.category || signal.rule_key || signal.kind || "-"],
+          ["Project", signal.site_id || "-"],
+          ["Environment", signal.env || "-"],
+          ["Source IP", signal.ip ? htmlSafe(ipLink(signal.ip)) : "-"],
+          ["Path", signal.path || "-"],
+          ["Evidence", item.source || "loaded view"],
         ])}
       </article>
       <article class="detail-card">
@@ -5639,9 +5670,11 @@ function buildFilterQuery(extra = {}, options = {}) {
 function showApp() {
   qs("#loginView").classList.add("hidden");
   qs("#appShell").classList.remove("hidden");
+  if (state.currentUser) startAutoRefresh();
 }
 
 function showLogin() {
+  stopAutoRefresh();
   qs("#appShell").classList.add("hidden");
   qs("#loginView").classList.remove("hidden");
 }
@@ -5665,6 +5698,7 @@ async function login(event) {
 async function logout() {
   await fetchJSON("/api/v1/auth/logout", { method: "POST", body: "{}" }).catch(() => null);
   state.currentUser = null;
+  stopAutoRefresh();
   showLogin();
 }
 
@@ -6361,8 +6395,17 @@ function facts(items) {
   return `<dl class="facts">${items.map(([label, value]) => `<div><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value ?? "-")}</dd></div>`).join("")}</dl>`;
 }
 
+function htmlSafe(value) {
+  return { __html: String(value ?? "") };
+}
+
 function factsRich(items) {
-  return `<dl class="facts">${items.map(([label, value]) => `<div><dt>${escapeHTML(label)}</dt><dd>${value || "-"}</dd></div>`).join("")}</dl>`;
+  return `<dl class="facts">${items.map(([label, value]) => {
+    const html = value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, "__html")
+      ? value.__html
+      : escapeHTML(value ?? "-");
+    return `<div><dt>${escapeHTML(label)}</dt><dd>${html || "-"}</dd></div>`;
+  }).join("")}</dl>`;
 }
 
 function empty(message) {
