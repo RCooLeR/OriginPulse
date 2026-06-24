@@ -20,6 +20,8 @@ import (
 var ErrUnavailable = errors.New("database is not configured")
 var ErrLockUnavailable = errors.New("maintenance lock is already held")
 
+const migrationLockKey int64 = 7720007
+
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
@@ -122,6 +124,18 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return err
 	}
 
+	lockConn, err := pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer lockConn.Release()
+	if _, err := lockConn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = lockConn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationLockKey)
+	}()
+
 	if _, err := pool.Exec(ctx, `
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version text PRIMARY KEY,
@@ -166,7 +180,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			_ = tx.Rollback(ctx)
 			return fmt.Errorf("apply migration %s: %w", version, err)
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, version); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`, version); err != nil {
 			_ = tx.Rollback(ctx)
 			return fmt.Errorf("record migration %s: %w", version, err)
 		}
