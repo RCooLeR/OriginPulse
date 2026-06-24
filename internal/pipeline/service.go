@@ -186,8 +186,12 @@ func (s *Service) run(ctx context.Context, opts Options, jobID string) (Result, 
 		}
 	}
 
-	pendingStep := s.startStep(ctx, jobID, "load pending segments", map[string]any{"max_segments": opts.MaxSegments})
-	pending, err := s.segments.PendingIndexSegments(ctx, opts.MaxSegments)
+	pendingStep := s.startStep(ctx, jobID, "load pending segments", map[string]any{
+		"from":         opts.From.Format(time.RFC3339),
+		"to":           opts.To.Format(time.RFC3339),
+		"max_segments": opts.MaxSegments,
+	})
+	pending, err := s.pendingIndexSegments(ctx, opts)
 	if err != nil {
 		s.finishStep(pendingStep, jobs.StatusFailed, "pending segment load failed", err, nil)
 		return result, err
@@ -286,9 +290,36 @@ func isAccessLogType(logType string) bool {
 	return logType == "nginx-access" || logType == "apache-access"
 }
 
+func (s *Service) pendingIndexSegments(ctx context.Context, opts Options) ([]combiner.SegmentManifest, error) {
+	inRange, err := s.segments.PendingIndexSegmentsInRange(ctx, opts.From, opts.To, opts.MaxSegments)
+	if err != nil {
+		return nil, err
+	}
+	if len(inRange) >= opts.MaxSegments {
+		return inRange, nil
+	}
+	backlog, err := s.segments.PendingIndexSegments(ctx, opts.MaxSegments-len(inRange))
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(inRange)+len(backlog))
+	pending := make([]combiner.SegmentManifest, 0, len(inRange)+len(backlog))
+	for _, segment := range inRange {
+		seen[segment.ID] = struct{}{}
+		pending = append(pending, segment)
+	}
+	for _, segment := range backlog {
+		if _, ok := seen[segment.ID]; ok {
+			continue
+		}
+		pending = append(pending, segment)
+	}
+	return pending, nil
+}
+
 func (s *Service) normalizeOptions(opts Options) Options {
 	if opts.MaxSegments <= 0 {
-		opts.MaxSegments = 100
+		opts.MaxSegments = 500
 	}
 	if opts.IndexWorkers <= 0 {
 		opts.IndexWorkers = s.cfg.Pipeline.IndexWorkers

@@ -33,8 +33,8 @@ func TestNormalizeOptionsDefaults(t *testing.T) {
 	service := New(config.Default(), nil, nil, nil, nil)
 
 	opts := service.normalizeOptions(Options{})
-	if opts.MaxSegments != 100 {
-		t.Fatalf("MaxSegments = %d, want 100", opts.MaxSegments)
+	if opts.MaxSegments != 500 {
+		t.Fatalf("MaxSegments = %d, want 500", opts.MaxSegments)
 	}
 	if opts.IndexWorkers != config.Default().Pipeline.IndexWorkers {
 		t.Fatalf("IndexWorkers = %d, want default %d", opts.IndexWorkers, config.Default().Pipeline.IndexWorkers)

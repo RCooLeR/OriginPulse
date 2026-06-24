@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"originpulse/internal/db"
 )
 
@@ -295,9 +297,7 @@ func (r *Repository) PendingIndexSegments(ctx context.Context, limit int) ([]Seg
 	if !r.Enabled() {
 		return []SegmentManifest{}, nil
 	}
-	if limit <= 0 || limit > 1000 {
-		limit = 100
-	}
+	limit = normalizePendingIndexLimit(limit)
 
 	pool, err := r.db.Pool()
 	if err != nil {
@@ -314,8 +314,50 @@ LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	return scanSegmentRows(rows, limit, r.combinedDir)
+}
 
+func (r *Repository) PendingIndexSegmentsInRange(ctx context.Context, from time.Time, to time.Time, limit int) ([]SegmentManifest, error) {
+	if !r.Enabled() {
+		return []SegmentManifest{}, nil
+	}
+	limit = normalizePendingIndexLimit(limit)
+	if from.IsZero() || to.IsZero() || !from.Before(to) {
+		return r.PendingIndexSegments(ctx, limit)
+	}
+
+	pool, err := r.db.Pool()
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := pool.Query(ctx, `
+SELECT id::text, log_type, bucket_start, bucket_end, path, coalesce(sha256, ''),
+       line_count, min_ts, max_ts, status, indexed_at, indexed_at IS NOT NULL
+FROM combined_segments
+WHERE indexed_at IS NULL
+  AND bucket_start < $2
+  AND bucket_end > $1
+ORDER BY bucket_start DESC, log_type
+LIMIT $3`, from, to, limit)
+	if err != nil {
+		return nil, err
+	}
+	return scanSegmentRows(rows, limit, r.combinedDir)
+}
+
+func normalizePendingIndexLimit(limit int) int {
+	if limit <= 0 {
+		return 100
+	}
+	if limit > 1000 {
+		return 1000
+	}
+	return limit
+}
+
+func scanSegmentRows(rows pgx.Rows, limit int, combinedDir string) ([]SegmentManifest, error) {
+	defer rows.Close()
 	segments := make([]SegmentManifest, 0, limit)
 	for rows.Next() {
 		var segment SegmentManifest
@@ -335,7 +377,7 @@ LIMIT $1`, limit)
 		); err != nil {
 			return nil, err
 		}
-		segment.Path = normalizeStoredCombinedPath(segment.Path, r.combinedDir)
+		segment.Path = normalizeStoredCombinedPath(segment.Path, combinedDir)
 		segments = append(segments, segment)
 	}
 	return segments, rows.Err()
