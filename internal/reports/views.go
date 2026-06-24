@@ -104,6 +104,85 @@ type DrilldownItem struct {
 	Details          map[string]any `json:"details,omitempty"`
 }
 
+const (
+	promptChartPointsLimit = 12
+	promptDrilldownLimit   = 6
+	promptAlertLimit       = 8
+	promptStringLimit      = 180
+	promptMetaLimit        = 240
+)
+
+type promptEvidenceBudget struct {
+	ChartPoints        int `json:"chart_points"`
+	DrilldownRows      int `json:"drilldown_rows"`
+	OpenAlerts         int `json:"open_alerts"`
+	MaxStringChars     int `json:"max_string_chars"`
+	MaxMetaStringChars int `json:"max_meta_string_chars"`
+}
+
+type promptChart struct {
+	Key   string        `json:"key"`
+	Title string        `json:"title"`
+	Kind  string        `json:"kind"`
+	Unit  string        `json:"unit,omitempty"`
+	Data  []ReportDatum `json:"data"`
+}
+
+type promptDrilldown struct {
+	Key   string                `json:"key"`
+	Title string                `json:"title"`
+	Items []promptDrilldownItem `json:"items"`
+}
+
+type promptDrilldownItem struct {
+	Kind             string    `json:"kind,omitempty"`
+	Label            string    `json:"label,omitempty"`
+	Meta             string    `json:"meta,omitempty"`
+	IP               string    `json:"ip,omitempty"`
+	SiteID           string    `json:"site_id,omitempty"`
+	Env              string    `json:"env,omitempty"`
+	Method           string    `json:"method,omitempty"`
+	Path             string    `json:"path,omitempty"`
+	Query            string    `json:"query,omitempty"`
+	Category         string    `json:"category,omitempty"`
+	Severity         string    `json:"severity,omitempty"`
+	ActorType        string    `json:"actor_type,omitempty"`
+	ActorValue       string    `json:"actor_value,omitempty"`
+	Status           int       `json:"status,omitempty"`
+	Score            int       `json:"score,omitempty"`
+	RiskScore        int       `json:"risk_score,omitempty"`
+	Requests         int64     `json:"requests,omitempty"`
+	Events           int64     `json:"events,omitempty"`
+	TotalIPHits      int64     `json:"total_ip_hits,omitempty"`
+	Status4xx        int64     `json:"status_4xx,omitempty"`
+	Status5xx        int64     `json:"status_5xx,omitempty"`
+	BytesSent        int64     `json:"bytes_sent,omitempty"`
+	AvgRequestTimeMS float64   `json:"avg_request_time_ms,omitempty"`
+	P95RequestTimeMS float64   `json:"p95_request_time_ms,omitempty"`
+	FirstSeen        time.Time `json:"first_seen,omitempty"`
+	LastSeen         time.Time `json:"last_seen,omitempty"`
+	Timestamp        time.Time `json:"timestamp,omitempty"`
+	VerifiedSource   bool      `json:"verified_source,omitempty"`
+	KnownActor       string    `json:"known_actor,omitempty"`
+	ReverseDNS       string    `json:"reverse_dns,omitempty"`
+}
+
+type promptAlert struct {
+	ID          string    `json:"id"`
+	RuleKey     string    `json:"rule_key"`
+	Title       string    `json:"title"`
+	Severity    string    `json:"severity"`
+	Status      string    `json:"status"`
+	SiteID      string    `json:"site_id,omitempty"`
+	Env         string    `json:"env,omitempty"`
+	ActorType   string    `json:"actor_type,omitempty"`
+	ActorValue  string    `json:"actor_value,omitempty"`
+	Score       int       `json:"score,omitempty"`
+	Summary     string    `json:"summary,omitempty"`
+	FirstSeenAt time.Time `json:"first_seen_at"`
+	LastSeenAt  time.Time `json:"last_seen_at"`
+}
+
 func buildReportViews(input map[string]any) (*ReportSummary, []ReportChart, []Drilldown) {
 	overview, _ := input["overview"].(analytics.Overview)
 	analysis, _ := input["access_analysis"].(accessanalysis.Report)
@@ -223,40 +302,133 @@ func populateReportViewsFromInput(report *Report) {
 
 func buildPromptEvidence(input map[string]any, summary *ReportSummary, charts []ReportChart, drilldowns []Drilldown) map[string]any {
 	evidence := map[string]any{
-		"range":        stringFromInput(input, "range"),
-		"site_id":      stringFromInput(input, "site_id"),
-		"generated_at": timeFromInput(input, "generated_at"),
-		"summary":      summary,
-		"charts":       compactCharts(charts, 16),
-		"drilldowns":   compactDrilldowns(drilldowns, 8),
+		"range":           stringFromInput(input, "range"),
+		"site_id":         stringFromInput(input, "site_id"),
+		"generated_at":    timeFromInput(input, "generated_at"),
+		"evidence_budget": promptEvidenceBudget{ChartPoints: promptChartPointsLimit, DrilldownRows: promptDrilldownLimit, OpenAlerts: promptAlertLimit, MaxStringChars: promptStringLimit, MaxMetaStringChars: promptMetaLimit},
+		"summary":         summary,
+		"charts":          compactCharts(charts, promptChartPointsLimit),
+		"drilldowns":      compactDrilldowns(drilldowns, promptDrilldownLimit),
 	}
 	if alerts, ok := input["open_alerts"].([]alerts.Alert); ok {
-		evidence["open_alerts"] = limitSlice(alerts, 10)
+		evidence["open_alerts"] = compactAlerts(alerts, promptAlertLimit)
 	}
 	return evidence
 }
 
-func compactCharts(charts []ReportChart, limit int) []ReportChart {
-	out := make([]ReportChart, 0, len(charts))
+func compactCharts(charts []ReportChart, limit int) []promptChart {
+	out := make([]promptChart, 0, len(charts))
 	for _, chart := range charts {
-		item := chart
-		item.Data = limitSlice(item.Data, limit)
-		out = append(out, item)
+		data := limitSlice(chart.Data, limit)
+		if chart.Key == "traffic_timeline" {
+			data = sampleReportData(chart.Data, limit)
+		}
+		out = append(out, promptChart{
+			Key:   chart.Key,
+			Title: truncatePromptString(chart.Title, promptStringLimit),
+			Kind:  chart.Kind,
+			Unit:  chart.Unit,
+			Data:  compactChartData(data),
+		})
 	}
 	return out
 }
 
-func compactDrilldowns(drilldowns []Drilldown, limit int) []Drilldown {
-	out := make([]Drilldown, 0, len(drilldowns))
+func compactChartData(data []ReportDatum) []ReportDatum {
+	out := make([]ReportDatum, 0, len(data))
+	for _, datum := range data {
+		datum.Label = truncatePromptString(datum.Label, promptStringLimit)
+		datum.Meta = truncatePromptString(datum.Meta, promptMetaLimit)
+		out = append(out, datum)
+	}
+	return out
+}
+
+func compactDrilldowns(drilldowns []Drilldown, limit int) []promptDrilldown {
+	out := make([]promptDrilldown, 0, len(drilldowns))
 	for _, drilldown := range drilldowns {
-		item := drilldown
-		item.Items = append([]DrilldownItem(nil), limitSlice(item.Items, limit)...)
-		for index := range item.Items {
-			if len(item.Items[index].Details) > 6 {
-				item.Items[index].Details = nil
-			}
+		out = append(out, promptDrilldown{
+			Key:   drilldown.Key,
+			Title: truncatePromptString(drilldown.Title, promptStringLimit),
+			Items: compactDrilldownItems(drilldown.Items, limit),
+		})
+	}
+	return out
+}
+
+func compactDrilldownItems(items []DrilldownItem, limit int) []promptDrilldownItem {
+	out := make([]promptDrilldownItem, 0, minInt(len(items), limit))
+	for _, item := range limitSlice(items, limit) {
+		out = append(out, promptDrilldownItem{
+			Kind:             item.Kind,
+			Label:            truncatePromptString(item.Label, promptStringLimit),
+			Meta:             truncatePromptString(item.Meta, promptMetaLimit),
+			IP:               item.IP,
+			SiteID:           item.SiteID,
+			Env:              item.Env,
+			Method:           item.Method,
+			Path:             truncatePromptString(item.Path, promptStringLimit),
+			Query:            truncatePromptString(item.Query, promptStringLimit),
+			Category:         item.Category,
+			Severity:         item.Severity,
+			ActorType:        item.ActorType,
+			ActorValue:       truncatePromptString(item.ActorValue, promptStringLimit),
+			Status:           item.Status,
+			Score:            item.Score,
+			RiskScore:        item.RiskScore,
+			Requests:         item.Requests,
+			Events:           item.Events,
+			TotalIPHits:      item.TotalIPHits,
+			Status4xx:        item.Status4xx,
+			Status5xx:        item.Status5xx,
+			BytesSent:        item.BytesSent,
+			AvgRequestTimeMS: item.AvgRequestTimeMS,
+			P95RequestTimeMS: item.P95RequestTimeMS,
+			FirstSeen:        item.FirstSeen,
+			LastSeen:         item.LastSeen,
+			Timestamp:        item.Timestamp,
+			VerifiedSource:   item.VerifiedSource,
+			KnownActor:       truncatePromptString(item.KnownActor, promptStringLimit),
+			ReverseDNS:       truncatePromptString(item.ReverseDNS, promptStringLimit),
+		})
+	}
+	return out
+}
+
+func compactAlerts(items []alerts.Alert, limit int) []promptAlert {
+	out := make([]promptAlert, 0, minInt(len(items), limit))
+	for _, item := range limitSlice(items, limit) {
+		out = append(out, promptAlert{
+			ID:          truncatePromptString(item.ID, 16),
+			RuleKey:     item.RuleKey,
+			Title:       truncatePromptString(item.Title, promptStringLimit),
+			Severity:    item.Severity,
+			Status:      item.Status,
+			SiteID:      item.SiteID,
+			Env:         item.Env,
+			ActorType:   item.ActorType,
+			ActorValue:  truncatePromptString(item.ActorValue, promptStringLimit),
+			Score:       item.Score,
+			Summary:     truncatePromptString(item.Summary, promptMetaLimit),
+			FirstSeenAt: item.FirstSeenAt,
+			LastSeenAt:  item.LastSeenAt,
+		})
+	}
+	return out
+}
+
+func sampleReportData(data []ReportDatum, limit int) []ReportDatum {
+	if limit <= 0 || len(data) <= limit {
+		return data
+	}
+	out := make([]ReportDatum, 0, limit)
+	last := len(data) - 1
+	for index := 0; index < limit; index++ {
+		sourceIndex := 0
+		if limit > 1 {
+			sourceIndex = index * last / (limit - 1)
 		}
-		out = append(out, item)
+		out = append(out, data[sourceIndex])
 	}
 	return out
 }
@@ -603,6 +775,18 @@ func blankDefault(value string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func truncatePromptString(value string, limit int) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if limit <= 0 || len([]rune(value)) <= limit {
+		return value
+	}
+	runes := []rune(value)
+	if limit <= 3 {
+		return string(runes[:limit])
+	}
+	return strings.TrimSpace(string(runes[:limit-3])) + "..."
 }
 
 func stringFromInput(input map[string]any, key string) string {

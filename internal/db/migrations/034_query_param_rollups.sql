@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS rollup_query_param_1h (
   family text NOT NULL,
   param text NOT NULL,
   param_value text NOT NULL,
+  param_value_hash text NOT NULL,
   requests bigint NOT NULL DEFAULT 0,
   status_4xx bigint NOT NULL DEFAULT 0,
   status_5xx bigint NOT NULL DEFAULT 0,
@@ -18,7 +19,7 @@ CREATE TABLE IF NOT EXISTS rollup_query_param_1h (
   last_seen_at timestamptz NOT NULL,
   example_path text NOT NULL DEFAULT '',
   example_query text NOT NULL DEFAULT '',
-  PRIMARY KEY (bucket_ts, site_id, env, family, param, param_value)
+  PRIMARY KEY (bucket_ts, site_id, env, family, param, param_value_hash)
 );
 
 CREATE INDEX IF NOT EXISTS rollup_query_param_1h_site_bucket_requests_idx

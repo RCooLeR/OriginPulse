@@ -211,6 +211,7 @@ WITH query_pairs AS (
          q.query,
          lower(ltrim(split_part(pair.value, '=', 1), '?')) AS param,
          CASE WHEN strpos(pair.value, '=') > 0 THEN substr(pair.value, strpos(pair.value, '=') + 1) ELSE '' END AS param_value,
+         md5(CASE WHEN strpos(pair.value, '=') > 0 THEN substr(pair.value, strpos(pair.value, '=') + 1) ELSE '' END) AS param_value_hash,
          e.ts
   FROM access_events e
   JOIN LATERAL (
@@ -236,7 +237,8 @@ grouped AS (
          env,
          family,
          param,
-         param_value,
+         param_value_hash,
+         left(coalesce((array_agg(param_value ORDER BY ts DESC))[1], ''), 512) AS param_value,
          count(*) AS requests,
          count(*) FILTER (WHERE status >= 400 AND status < 500) AS status_4xx,
          count(*) FILTER (WHERE status >= 500 AND status < 600) AS status_5xx,
@@ -254,16 +256,17 @@ grouped AS (
   GROUP BY 1, 2, 3, 4, 5, 6
 )
 INSERT INTO rollup_query_param_1h (
-  bucket_ts, site_id, env, family, param, param_value, requests, status_4xx, status_5xx, slow_requests,
+  bucket_ts, site_id, env, family, param, param_value, param_value_hash, requests, status_4xx, status_5xx, slow_requests,
   unique_ips, unique_user_agents, unique_paths, request_time_count, request_time_sum_ms, first_seen_at, last_seen_at,
   example_path, example_query
 )
-SELECT bucket_ts, site_id, env, family, param, param_value, requests, status_4xx, status_5xx, slow_requests,
+SELECT bucket_ts, site_id, env, family, param, param_value, param_value_hash, requests, status_4xx, status_5xx, slow_requests,
        unique_ips, unique_user_agents, unique_paths, request_time_count, request_time_sum_ms, first_seen_at, last_seen_at,
        example_path, example_query
 FROM grouped
-ON CONFLICT (bucket_ts, site_id, env, family, param, param_value) DO UPDATE
+ON CONFLICT (bucket_ts, site_id, env, family, param, param_value_hash) DO UPDATE
 SET requests = EXCLUDED.requests,
+    param_value = EXCLUDED.param_value,
     status_4xx = EXCLUDED.status_4xx,
     status_5xx = EXCLUDED.status_5xx,
     slow_requests = EXCLUDED.slow_requests,

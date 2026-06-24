@@ -631,7 +631,7 @@ SELECT site_id,
        family,
        param,
        count(*)::bigint AS requests,
-       count(DISTINCT param_value)::bigint AS distinct_values,
+       count(DISTINCT md5(param_value))::bigint AS distinct_values,
        count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint AS status_4xx,
        count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint AS status_5xx,
        count(*) FILTER (WHERE request_time_ms >= 1000)::bigint AS slow_requests,
@@ -643,7 +643,7 @@ SELECT site_id,
        max(ts) AS last_seen,
        coalesce((array_agg(path ORDER BY ts DESC))[1], '') AS example_path,
        coalesce((array_agg(query ORDER BY ts DESC))[1], '') AS example_query,
-       coalesce((array_agg(param_value ORDER BY ts DESC))[1], '') AS example_value
+       left(coalesce((array_agg(param_value ORDER BY ts DESC))[1], ''), 512) AS example_value
 FROM classified
 GROUP BY site_id, env, family, param
 ORDER BY status_5xx DESC, slow_requests DESC, requests DESC, site_id, env, family, param
@@ -724,7 +724,8 @@ WITH rollup_rows AS (
          env,
          family,
          param,
-         param_value,
+         param_value_hash,
+         left(coalesce((array_agg(param_value ORDER BY last_seen_at DESC))[1], ''), 512) AS param_value,
          sum(requests)::bigint AS requests,
          sum(status_4xx)::bigint AS status_4xx,
          sum(status_5xx)::bigint AS status_5xx,
@@ -742,7 +743,7 @@ WITH rollup_rows AS (
   WHERE bucket_ts >= $5
     AND bucket_ts < $6
     AND ($3 = '' OR site_id = $3)
-  GROUP BY site_id, env, family, param, param_value
+  GROUP BY site_id, env, family, param, param_value_hash
 ),
 edge_pairs AS (
   SELECT e.ts,
@@ -756,7 +757,8 @@ edge_pairs AS (
          coalesce(p.path, '') AS path,
          q.query,
          lower(ltrim(split_part(pair.value, '=', 1), '?')) AS param,
-         CASE WHEN strpos(pair.value, '=') > 0 THEN substr(pair.value, strpos(pair.value, '=') + 1) ELSE '' END AS param_value
+         CASE WHEN strpos(pair.value, '=') > 0 THEN substr(pair.value, strpos(pair.value, '=') + 1) ELSE '' END AS param_value,
+         md5(CASE WHEN strpos(pair.value, '=') > 0 THEN substr(pair.value, strpos(pair.value, '=') + 1) ELSE '' END) AS param_value_hash
   FROM access_events e
   JOIN LATERAL (
     SELECT query
@@ -789,7 +791,8 @@ edge_rows AS (
          env,
          family,
          param,
-         param_value,
+         param_value_hash,
+         left(coalesce((array_agg(param_value ORDER BY ts DESC))[1], ''), 512) AS param_value,
          count(*)::bigint AS requests,
          count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint AS status_4xx,
          count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint AS status_5xx,
@@ -804,7 +807,7 @@ edge_rows AS (
          coalesce((array_agg(path ORDER BY ts DESC))[1], '') AS example_path,
          coalesce((array_agg(query ORDER BY ts DESC))[1], '') AS example_query
   FROM edge_classified
-  GROUP BY site_id, env, family, param, param_value
+  GROUP BY site_id, env, family, param, param_value_hash
 ),
 combined AS (
   SELECT * FROM rollup_rows
@@ -816,6 +819,7 @@ grouped AS (
          env,
          family,
          param,
+         param_value_hash,
          param_value,
          sum(requests)::bigint AS requests,
          sum(status_4xx)::bigint AS status_4xx,
@@ -831,14 +835,14 @@ grouped AS (
          coalesce((array_agg(example_path ORDER BY last_seen DESC))[1], '') AS example_path,
          coalesce((array_agg(example_query ORDER BY last_seen DESC))[1], '') AS example_query
   FROM combined
-  GROUP BY site_id, env, family, param, param_value
+  GROUP BY site_id, env, family, param, param_value_hash, param_value
 )
 SELECT site_id,
        env,
        family,
        param,
        sum(requests)::bigint AS requests,
-       count(DISTINCT param_value)::bigint AS distinct_values,
+       count(DISTINCT param_value_hash)::bigint AS distinct_values,
        sum(status_4xx)::bigint AS status_4xx,
        sum(status_5xx)::bigint AS status_5xx,
        sum(slow_requests)::bigint AS slow_requests,
@@ -850,7 +854,7 @@ SELECT site_id,
        max(last_seen) AS last_seen,
        coalesce((array_agg(example_path ORDER BY last_seen DESC))[1], '') AS example_path,
        coalesce((array_agg(example_query ORDER BY last_seen DESC))[1], '') AS example_query,
-       coalesce((array_agg(param_value ORDER BY last_seen DESC))[1], '') AS example_value
+       left(coalesce((array_agg(param_value ORDER BY last_seen DESC))[1], ''), 512) AS example_value
 FROM grouped
 GROUP BY site_id, env, family, param
 ORDER BY sum(status_5xx) DESC, sum(slow_requests) DESC, sum(requests) DESC, site_id, env, family, param
