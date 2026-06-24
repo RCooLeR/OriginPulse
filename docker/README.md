@@ -56,10 +56,12 @@ $env:DATABASE_URL='postgres://originpulse:originpulse_dev_password@127.0.0.1:554
 
 ## Persistence
 
-- Postgres data lives in the `docker_pgdata` Docker volume.
+- Postgres 18 data lives in the `originpulse-postgres` Docker volume, mounted at `/var/lib/postgresql`.
 - App runtime files live in the `docker_originpulse_data` Docker volume at `/app/data`.
 - `config.yml` is mounted read-only from the repository root.
 
 The volume names are explicit so existing local Docker data is reused across Compose project-name changes.
+
+Postgres 18 uses a different official image data layout than Postgres 16. The old PG16 `docker_pgdata` volume is not mounted by this stack anymore, so it is preserved for manual backup or dump/restore instead of being mutated in place. To migrate existing local data, export from the old PG16 stack before switching volumes, then restore into the new `originpulse-postgres` volume.
 
 Do not expose Postgres publicly. Back up both Docker volumes for real long-term runs.

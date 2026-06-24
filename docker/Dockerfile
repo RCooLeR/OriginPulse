@@ -17,6 +17,7 @@ WORKDIR /app
 
 COPY --from=build --chown=nonroot:nonroot /out/originpulse /usr/local/bin/originpulse
 COPY --from=build --chown=nonroot:nonroot /out/data /app/data
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --chown=nonroot:nonroot config.example.yml /app/config.example.yml
 COPY --chown=nonroot:nonroot assets /app/assets
 
