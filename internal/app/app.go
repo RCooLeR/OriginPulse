@@ -248,13 +248,17 @@ func (r *Runtime) startStartupIntelBackfill(ctx context.Context) {
 		}
 		providers, providerErr := r.ipIntel.RefreshOfficialProviderRanges(ctx)
 		providerMatches, err := r.ipIntel.BackfillProviderMatches(ctx, r.cfg.IPIntel.StartupBackfillRange, r.cfg.IPIntel.StartupBackfillLimit)
-		if err != nil || (providerErr != nil && providers.Providers == 0) {
-			if err == nil {
-				err = providerErr
-			}
+		if err != nil {
 			r.jobs.Finish(job.ID, jobs.StatusFailed, "startup IP intel backfill failed", err)
 			log.Error().Err(err).Msg("startup IP intel backfill failed")
 			return
+		}
+		if providerErr != nil {
+			log.Warn().
+				Err(providerErr).
+				Int("provider_ranges", providers.Ranges).
+				Int("provider_failed", providers.Failed).
+				Msg("startup provider range refresh completed with errors")
 		}
 		r.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, "startup intel backfill completed", nil, map[string]any{
 			"user_agents_reclassified": uaUpdated,

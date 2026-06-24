@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog/log"
 
 	"originpulse/internal/accessanalysis"
 	"originpulse/internal/alerts"
@@ -745,12 +746,16 @@ func (api API) refreshIPIntel(w http.ResponseWriter, r *http.Request) {
 	})
 	result.ProviderRanges = providers.Ranges
 	result.ProviderFailed = providers.Failed
-	if err != nil || (providerErr != nil && providers.Providers == 0) {
-		if err == nil {
-			err = providerErr
-		}
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "ip_intel_refresh_failed", err.Error())
 		return
+	}
+	if providerErr != nil {
+		log.Warn().
+			Err(providerErr).
+			Int("provider_ranges", providers.Ranges).
+			Int("provider_failed", providers.Failed).
+			Msg("manual provider range refresh completed with errors")
 	}
 	writeJSON(w, http.StatusOK, result)
 }

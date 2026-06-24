@@ -185,12 +185,16 @@ func (s *Scheduler) refreshIPIntel(ctx context.Context) {
 	result, err := s.ipIntel.RefreshTop(ctx, ipintel.Options{Range: refreshRange, Limit: limit})
 	result.ProviderRanges = providers.Ranges
 	result.ProviderFailed = providers.Failed
-	if err != nil || (providerErr != nil && providers.Providers == 0) {
-		if err == nil && providers.Providers == 0 {
-			err = providerErr
-		}
+	if err != nil {
 		s.jobs.Finish(job.ID, jobs.StatusFailed, "IP intelligence refresh failed", err)
 		return
+	}
+	if providerErr != nil {
+		log.Warn().
+			Err(providerErr).
+			Int("provider_ranges", providers.Ranges).
+			Int("provider_failed", providers.Failed).
+			Msg("scheduled provider range refresh completed with errors")
 	}
 	s.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, "IP intelligence refresh completed", nil, map[string]any{
 		"refreshed":          result.Refreshed,
