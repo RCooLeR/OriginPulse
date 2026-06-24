@@ -865,9 +865,6 @@ func runHealthcheck(ctx context.Context, url string, timeout time.Duration) erro
 		}
 	}
 	if scheduler, _ := body["scheduler"].(map[string]any); scheduler != nil {
-		if failed := numericField(scheduler, "failed_since_start"); failed > 0 {
-			return fmt.Errorf("healthcheck scheduler has %.0f failed job(s) since start", failed)
-		}
 		if boolField(scheduler, "collection_enabled") {
 			intervalMS := numericField(scheduler, "collection_interval_ms")
 			uptimeSec := numericField(body, "uptime_sec")

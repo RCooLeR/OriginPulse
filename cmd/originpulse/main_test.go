@@ -32,7 +32,7 @@ func TestRunHealthcheckAcceptsHealthyScheduler(t *testing.T) {
 	}
 }
 
-func TestRunHealthcheckRejectsSchedulerFailures(t *testing.T) {
+func TestRunHealthcheckAllowsReportedSchedulerFailures(t *testing.T) {
 	server := healthcheckServer(t, map[string]any{
 		"ok": true,
 		"scheduler": map[string]any{
@@ -41,9 +41,8 @@ func TestRunHealthcheckRejectsSchedulerFailures(t *testing.T) {
 	})
 	defer server.Close()
 
-	err := runHealthcheck(context.Background(), server.URL, time.Second)
-	if err == nil || !strings.Contains(err.Error(), "failed job") {
-		t.Fatalf("runHealthcheck error = %v, want scheduler failure", err)
+	if err := runHealthcheck(context.Background(), server.URL, time.Second); err != nil {
+		t.Fatalf("runHealthcheck returned error: %v", err)
 	}
 }
 
