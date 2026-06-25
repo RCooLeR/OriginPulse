@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -30,6 +31,12 @@ type Scheduler struct {
 	retention     *retention.Service
 	notifications *notifications.Service
 	reports       *reports.Service
+	mu            sync.Mutex
+	collecting    bool
+	postRunning   bool
+	postQueued    bool
+	maintenance   bool
+	reporting     bool
 }
 
 func New(cfg config.Config, store *jobs.Store, collector *pantheon.Collector, pipelineService *pipeline.Service, alerts *alerts.Service, ipIntel *ipintel.Service, archiveService *archive.Service, retentionService *retention.Service, notificationService *notifications.Service, reportService *reports.Service) *Scheduler {
@@ -66,18 +73,109 @@ func (s *Scheduler) loop(ctx context.Context) {
 			log.Info().Msg("background scheduler stopped")
 			return
 		case <-ticker.C:
-			if err := s.collector.CollectAll(ctx); err != nil {
-				log.Error().Err(err).Msg("scheduled collection completed with errors")
-			}
-			s.runPipeline(ctx)
-			s.evaluateAlerts(ctx)
+			s.scheduleCollection(ctx)
 		case <-retentionTicker.C:
-			s.runArchive(ctx)
-			s.runRetention(ctx)
+			s.scheduleMaintenance(ctx)
 		case <-reportTicker.C:
-			s.runReports(ctx)
+			s.scheduleReports(ctx)
 		}
 	}
+}
+
+func (s *Scheduler) scheduleCollection(ctx context.Context) {
+	if s.collector == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.collecting {
+		s.mu.Unlock()
+		log.Warn().Msg("scheduled collection skipped because previous collection is still running")
+		return
+	}
+	s.collecting = true
+	s.mu.Unlock()
+
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			s.collecting = false
+			s.mu.Unlock()
+		}()
+		if err := s.collector.CollectAll(ctx); err != nil {
+			log.Error().Err(err).Msg("scheduled collection completed with errors")
+		}
+		s.schedulePostCollection(ctx)
+	}()
+}
+
+func (s *Scheduler) schedulePostCollection(ctx context.Context) {
+	s.mu.Lock()
+	if s.postRunning {
+		s.postQueued = true
+		s.mu.Unlock()
+		log.Info().Msg("scheduled post-collection work queued because previous run is still active")
+		return
+	}
+	s.postRunning = true
+	s.mu.Unlock()
+
+	go func() {
+		for {
+			s.runPipeline(ctx)
+			s.evaluateAlerts(ctx)
+
+			s.mu.Lock()
+			if !s.postQueued {
+				s.postRunning = false
+				s.mu.Unlock()
+				return
+			}
+			s.postQueued = false
+			s.mu.Unlock()
+			log.Info().Msg("running queued post-collection work")
+		}
+	}()
+}
+
+func (s *Scheduler) scheduleMaintenance(ctx context.Context) {
+	s.mu.Lock()
+	if s.maintenance {
+		s.mu.Unlock()
+		log.Warn().Msg("scheduled maintenance skipped because previous maintenance is still running")
+		return
+	}
+	s.maintenance = true
+	s.mu.Unlock()
+
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			s.maintenance = false
+			s.mu.Unlock()
+		}()
+		s.runArchive(ctx)
+		s.runRetention(ctx)
+	}()
+}
+
+func (s *Scheduler) scheduleReports(ctx context.Context) {
+	s.mu.Lock()
+	if s.reporting {
+		s.mu.Unlock()
+		log.Warn().Msg("scheduled report generation skipped because previous report run is still active")
+		return
+	}
+	s.reporting = true
+	s.mu.Unlock()
+
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			s.reporting = false
+			s.mu.Unlock()
+		}()
+		s.runReports(ctx)
+	}()
 }
 
 func (s *Scheduler) ipIntelLoop(ctx context.Context) {
