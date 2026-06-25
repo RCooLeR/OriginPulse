@@ -575,6 +575,18 @@ func (s *Service) bulkStoreEvents(ctx context.Context, pool *pgxpool.Pool, segme
 	}
 	defer conn.Release()
 
+	dimTx, err := conn.Begin(ctx)
+	if err != nil {
+		return 0, 0, 0, 0, 0, 0, err
+	}
+	if err := s.bulkResolveDimensions(ctx, dimTx, events); err != nil {
+		_ = dimTx.Rollback(ctx)
+		return 0, 0, 0, 0, 0, 0, err
+	}
+	if err := dimTx.Commit(ctx); err != nil {
+		return 0, 0, 0, 0, 0, 0, err
+	}
+
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return 0, 0, 0, 0, 0, 0, err
@@ -599,9 +611,6 @@ func (s *Service) bulkStoreEvents(ctx context.Context, pool *pgxpool.Pool, segme
 		deleted = int(tag.RowsAffected())
 	}
 
-	if err := s.bulkResolveDimensions(ctx, tx, events); err != nil {
-		return 0, 0, deleted, 0, 0, 0, err
-	}
 	insertedIDs, err := s.bulkInsertAccessEvents(ctx, tx, segmentID, events, temporaryImportID, importedUntil)
 	if err != nil {
 		return 0, 0, deleted, 0, 0, 0, err
@@ -726,6 +735,9 @@ func (s *Service) bulkResolveDimensions(ctx context.Context, tx pgx.Tx, events [
 		trackDimension(queryStats, hex.EncodeToString(event.QueryHash), event.QueryHash, event.Event.TS, event.Event.Query)
 		trackDimension(uaStats, hex.EncodeToString(event.UserAgentHash), event.UserAgentHash, event.Event.TS, event.Event.UserAgent)
 	}
+	if err := lockSharedDimensions(ctx, tx); err != nil {
+		return err
+	}
 	ipIDs, err := bulkUpsertIPDimensions(ctx, tx, ipStats)
 	if err != nil {
 		return err
@@ -749,6 +761,11 @@ func (s *Service) bulkResolveDimensions(ctx context.Context, tx pgx.Tx, events [
 		events[i].Dimensions.UserAgentID = uaIDs[hex.EncodeToString(events[i].UserAgentHash)]
 	}
 	return nil
+}
+
+func lockSharedDimensions(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, db.SharedDimensionLockKey)
+	return err
 }
 
 func trackDimension(stats map[string]dimensionStat, key string, hash []byte, seenAt time.Time, values ...string) {
@@ -799,20 +816,26 @@ func bulkUpsertIPDimensions(ctx context.Context, tx pgx.Tx, stats map[string]dim
 		return ids, err
 	}
 	if _, err := tx.Exec(ctx, `
+WITH source AS (
+  SELECT ip::inet AS ip,
+         min(first_seen_at) AS first_seen_at,
+         max(last_seen_at) AS last_seen_at,
+         sum(request_count)::bigint AS request_count
+  FROM tmp_dim_ips
+  GROUP BY ip
+  ORDER BY ip::inet
+)
 INSERT INTO dim_ips (ip, first_seen_at, last_seen_at, request_count)
-SELECT ip::inet, min(first_seen_at), max(last_seen_at), sum(request_count)::bigint
-FROM tmp_dim_ips
-GROUP BY ip
-ON CONFLICT (ip) DO UPDATE SET
-  first_seen_at = LEAST(dim_ips.first_seen_at, EXCLUDED.first_seen_at),
-  last_seen_at = GREATEST(dim_ips.last_seen_at, EXCLUDED.last_seen_at),
-  request_count = dim_ips.request_count + EXCLUDED.request_count`); err != nil {
+SELECT ip, first_seen_at, last_seen_at, request_count
+FROM source
+ON CONFLICT (ip) DO NOTHING`); err != nil {
 		return ids, err
 	}
 	resultRows, err := tx.Query(ctx, `
 SELECT t.ip, d.id
 FROM (SELECT DISTINCT ip FROM tmp_dim_ips) t
-JOIN dim_ips d ON d.ip = t.ip::inet`)
+JOIN dim_ips d ON d.ip = t.ip::inet
+ORDER BY t.ip::inet`)
 	if err != nil {
 		return ids, err
 	}
@@ -850,20 +873,27 @@ func bulkUpsertHashDimensions(ctx context.Context, tx pgx.Tx, tempTable string, 
 		return ids, err
 	}
 	if _, err := tx.Exec(ctx, fmt.Sprintf(`
+WITH source AS (
+  SELECT min(value) AS value,
+         hash,
+         min(first_seen_at) AS first_seen_at,
+         max(last_seen_at) AS last_seen_at,
+         sum(request_count)::bigint AS request_count
+  FROM %s
+  GROUP BY hash
+  ORDER BY hash
+)
 INSERT INTO %s (%s, %s, first_seen_at, last_seen_at, request_count)
-SELECT value, hash, min(first_seen_at), max(last_seen_at), sum(request_count)::bigint
-FROM %s
-GROUP BY value, hash
-ON CONFLICT (%s) DO UPDATE SET
-  first_seen_at = LEAST(%s.first_seen_at, EXCLUDED.first_seen_at),
-  last_seen_at = GREATEST(%s.last_seen_at, EXCLUDED.last_seen_at),
-  request_count = %s.request_count + EXCLUDED.request_count`, table, valueColumn, hashColumn, tempTable, hashColumn, table, table, table)); err != nil {
+SELECT value, hash, first_seen_at, last_seen_at, request_count
+FROM source
+ON CONFLICT (%s) DO NOTHING`, tempTable, table, valueColumn, hashColumn, hashColumn)); err != nil {
 		return ids, err
 	}
 	resultRows, err := tx.Query(ctx, fmt.Sprintf(`
 SELECT t.hash, d.id
 FROM (SELECT DISTINCT hash FROM %s) t
-JOIN %s d ON d.%s = t.hash`, tempTable, table, hashColumn))
+JOIN %s d ON d.%s = t.hash
+ORDER BY t.hash`, tempTable, table, hashColumn))
 	if err != nil {
 		return ids, err
 	}
@@ -939,38 +969,44 @@ func bulkUpsertUserAgentDimensions(ctx context.Context, tx pgx.Tx, stats map[str
 		return ids, err
 	}
 	if _, err := tx.Exec(ctx, `
+WITH source AS (
+  SELECT min(value) AS value,
+         hash,
+         max(family) AS family,
+         max(browser_family) AS browser_family,
+         max(browser_version) AS browser_version,
+         max(os_family) AS os_family,
+         max(os_version) AS os_version,
+         max(device_family) AS device_family,
+         max(actor_type) AS actor_type,
+         max(known_actor) AS known_actor,
+         bool_or(is_bot) AS is_bot,
+         bool_or(is_tool) AS is_tool,
+         max(risk_score) AS risk_score,
+         min(first_seen_at) AS first_seen_at,
+         max(last_seen_at) AS last_seen_at,
+         sum(request_count)::bigint AS request_count
+  FROM tmp_dim_user_agents
+  GROUP BY hash
+  ORDER BY hash
+)
 INSERT INTO dim_user_agents (
   user_agent, user_agent_hash, family, browser_family, browser_version, os_family, os_version, device_family,
   actor_type, known_actor, is_bot, is_tool, risk_score, first_seen_at, last_seen_at, request_count
 )
 SELECT value, hash,
-       max(family), max(browser_family), max(browser_version), max(os_family), max(os_version), max(device_family),
-       max(actor_type), max(known_actor), bool_or(is_bot), bool_or(is_tool), max(risk_score),
-       min(first_seen_at), max(last_seen_at), sum(request_count)::bigint
-FROM tmp_dim_user_agents
-GROUP BY value, hash
-ON CONFLICT (user_agent_hash) DO UPDATE SET
-  user_agent = EXCLUDED.user_agent,
-  family = nullif(EXCLUDED.family, ''),
-  browser_family = nullif(EXCLUDED.browser_family, ''),
-  browser_version = nullif(EXCLUDED.browser_version, ''),
-  os_family = nullif(EXCLUDED.os_family, ''),
-  os_version = nullif(EXCLUDED.os_version, ''),
-  device_family = nullif(EXCLUDED.device_family, ''),
-  actor_type = nullif(EXCLUDED.actor_type, ''),
-  known_actor = nullif(EXCLUDED.known_actor, ''),
-  is_bot = EXCLUDED.is_bot,
-  is_tool = EXCLUDED.is_tool,
-  risk_score = EXCLUDED.risk_score,
-  first_seen_at = LEAST(dim_user_agents.first_seen_at, EXCLUDED.first_seen_at),
-  last_seen_at = GREATEST(dim_user_agents.last_seen_at, EXCLUDED.last_seen_at),
-  request_count = dim_user_agents.request_count + EXCLUDED.request_count`); err != nil {
+       nullif(family, ''), nullif(browser_family, ''), nullif(browser_version, ''), nullif(os_family, ''), nullif(os_version, ''), nullif(device_family, ''),
+       nullif(actor_type, ''), nullif(known_actor, ''), is_bot, is_tool, risk_score,
+       first_seen_at, last_seen_at, request_count
+FROM source
+ON CONFLICT (user_agent_hash) DO NOTHING`); err != nil {
 		return ids, err
 	}
 	resultRows, err := tx.Query(ctx, `
 SELECT t.hash, d.id
 FROM (SELECT DISTINCT hash FROM tmp_dim_user_agents) t
-JOIN dim_user_agents d ON d.user_agent_hash = t.hash`)
+JOIN dim_user_agents d ON d.user_agent_hash = t.hash
+ORDER BY t.hash`)
 	if err != nil {
 		return ids, err
 	}
@@ -1355,51 +1391,48 @@ func (s *Service) upsertDimensions(ctx context.Context, pool *pgxpool.Pool, even
 		return ids, err
 	}
 	ids.PathID, err = upsertTextHashDimension(ctx, pool, `
+WITH inserted AS (
 INSERT INTO dim_paths (path, path_hash, first_seen_at, last_seen_at, request_count)
 VALUES ($1, $2, $3, $3, 1)
-ON CONFLICT (path_hash) DO UPDATE SET
-  first_seen_at = LEAST(dim_paths.first_seen_at, EXCLUDED.first_seen_at),
-  last_seen_at = GREATEST(dim_paths.last_seen_at, EXCLUDED.last_seen_at),
-  request_count = dim_paths.request_count + 1
-RETURNING id`, event.Path, pathHash, event.TS)
+ON CONFLICT (path_hash) DO NOTHING
+RETURNING id
+)
+SELECT id FROM inserted
+UNION ALL
+SELECT id FROM dim_paths WHERE path_hash = $2
+LIMIT 1`, event.Path, pathHash, event.TS)
 	if err != nil {
 		return ids, err
 	}
 	ids.QueryID, err = upsertTextHashDimension(ctx, pool, `
+WITH inserted AS (
 INSERT INTO dim_queries (query, query_hash, first_seen_at, last_seen_at, request_count)
 VALUES ($1, $2, $3, $3, 1)
-ON CONFLICT (query_hash) DO UPDATE SET
-  first_seen_at = LEAST(dim_queries.first_seen_at, EXCLUDED.first_seen_at),
-  last_seen_at = GREATEST(dim_queries.last_seen_at, EXCLUDED.last_seen_at),
-  request_count = dim_queries.request_count + 1
-RETURNING id`, event.Query, queryHash, event.TS)
+ON CONFLICT (query_hash) DO NOTHING
+RETURNING id
+)
+SELECT id FROM inserted
+UNION ALL
+SELECT id FROM dim_queries WHERE query_hash = $2
+LIMIT 1`, event.Query, queryHash, event.TS)
 	if err != nil {
 		return ids, err
 	}
 	analysis := useragent.Analyze(event.UserAgent, 1)
 	ids.UserAgentID, err = upsertTextHashDimension(ctx, pool, `
+WITH inserted AS (
 INSERT INTO dim_user_agents (
   user_agent, user_agent_hash, family, browser_family, browser_version, os_family, os_version, device_family,
   actor_type, known_actor, is_bot, is_tool, risk_score, first_seen_at, last_seen_at, request_count
 )
 VALUES ($1, $2, nullif($4, ''), nullif($5, ''), nullif($6, ''), nullif($7, ''), nullif($8, ''), nullif($9, ''), nullif($10, ''), nullif($11, ''), $12, $13, $14, $3, $3, 1)
-ON CONFLICT (user_agent_hash) DO UPDATE SET
-  user_agent = EXCLUDED.user_agent,
-  family = EXCLUDED.family,
-  browser_family = EXCLUDED.browser_family,
-  browser_version = EXCLUDED.browser_version,
-  os_family = EXCLUDED.os_family,
-  os_version = EXCLUDED.os_version,
-  device_family = EXCLUDED.device_family,
-  actor_type = EXCLUDED.actor_type,
-  known_actor = EXCLUDED.known_actor,
-  is_bot = EXCLUDED.is_bot,
-  is_tool = EXCLUDED.is_tool,
-  risk_score = EXCLUDED.risk_score,
-  first_seen_at = LEAST(dim_user_agents.first_seen_at, EXCLUDED.first_seen_at),
-  last_seen_at = GREATEST(dim_user_agents.last_seen_at, EXCLUDED.last_seen_at),
-  request_count = dim_user_agents.request_count + 1
-RETURNING id`, event.UserAgent, uaHash, event.TS, analysis.Family, analysis.BrowserFamily, analysis.BrowserVersion, analysis.OSFamily, analysis.OSVersion, analysis.DeviceFamily, analysis.ActorType, analysis.KnownActor, analysis.IsBot, analysis.IsTool, analysis.RiskScore)
+ON CONFLICT (user_agent_hash) DO NOTHING
+RETURNING id
+)
+SELECT id FROM inserted
+UNION ALL
+SELECT id FROM dim_user_agents WHERE user_agent_hash = $2
+LIMIT 1`, event.UserAgent, uaHash, event.TS, analysis.Family, analysis.BrowserFamily, analysis.BrowserVersion, analysis.OSFamily, analysis.OSVersion, analysis.DeviceFamily, analysis.ActorType, analysis.KnownActor, analysis.IsBot, analysis.IsTool, analysis.RiskScore)
 	return ids, err
 }
 
@@ -1409,13 +1442,16 @@ func upsertIPDimension(ctx context.Context, pool *pgxpool.Pool, ip string, seenA
 	}
 	var id int64
 	err := pool.QueryRow(ctx, `
+WITH inserted AS (
 INSERT INTO dim_ips (ip, first_seen_at, last_seen_at, request_count)
 VALUES ($1::inet, $2, $2, 1)
-ON CONFLICT (ip) DO UPDATE SET
-  first_seen_at = LEAST(dim_ips.first_seen_at, EXCLUDED.first_seen_at),
-  last_seen_at = GREATEST(dim_ips.last_seen_at, EXCLUDED.last_seen_at),
-  request_count = dim_ips.request_count + 1
-RETURNING id`, ip, seenAt).Scan(&id)
+ON CONFLICT (ip) DO NOTHING
+RETURNING id
+)
+SELECT id FROM inserted
+UNION ALL
+SELECT id FROM dim_ips WHERE ip = $1::inet
+LIMIT 1`, ip, seenAt).Scan(&id)
 	return id, err
 }
 

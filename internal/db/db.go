@@ -21,6 +21,7 @@ var ErrUnavailable = errors.New("database is not configured")
 var ErrLockUnavailable = errors.New("maintenance lock is already held")
 
 const migrationLockKey int64 = 7720007
+const SharedDimensionLockKey int64 = 7720008
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS

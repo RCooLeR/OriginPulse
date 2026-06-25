@@ -354,61 +354,93 @@ JOIN backfill_event_batch b ON b.id = e.id`).Scan(
 		return Result{}, err
 	}
 
-	for _, statement := range []string{
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, db.SharedDimensionLockKey); err != nil {
+		return Result{}, err
+	}
+
+	dimensionStatements := []string{
 		`
+WITH source AS (
+  SELECT e.client_ip AS ip,
+         min(e.ts) AS first_seen_at,
+         max(e.ts) AS last_seen_at,
+         count(*)::bigint AS request_count
+  FROM access_events e
+  JOIN backfill_event_batch b ON b.id = e.id
+  WHERE e.client_ip IS NOT NULL
+    AND e.ip_id IS NULL
+  GROUP BY e.client_ip
+  ORDER BY e.client_ip
+)
 INSERT INTO dim_ips (ip, first_seen_at, last_seen_at, request_count)
-SELECT e.client_ip, min(e.ts), max(e.ts), count(*)
-FROM access_events e
-JOIN backfill_event_batch b ON b.id = e.id
-WHERE e.client_ip IS NOT NULL
-  AND e.ip_id IS NULL
-GROUP BY e.client_ip
-ON CONFLICT (ip) DO UPDATE SET
-  first_seen_at = LEAST(dim_ips.first_seen_at, EXCLUDED.first_seen_at),
-  last_seen_at = GREATEST(dim_ips.last_seen_at, EXCLUDED.last_seen_at),
-  request_count = dim_ips.request_count + EXCLUDED.request_count`,
+SELECT ip, first_seen_at, last_seen_at, request_count
+FROM source
+ON CONFLICT (ip) DO NOTHING`,
 		`
+WITH source AS (
+  SELECT min(e.path) AS path,
+         e.path_hash,
+         min(e.ts) AS first_seen_at,
+         max(e.ts) AS last_seen_at,
+         count(*)::bigint AS request_count
+  FROM access_events e
+  JOIN backfill_event_batch b ON b.id = e.id
+  WHERE e.path IS NOT NULL
+    AND e.path_hash IS NOT NULL
+    AND e.path_id IS NULL
+  GROUP BY e.path_hash
+  ORDER BY e.path_hash
+)
 INSERT INTO dim_paths (path, path_hash, first_seen_at, last_seen_at, request_count)
-SELECT e.path, e.path_hash, min(e.ts), max(e.ts), count(*)
-FROM access_events e
-JOIN backfill_event_batch b ON b.id = e.id
-WHERE e.path IS NOT NULL
-  AND e.path_hash IS NOT NULL
-  AND e.path_id IS NULL
-GROUP BY e.path, e.path_hash
-ON CONFLICT (path_hash) DO UPDATE SET
-  path = EXCLUDED.path,
-  first_seen_at = LEAST(dim_paths.first_seen_at, EXCLUDED.first_seen_at),
-  last_seen_at = GREATEST(dim_paths.last_seen_at, EXCLUDED.last_seen_at),
-  request_count = dim_paths.request_count + EXCLUDED.request_count`,
+SELECT path, path_hash, first_seen_at, last_seen_at, request_count
+FROM source
+ON CONFLICT (path_hash) DO NOTHING`,
 		`
+WITH source AS (
+  SELECT min(e.query) AS query,
+         digest(e.query, 'sha256') AS query_hash,
+         min(e.ts) AS first_seen_at,
+         max(e.ts) AS last_seen_at,
+         count(*)::bigint AS request_count
+  FROM access_events e
+  JOIN backfill_event_batch b ON b.id = e.id
+  WHERE e.query IS NOT NULL
+    AND e.query <> ''
+    AND e.query_id IS NULL
+  GROUP BY digest(e.query, 'sha256')
+  ORDER BY digest(e.query, 'sha256')
+)
 INSERT INTO dim_queries (query, query_hash, first_seen_at, last_seen_at, request_count)
-SELECT e.query, digest(e.query, 'sha256'), min(e.ts), max(e.ts), count(*)
-FROM access_events e
-JOIN backfill_event_batch b ON b.id = e.id
-WHERE e.query IS NOT NULL
-  AND e.query <> ''
-  AND e.query_id IS NULL
-GROUP BY e.query
-ON CONFLICT (query_hash) DO UPDATE SET
-  query = EXCLUDED.query,
-  first_seen_at = LEAST(dim_queries.first_seen_at, EXCLUDED.first_seen_at),
-  last_seen_at = GREATEST(dim_queries.last_seen_at, EXCLUDED.last_seen_at),
-  request_count = dim_queries.request_count + EXCLUDED.request_count`,
+SELECT query, query_hash, first_seen_at, last_seen_at, request_count
+FROM source
+ON CONFLICT (query_hash) DO NOTHING`,
 		`
+WITH source AS (
+  SELECT min(e.user_agent) AS user_agent,
+         e.user_agent_hash,
+         min(e.ts) AS first_seen_at,
+         max(e.ts) AS last_seen_at,
+         count(*)::bigint AS request_count
+  FROM access_events e
+  JOIN backfill_event_batch b ON b.id = e.id
+  WHERE e.user_agent IS NOT NULL
+    AND e.user_agent_hash IS NOT NULL
+    AND e.user_agent_id IS NULL
+  GROUP BY e.user_agent_hash
+  ORDER BY e.user_agent_hash
+)
 INSERT INTO dim_user_agents (user_agent, user_agent_hash, first_seen_at, last_seen_at, request_count)
-SELECT e.user_agent, e.user_agent_hash, min(e.ts), max(e.ts), count(*)
-FROM access_events e
-JOIN backfill_event_batch b ON b.id = e.id
-WHERE e.user_agent IS NOT NULL
-  AND e.user_agent_hash IS NOT NULL
-  AND e.user_agent_id IS NULL
-GROUP BY e.user_agent, e.user_agent_hash
-ON CONFLICT (user_agent_hash) DO UPDATE SET
-  user_agent = EXCLUDED.user_agent,
-  first_seen_at = LEAST(dim_user_agents.first_seen_at, EXCLUDED.first_seen_at),
-  last_seen_at = GREATEST(dim_user_agents.last_seen_at, EXCLUDED.last_seen_at),
-  request_count = dim_user_agents.request_count + EXCLUDED.request_count`,
+SELECT user_agent, user_agent_hash, first_seen_at, last_seen_at, request_count
+FROM source
+ON CONFLICT (user_agent_hash) DO NOTHING`,
+	}
+	for _, statement := range dimensionStatements {
+		if _, err := tx.Exec(ctx, statement); err != nil {
+			return Result{}, err
+		}
+	}
+
+	for _, statement := range []string{
 		`
 UPDATE access_events e
 SET ip_id = d.id
