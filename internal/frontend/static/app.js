@@ -551,7 +551,7 @@ function renderNav() {
   qs("#primaryNav").innerHTML = routes.map((route) => `
     <a href="${route.path}" class="nav-item ${state.route === route.id ? "active" : ""}" data-route="${route.id}">
       <span class="nav-icon">${iconHTML(route.icon)}</span>
-      <span>${escapeHTML(route.title)}</span>
+      <span class="nav-label">${escapeHTML(route.title)}</span>
       ${route.badge && alertCount ? `<b class="nav-badge danger">${alertCount}</b>` : ""}
     </a>
   `).join("");
