@@ -119,6 +119,44 @@ func TestChannelsReportConfiguredTargets(t *testing.T) {
 	}
 }
 
+func TestChannelsReportMissingConfiguration(t *testing.T) {
+	cfg := config.Default()
+	cfg.Notifications.Email.Enabled = true
+	cfg.Notifications.Email.SMTPHost = ""
+	cfg.Notifications.Email.From = ""
+	cfg.Notifications.Email.To = nil
+	cfg.Notifications.Push.Enabled = true
+	cfg.Notifications.Push.WebhookURLs = nil
+	cfg.Notifications.Push.VAPIDPublicKey = ""
+	cfg.Notifications.Push.VAPIDPrivateKey = ""
+
+	service := NewService(cfg, nil)
+	channels := service.channels()
+
+	if channels[0].Configured {
+		t.Fatal("email channel should not be configured")
+	}
+	for _, want := range []string{"notifications.email.smtp_host", "notifications.email.from", "notifications.email.to"} {
+		if !containsString(channels[0].Missing, want) {
+			t.Fatalf("email missing config should include %q: %#v", want, channels[0].Missing)
+		}
+	}
+	if channels[1].Configured {
+		t.Fatal("push channel should not be configured")
+	}
+	if !containsString(channels[1].Missing, "ORIGINPULSE_PUSH_WEBHOOK_URLS") {
+		t.Fatalf("push missing config should include webhook env: %#v", channels[1].Missing)
+	}
+	if channels[2].Configured {
+		t.Fatal("web push channel should not be configured")
+	}
+	for _, want := range []string{"ORIGINPULSE_VAPID_PUBLIC_KEY", "ORIGINPULSE_VAPID_PRIVATE_KEY"} {
+		if !containsString(channels[2].Missing, want) {
+			t.Fatalf("web push missing config should include %q: %#v", want, channels[2].Missing)
+		}
+	}
+}
+
 func TestNotificationWarningsExplainMissingTargets(t *testing.T) {
 	warnings := notificationWarnings(true, []Channel{
 		{Name: "email", Enabled: true, Configured: false},

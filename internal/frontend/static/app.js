@@ -1368,10 +1368,7 @@ function renderSettings() {
       </article>
     </section>
     <section class="layout-2">
-      <article class="panel">
-        <div class="panel-head"><div><h2>Users</h2><p>Active application accounts.</p></div></div>
-        ${usersTable(state.data.users)}
-      </article>
+      ${usersPanel(state.data.users)}
       ${notificationsPanel()}
     </section>
   `;
@@ -1999,13 +1996,54 @@ function slowPathsTable(rows) {
   `;
 }
 
+function usersPanel(rows) {
+  return `
+    <article class="panel">
+      <div class="panel-head">
+        <div><h2>Users</h2><p>Application accounts and access state.</p></div>
+        <span class="pill">${formatNumber(rows.length)} users</span>
+      </div>
+      <div class="panel-body">
+        <div class="user-create-form" data-user-create>
+          <label>
+            <span>Email</span>
+            <input type="email" autocomplete="email" data-user-email placeholder="operator@example.com">
+          </label>
+          <label>
+            <span>Display name</span>
+            <input type="text" autocomplete="name" data-user-display-name placeholder="Operator name">
+          </label>
+          <label>
+            <span>Password</span>
+            <input type="password" autocomplete="new-password" data-user-password placeholder="Initial password">
+          </label>
+          <button class="button primary small" type="button" data-action="create-user">${iconHTML("fa-user-plus")}Create</button>
+        </div>
+      </div>
+      ${usersTable(rows)}
+    </article>
+  `;
+}
+
 function usersTable(rows) {
   if (!rows.length) return empty("No users returned.");
   return `
     <div class="table-wrap"><table>
-      <thead><tr><th>User</th><th>Access</th><th>Status</th><th>Last Login</th></tr></thead>
+      <thead><tr><th>User</th><th>Access</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead>
       <tbody>${rows.map((user) => `
-        <tr><td>${escapeHTML(user.email || "-")}<br><span class="subtle">${escapeHTML(user.display_name || "")}</span></td><td>Operator</td><td>${user.is_active === false ? "Inactive" : "Active"}</td><td>${shortTime(user.last_login_at)}</td></tr>
+        <tr>
+          <td>${escapeHTML(user.email || "-")}<br><span class="subtle">${escapeHTML(user.display_name || "")}</span></td>
+          <td>Operator</td>
+          <td><span class="status ${user.is_active === false ? "bad" : "good"}">${user.is_active === false ? "Inactive" : "Active"}</span></td>
+          <td>${shortTime(user.last_login_at)}</td>
+          <td>
+            <div class="row-actions">
+              <button class="icon-button" type="button" data-action="edit-user" data-user-id="${escapeAttr(user.id)}" title="Edit user">${iconHTML("fa-pen")}</button>
+              <button class="icon-button" type="button" data-action="reset-user-password" data-user-id="${escapeAttr(user.id)}" title="Reset password">${iconHTML("fa-key")}</button>
+              <button class="icon-button" type="button" data-action="toggle-user-active" data-user-id="${escapeAttr(user.id)}" data-next-active="${user.is_active === false ? "true" : "false"}" title="${user.is_active === false ? "Activate user" : "Deactivate user"}">${iconHTML(user.is_active === false ? "fa-user-check" : "fa-user-slash")}</button>
+            </div>
+          </td>
+        </tr>
       `).join("")}</tbody>
     </table></div>
   `;
@@ -2355,16 +2393,35 @@ function reportCatalogSummary(item) {
 
 function channelRow(channel) {
   const status = channel.enabled && channel.configured ? "good" : channel.enabled ? "warn" : "bad";
-  const targets = (channel.targets || []).join(", ") || "No targets";
+  const detail = channelDetail(channel);
   return `
     <div class="list-row">
       <div>
         <strong>${escapeHTML(formatChannel(channel.name))}</strong>
-        <span>${escapeHTML(targets)}</span>
+        <span title="${escapeAttr(detail.title)}">${escapeHTML(detail.text)}</span>
       </div>
       <span class="status ${status}">${channel.enabled ? (channel.configured ? "ready" : "needs config") : "off"}</span>
     </div>
   `;
+}
+
+function channelDetail(channel = {}) {
+  const targets = channel.targets || [];
+  const missing = channel.missing || [];
+  if (targets.length) {
+    return { text: targets.join(", "), title: targets.join(", ") };
+  }
+  if (!channel.enabled) {
+    return { text: "Disabled in config", title: "Enable this notification channel in config.yml." };
+  }
+  if (missing.length) {
+    const text = `Missing: ${missing.join(", ")}`;
+    return { text: text.length > 120 ? `${text.slice(0, 117)}...` : text, title: text };
+  }
+  if (channel.name === "web_push") {
+    return { text: "Browser subscriptions are counted separately", title: "Use Enable Browser Push to subscribe this browser after VAPID keys are configured." };
+  }
+  return { text: "Configured without explicit targets", title: "No target details returned by the API." };
 }
 
 function deliveryRow(item) {
@@ -4277,6 +4334,26 @@ async function handleAction(button) {
     closeModal();
     return;
   }
+  if (action === "create-user") {
+    return createUser(button);
+  }
+  if (action === "edit-user") {
+    openUserEditor(button.dataset.userId);
+    return;
+  }
+  if (action === "save-user") {
+    return saveUser(button);
+  }
+  if (action === "reset-user-password") {
+    openUserPasswordEditor(button.dataset.userId);
+    return;
+  }
+  if (action === "save-user-password") {
+    return saveUserPassword(button);
+  }
+  if (action === "toggle-user-active") {
+    return toggleUserActive(button);
+  }
   if (action === "page") {
     const key = button.dataset.pageKey;
     const page = Number(button.dataset.page || 1);
@@ -4400,6 +4477,129 @@ async function handleAction(button) {
     exportReport(state.drawer?.data);
     return;
   }
+}
+
+function findUser(userID) {
+  return (state.data.users || []).find((user) => user.id === userID);
+}
+
+function userPayloadFrom(root, { includePassword = false, includeActive = false } = {}) {
+  const payload = {
+    email: root.querySelector("[data-user-email]")?.value.trim() || "",
+    display_name: root.querySelector("[data-user-display-name]")?.value.trim() || "",
+  };
+  if (includePassword) payload.password = root.querySelector("[data-user-password]")?.value || "";
+  if (includeActive) payload.is_active = Boolean(root.querySelector("[data-user-active]")?.checked);
+  return payload;
+}
+
+async function createUser(button) {
+  const root = button.closest("[data-user-create]");
+  if (!root) return;
+  return runButton(button, "User created", async () => {
+    const payload = userPayloadFrom(root, { includePassword: true });
+    await fetchJSON("/api/v1/users", { method: "POST", body: JSON.stringify(payload) });
+    root.querySelectorAll("input").forEach((input) => {
+      input.value = "";
+    });
+    await refreshAll();
+    return `User ${payload.email} created`;
+  });
+}
+
+function openUserEditor(userID) {
+  const user = findUser(userID);
+  if (!user) {
+    toast("User not found", true);
+    return;
+  }
+  openModal("Edit User", "User Management", `
+    <div class="modal-form" data-user-edit data-user-id="${escapeAttr(user.id)}">
+      <label>
+        <span>Email</span>
+        <input type="email" autocomplete="email" data-user-email value="${escapeAttr(user.email || "")}">
+      </label>
+      <label>
+        <span>Display name</span>
+        <input type="text" autocomplete="name" data-user-display-name value="${escapeAttr(user.display_name || "")}">
+      </label>
+      <label class="check-row">
+        <input type="checkbox" data-user-active ${user.is_active === false ? "" : "checked"}>
+        <span>Active account</span>
+      </label>
+      <div class="modal-actions">
+        <button class="button primary small" type="button" data-action="save-user">${iconHTML("fa-floppy-disk")}Save</button>
+        <button class="button outline small" type="button" data-action="modal-close">${iconHTML("fa-xmark")}Cancel</button>
+      </div>
+    </div>
+  `);
+}
+
+async function saveUser(button) {
+  const root = button.closest("[data-user-edit]");
+  const userID = root?.dataset.userId;
+  if (!root || !userID) return;
+  return runButton(button, "User saved", async () => {
+    const payload = userPayloadFrom(root, { includeActive: true });
+    await fetchJSON(`/api/v1/users/${encodeURIComponent(userID)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    closeModal();
+    await refreshAll();
+    return `User ${payload.email} saved`;
+  });
+}
+
+function openUserPasswordEditor(userID) {
+  const user = findUser(userID);
+  if (!user) {
+    toast("User not found", true);
+    return;
+  }
+  openModal("Reset Password", "User Management", `
+    <div class="modal-form" data-user-password-form data-user-id="${escapeAttr(user.id)}">
+      <p class="muted">Set a new password for ${escapeHTML(user.email || "this user")}.</p>
+      <label>
+        <span>New password</span>
+        <input type="password" autocomplete="new-password" data-user-password>
+      </label>
+      <div class="modal-actions">
+        <button class="button primary small" type="button" data-action="save-user-password">${iconHTML("fa-key")}Update Password</button>
+        <button class="button outline small" type="button" data-action="modal-close">${iconHTML("fa-xmark")}Cancel</button>
+      </div>
+    </div>
+  `);
+}
+
+async function saveUserPassword(button) {
+  const root = button.closest("[data-user-password-form]");
+  const userID = root?.dataset.userId;
+  const password = root?.querySelector("[data-user-password]")?.value || "";
+  if (!root || !userID) return;
+  return runButton(button, "Password updated", async () => {
+    await fetchJSON(`/api/v1/users/${encodeURIComponent(userID)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ password }),
+    });
+    closeModal();
+    await refreshAll();
+  });
+}
+
+async function toggleUserActive(button) {
+  const userID = button.dataset.userId;
+  const nextActive = button.dataset.nextActive === "true";
+  const user = findUser(userID);
+  if (!userID || !user) return;
+  if (!nextActive && !confirm(`Deactivate ${user.email}? Their active sessions will be removed.`)) return;
+  return runButton(button, nextActive ? "User activated" : "User deactivated", async () => {
+    await fetchJSON(`/api/v1/users/${encodeURIComponent(userID)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ is_active: nextActive }),
+    });
+    await refreshAll();
+  });
 }
 
 async function saveIPManualIntel(button) {

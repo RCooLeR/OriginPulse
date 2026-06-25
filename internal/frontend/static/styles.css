@@ -880,6 +880,12 @@ td {
   white-space: nowrap;
 }
 
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .job-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1427,6 +1433,59 @@ td {
   outline: none;
 }
 
+.user-create-form,
+.modal-form {
+  display: grid;
+  gap: 12px;
+}
+
+.user-create-form {
+  grid-template-columns: minmax(190px, 1fr) minmax(170px, 0.9fr) minmax(170px, 0.9fr) auto;
+  align-items: end;
+}
+
+.user-create-form label,
+.modal-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.user-create-form label span,
+.modal-form label span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.user-create-form input,
+.modal-form input {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--text);
+  background: #07111f;
+  outline: none;
+}
+
+.modal-form .check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal-form .check-row input {
+  width: 16px;
+  min-height: 16px;
+}
+
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .report-actions-card {
   display: flex;
   align-items: center;
@@ -1792,6 +1851,7 @@ td {
   .overview-third-row,
   .search-console,
   .ip-intel-form,
+  .user-create-form,
   .detail-grid.two {
     grid-template-columns: 1fr;
   }

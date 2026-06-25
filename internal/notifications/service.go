@@ -37,6 +37,7 @@ type Channel struct {
 	Enabled    bool     `json:"enabled"`
 	Configured bool     `json:"configured"`
 	Targets    []string `json:"targets,omitempty"`
+	Missing    []string `json:"missing,omitempty"`
 }
 
 type Delivery struct {
@@ -735,25 +736,73 @@ func (s *Service) sendWebPush(ctx context.Context, target target, title string, 
 func (s *Service) channels() []Channel {
 	email := s.cfg.Notifications.Email
 	pushURLs := s.cfg.PushWebhookURLs()
+	emailMissing := []string{}
+	if strings.TrimSpace(email.SMTPHost) == "" {
+		emailMissing = append(emailMissing, "notifications.email.smtp_host")
+	}
+	if email.SMTPPort <= 0 {
+		emailMissing = append(emailMissing, "notifications.email.smtp_port")
+	}
+	if strings.TrimSpace(email.From) == "" {
+		emailMissing = append(emailMissing, "notifications.email.from")
+	}
+	if len(cleanStrings(email.To)) == 0 {
+		emailMissing = append(emailMissing, "notifications.email.to")
+	}
+	pushMissing := []string{}
+	if len(pushURLs) == 0 {
+		if env := strings.TrimSpace(s.cfg.Notifications.Push.WebhookURLsEnv); env != "" {
+			pushMissing = append(pushMissing, env)
+		} else {
+			pushMissing = append(pushMissing, "notifications.push.webhook_urls")
+		}
+	}
+	webPushMissing := []string{}
+	if strings.TrimSpace(s.cfg.PushVAPIDPublicKey()) == "" {
+		webPushMissing = append(webPushMissing, configKeyOrEnv(s.cfg.Notifications.Push.VAPIDPublicKeyEnv, "notifications.push.vapid_public_key"))
+	}
+	if strings.TrimSpace(s.cfg.PushVAPIDPrivateKey()) == "" {
+		webPushMissing = append(webPushMissing, configKeyOrEnv(s.cfg.Notifications.Push.VAPIDPrivateKeyEnv, "notifications.push.vapid_private_key"))
+	}
+	if strings.TrimSpace(s.cfg.PushVAPIDSubject()) == "" {
+		webPushMissing = append(webPushMissing, configKeyOrEnv(s.cfg.Notifications.Push.VAPIDSubjectEnv, "notifications.push.vapid_subject"))
+	}
 	return []Channel{
 		{
 			Name:       "email",
 			Enabled:    email.Enabled,
-			Configured: email.Enabled && strings.TrimSpace(email.SMTPHost) != "" && strings.TrimSpace(email.From) != "" && len(cleanStrings(email.To)) > 0,
+			Configured: email.Enabled && len(emailMissing) == 0,
 			Targets:    cleanStrings(email.To),
+			Missing:    missingWhenEnabled(email.Enabled, emailMissing),
 		},
 		{
 			Name:       "push",
 			Enabled:    s.cfg.Notifications.Push.Enabled,
-			Configured: s.cfg.Notifications.Push.Enabled && len(pushURLs) > 0,
+			Configured: s.cfg.Notifications.Push.Enabled && len(pushMissing) == 0,
 			Targets:    redactTargets("push", pushURLs),
+			Missing:    missingWhenEnabled(s.cfg.Notifications.Push.Enabled, pushMissing),
 		},
 		{
 			Name:       "web_push",
 			Enabled:    s.cfg.Notifications.Push.Enabled,
-			Configured: s.cfg.Notifications.Push.Enabled && s.browserPushConfigured(),
+			Configured: s.cfg.Notifications.Push.Enabled && len(webPushMissing) == 0,
+			Missing:    missingWhenEnabled(s.cfg.Notifications.Push.Enabled, webPushMissing),
 		},
 	}
+}
+
+func configKeyOrEnv(env string, fallback string) string {
+	if trimmed := strings.TrimSpace(env); trimmed != "" {
+		return trimmed
+	}
+	return fallback
+}
+
+func missingWhenEnabled(enabled bool, missing []string) []string {
+	if !enabled || len(missing) == 0 {
+		return nil
+	}
+	return missing
 }
 
 func channelTargetCount(channels []Channel) int {
