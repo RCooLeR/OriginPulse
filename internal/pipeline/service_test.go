@@ -55,6 +55,7 @@ func TestRecentOptionsPreservePipelineControls(t *testing.T) {
 		Force:              true,
 		SkipCombine:        true,
 		SkipRollupRecovery: true,
+		PreferRecent:       true,
 		LogTypes:           []string{"nginx-access", "php-error"},
 		MaxSegments:        7,
 		IndexWorkers:       4,
@@ -62,7 +63,7 @@ func TestRecentOptionsPreservePipelineControls(t *testing.T) {
 	service := New(config.Default(), nil, nil, nil, nil)
 	normalized := service.normalizeOptions(opts)
 
-	if !normalized.Force || !normalized.SkipCombine || !normalized.SkipRollupRecovery {
+	if !normalized.Force || !normalized.SkipCombine || !normalized.SkipRollupRecovery || !normalized.PreferRecent {
 		t.Fatal("boolean pipeline controls were not preserved")
 	}
 	if normalized.MaxSegments != 7 {

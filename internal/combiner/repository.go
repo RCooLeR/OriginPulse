@@ -327,6 +327,14 @@ func normalizeRecentSegmentsOffset(offset int) int {
 }
 
 func (r *Repository) PendingIndexSegments(ctx context.Context, limit int) ([]SegmentManifest, error) {
+	return r.pendingIndexSegments(ctx, limit, false)
+}
+
+func (r *Repository) RecentPendingIndexSegments(ctx context.Context, limit int) ([]SegmentManifest, error) {
+	return r.pendingIndexSegments(ctx, limit, true)
+}
+
+func (r *Repository) pendingIndexSegments(ctx context.Context, limit int, newestFirst bool) ([]SegmentManifest, error) {
 	if !r.Enabled() {
 		return []SegmentManifest{}, nil
 	}
@@ -337,13 +345,17 @@ func (r *Repository) PendingIndexSegments(ctx context.Context, limit int) ([]Seg
 		return nil, err
 	}
 
+	orderDirection := "ASC"
+	if newestFirst {
+		orderDirection = "DESC"
+	}
 	rows, err := pool.Query(ctx, `
 SELECT id::text, coalesce(site_id, ''), coalesce(env, ''), coalesce(container_id, ''),
        log_type, bucket_start, bucket_end, path, coalesce(sha256, ''),
        line_count, min_ts, max_ts, status, indexed_at, indexed_at IS NOT NULL
 FROM combined_segments
 WHERE indexed_at IS NULL
-ORDER BY bucket_start, site_id, env, container_id, log_type
+ORDER BY bucket_start `+orderDirection+`, site_id, env, container_id, log_type
 LIMIT $1`, limit)
 	if err != nil {
 		return nil, err

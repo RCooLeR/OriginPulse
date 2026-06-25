@@ -23,6 +23,7 @@ type Options struct {
 	Force              bool      `json:"force"`
 	SkipCombine        bool      `json:"skip_combine"`
 	SkipRollupRecovery bool      `json:"skip_rollup_recovery,omitempty"`
+	PreferRecent       bool      `json:"prefer_recent,omitempty"`
 	AllSourceEvents    bool      `json:"all_source_events,omitempty"`
 	LogTypes           []string  `json:"log_types,omitempty"`
 	MaxSegments        int       `json:"max_segments,omitempty"`
@@ -206,6 +207,7 @@ func (s *Service) run(ctx context.Context, opts Options, jobID string) (Result, 
 		Int("max_segments", opts.MaxSegments).
 		Bool("skip_combine", opts.SkipCombine).
 		Bool("skip_rollup_recovery", opts.SkipRollupRecovery).
+		Bool("prefer_recent", opts.PreferRecent).
 		Msg("pending segments loaded")
 	var repairStart time.Time
 	var repairEnd time.Time
@@ -301,6 +303,9 @@ func isAccessLogType(logType string) bool {
 }
 
 func (s *Service) pendingIndexSegments(ctx context.Context, opts Options) ([]combiner.SegmentManifest, error) {
+	if opts.PreferRecent && (opts.From.IsZero() || opts.To.IsZero() || !opts.From.Before(opts.To)) {
+		return s.segments.RecentPendingIndexSegments(ctx, opts.MaxSegments)
+	}
 	inRange, err := s.segments.PendingIndexSegmentsInRange(ctx, opts.From, opts.To, opts.MaxSegments)
 	if err != nil {
 		return nil, err
