@@ -214,6 +214,7 @@ function wireEvents() {
     const nav = event.target.closest("[data-route]");
     if (nav) {
       event.preventDefault();
+      setMobileSection("nav", false);
       showRoute(nav.dataset.route, true);
       return;
     }
@@ -242,12 +243,14 @@ function wireEvents() {
     state.range = event.target.value;
     resetPagination();
     updateURL(false);
+    updateMobileChrome();
     await refreshAll();
   });
   qs("#siteSelect").addEventListener("change", async (event) => {
     state.siteID = event.target.value;
     resetPagination();
     updateURL(false);
+    updateMobileChrome();
     await refreshAll();
   });
   qs("#searchInput").addEventListener("input", (event) => {
@@ -290,6 +293,8 @@ function wireEvents() {
     }
   });
   qs("#refreshButton").addEventListener("click", () => refreshAll());
+  qs("#mobileNavToggle").addEventListener("click", () => toggleMobileSection("nav"));
+  qs("#mobileFiltersToggle").addEventListener("click", () => toggleMobileSection("filters"));
   qs("#collectButton").addEventListener("click", () => runButton(qs("#collectButton"), "Collection queued", async () => {
     await fetchJSON("/api/v1/system/collect", { method: "POST" });
   }));
@@ -570,6 +575,37 @@ function renderChrome() {
   qs("#collectorState").textContent = health.state;
   qs("#collectorLastDownload").textContent = health.lastDownload;
   qs("#pageActions").innerHTML = pageActions();
+  updateMobileChrome();
+}
+
+function toggleMobileSection(section) {
+  const target = section === "nav" ? qs(".sidebar") : qs(".topbar");
+  const openClass = section === "nav" ? "nav-open" : "filters-open";
+  setMobileSection(section, !target.classList.contains(openClass));
+}
+
+function setMobileSection(section, open) {
+  const isNav = section === "nav";
+  const target = isNav ? qs(".sidebar") : qs(".topbar");
+  const button = qs(isNav ? "#mobileNavToggle" : "#mobileFiltersToggle");
+  const openClass = isNav ? "nav-open" : "filters-open";
+  target?.classList.toggle(openClass, open);
+  button?.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function updateMobileChrome() {
+  const route = routeById[state.route] || routeById.overview;
+  const navToggle = qs("#mobileNavToggle");
+  const filterSummary = qs("#mobileFilterSummary");
+  if (navToggle) {
+    navToggle.title = route.title;
+    navToggle.setAttribute("aria-label", `Open navigation, current page ${route.title}`);
+  }
+  if (filterSummary) {
+    const siteLabel = qs("#siteSelect")?.selectedOptions?.[0]?.textContent || "All Projects";
+    const rangeLabel = qs("#rangeSelect")?.selectedOptions?.[0]?.textContent || activeRangeLabel();
+    filterSummary.textContent = `${siteLabel} / ${rangeLabel}`;
+  }
 }
 
 function syncSiteSelect() {

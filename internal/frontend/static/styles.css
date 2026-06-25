@@ -352,6 +352,14 @@ dd {
   background: rgba(2, 8, 18, 0.82);
 }
 
+.topbar-controls {
+  display: contents;
+}
+
+.mobile-section-toggle {
+  display: none;
+}
+
 .filter-cluster,
 .top-actions,
 .page-actions,
@@ -1909,12 +1917,33 @@ td {
   }
 
   .sidebar {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
     gap: 8px;
     padding: 8px;
   }
 
+  .mobile-section-toggle {
+    min-height: 38px;
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    color: var(--text);
+    background: #07111f;
+    cursor: pointer;
+  }
+
+  .mobile-nav-toggle {
+    grid-column: 2 / 3;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 0 12px;
+    font-weight: 800;
+  }
+
   .brand {
+    grid-column: 1 / 2;
     justify-self: start;
     width: 138px;
     min-height: 42px;
@@ -1926,22 +1955,30 @@ td {
   }
 
   .nav-list {
+    display: none;
+    grid-column: 1 / -1;
     margin: 0 -2px;
     padding: 0 2px 3px;
   }
 
+  .sidebar.nav-open .nav-list {
+    display: grid;
+    max-height: min(68vh, 560px);
+    overflow: auto;
+  }
+
   .nav-item {
-    width: 42px;
-    min-width: 42px;
+    width: 100%;
+    min-width: 0;
     min-height: 38px;
-    grid-template-columns: 1fr;
-    justify-items: center;
-    gap: 0;
+    grid-template-columns: 26px minmax(0, 1fr) auto;
+    justify-items: stretch;
+    gap: 10px;
     padding: 8px;
   }
 
   .nav-label {
-    display: none;
+    display: block;
   }
 
   .nav-icon {
@@ -1952,8 +1989,47 @@ td {
   }
 
   .nav-badge {
-    position: absolute;
-    transform: translate(16px, -12px);
+    position: static;
+    transform: none;
+  }
+
+  .topbar-controls {
+    display: none;
+  }
+
+  .topbar.filters-open .topbar-controls {
+    display: grid;
+    gap: 8px;
+  }
+
+  .mobile-filter-toggle {
+    width: 100%;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    text-align: left;
+  }
+
+  .mobile-filter-toggle span {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-weight: 800;
+  }
+
+  .mobile-filter-toggle small {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 0.74rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .topbar.filters-open .mobile-filter-toggle > i {
+    transform: rotate(180deg);
   }
 
   .filter-cluster {

@@ -41,6 +41,10 @@
         <a href="/" class="brand" data-route="overview" aria-label="OriginPulse overview">
           <img src="/logo.png" alt="OriginPulse">
         </a>
+        <button id="mobileNavToggle" class="mobile-section-toggle mobile-nav-toggle" type="button" aria-controls="primaryNav" aria-expanded="false">
+          <i class="fa-solid fa-bars" aria-hidden="true"></i>
+          <span>Menu</span>
+        </button>
         <nav id="primaryNav" class="nav-list"></nav>
         <section class="collector-card">
           <div>
@@ -56,6 +60,12 @@
 
       <main class="workspace">
         <header class="topbar">
+          <button id="mobileFiltersToggle" class="mobile-section-toggle mobile-filter-toggle" type="button" aria-controls="topbarControls" aria-expanded="false">
+            <span><i class="fa-solid fa-sliders" aria-hidden="true"></i>Filters</span>
+            <small id="mobileFilterSummary">All Projects / Last 24 hours</small>
+            <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+          </button>
+          <div id="topbarControls" class="topbar-controls">
           <div class="filter-cluster">
             <label class="select-shell">
               <span>Project</span>
@@ -93,6 +103,7 @@
             <button id="collectButton" class="button primary" type="button"><i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>Collect</button>
             <button id="logoutButton" class="icon-button hidden" type="button" aria-label="Sign out" title="Sign out"><i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i></button>
             <span id="userBadge" class="avatar">OP</span>
+          </div>
           </div>
         </header>
 
