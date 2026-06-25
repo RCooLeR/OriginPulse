@@ -1617,7 +1617,16 @@ func (api API) collectNow(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
-		_ = api.collector.CollectAll(ctx)
+		if err := api.collector.CollectAll(ctx); err != nil {
+			log.Error().Err(err).Msg("manual collection failed")
+			return
+		}
+		if api.pipeline == nil || !api.pipeline.Enabled() {
+			return
+		}
+		if _, err := api.pipeline.RunRecentWithOptions(ctx, "api-collect", pipeline.Options{}); err != nil {
+			log.Error().Err(err).Msg("manual post-collection pipeline failed")
+		}
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"accepted": true,

@@ -52,16 +52,17 @@ func TestNormalizeOptionsDefaults(t *testing.T) {
 
 func TestRecentOptionsPreservePipelineControls(t *testing.T) {
 	opts := Options{
-		Force:        true,
-		SkipCombine:  true,
-		LogTypes:     []string{"nginx-access", "php-error"},
-		MaxSegments:  7,
-		IndexWorkers: 4,
+		Force:              true,
+		SkipCombine:        true,
+		SkipRollupRecovery: true,
+		LogTypes:           []string{"nginx-access", "php-error"},
+		MaxSegments:        7,
+		IndexWorkers:       4,
 	}
 	service := New(config.Default(), nil, nil, nil, nil)
 	normalized := service.normalizeOptions(opts)
 
-	if !normalized.Force || !normalized.SkipCombine {
+	if !normalized.Force || !normalized.SkipCombine || !normalized.SkipRollupRecovery {
 		t.Fatal("boolean pipeline controls were not preserved")
 	}
 	if normalized.MaxSegments != 7 {

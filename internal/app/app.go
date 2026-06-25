@@ -342,7 +342,7 @@ func (r *Runtime) RunIngestWorker(ctx context.Context, interval time.Duration) e
 	r.startStartupIntelBackfill(ctx)
 	go r.runIPIntelWorker(ctx)
 	return r.runPeriodic(ctx, "ingest", interval, true, func(ctx context.Context) error {
-		if _, err := r.RunPipeline(ctx, pipeline.Options{SkipCombine: true, TriggeredBy: "ingest-worker"}); err != nil {
+		if _, err := r.RunPipeline(ctx, pipeline.Options{SkipCombine: true, SkipRollupRecovery: true, TriggeredBy: "ingest-worker"}); err != nil {
 			return err
 		}
 		if err := r.EvaluateAlertsAndNotify(ctx); err != nil {

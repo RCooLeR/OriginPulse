@@ -18,15 +18,16 @@ import (
 )
 
 type Options struct {
-	From            time.Time `json:"from,omitempty"`
-	To              time.Time `json:"to,omitempty"`
-	Force           bool      `json:"force"`
-	SkipCombine     bool      `json:"skip_combine"`
-	AllSourceEvents bool      `json:"all_source_events,omitempty"`
-	LogTypes        []string  `json:"log_types,omitempty"`
-	MaxSegments     int       `json:"max_segments,omitempty"`
-	IndexWorkers    int       `json:"index_workers,omitempty"`
-	TriggeredBy     string    `json:"triggered_by,omitempty"`
+	From               time.Time `json:"from,omitempty"`
+	To                 time.Time `json:"to,omitempty"`
+	Force              bool      `json:"force"`
+	SkipCombine        bool      `json:"skip_combine"`
+	SkipRollupRecovery bool      `json:"skip_rollup_recovery,omitempty"`
+	AllSourceEvents    bool      `json:"all_source_events,omitempty"`
+	LogTypes           []string  `json:"log_types,omitempty"`
+	MaxSegments        int       `json:"max_segments,omitempty"`
+	IndexWorkers       int       `json:"index_workers,omitempty"`
+	TriggeredBy        string    `json:"triggered_by,omitempty"`
 }
 
 type Result struct {
@@ -198,6 +199,14 @@ func (s *Service) run(ctx context.Context, opts Options, jobID string) (Result, 
 		return result, err
 	}
 	s.finishStep(pendingStep, jobs.StatusSuccess, "pending segments loaded", nil, map[string]any{"pending_segments": len(pending)})
+	log.Info().
+		Time("from", result.From).
+		Time("to", result.To).
+		Int("pending_segments", len(pending)).
+		Int("max_segments", opts.MaxSegments).
+		Bool("skip_combine", opts.SkipCombine).
+		Bool("skip_rollup_recovery", opts.SkipRollupRecovery).
+		Msg("pending segments loaded")
 	var repairStart time.Time
 	var repairEnd time.Time
 	repairedSegmentIDs := make([]string, 0, len(pending))
@@ -245,7 +254,7 @@ func (s *Service) run(ctx context.Context, opts Options, jobID string) (Result, 
 		result.RollupsRepaired = repaired
 		result.RollupsUpdated += repaired
 	}
-	if hasAccessLogType(opts.LogTypes) {
+	if hasAccessLogType(opts.LogTypes) && !opts.SkipRollupRecovery {
 		step := s.startStep(ctx, jobID, "recover unbackfilled rollups", nil)
 		recovered, err := s.indexer.RepairUnbackfilledRollups(ctx)
 		if err != nil {
