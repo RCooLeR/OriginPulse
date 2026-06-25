@@ -9,14 +9,15 @@ import (
 func TestNormalizeOptionsUsesConfiguredWorkers(t *testing.T) {
 	cfg := config.Default()
 	cfg.Pipeline.IndexWorkers = 3
+	cfg.Pipeline.MaxSegments = 700
 	service := New(cfg, nil, nil, nil, nil)
 
-	opts := service.normalizeOptions(Options{MaxSegments: 10})
+	opts := service.normalizeOptions(Options{})
 	if opts.IndexWorkers != 3 {
 		t.Fatalf("IndexWorkers = %d, want 3", opts.IndexWorkers)
 	}
-	if opts.MaxSegments != 10 {
-		t.Fatalf("MaxSegments = %d, want 10", opts.MaxSegments)
+	if opts.MaxSegments != 700 {
+		t.Fatalf("MaxSegments = %d, want 700", opts.MaxSegments)
 	}
 }
 

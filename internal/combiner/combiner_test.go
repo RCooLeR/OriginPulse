@@ -111,6 +111,53 @@ func TestCombinePartialRangeKeepsWholeTouchedHour(t *testing.T) {
 	}
 }
 
+func TestCombineWritesSourceScopedSegments(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := config.Default()
+	cfg.Collection.RawDir = filepath.Join(tmp, "raw")
+	cfg.Combiner.CombinedDir = filepath.Join(tmp, "combined")
+	cfg.Combiner.QuarantineDir = filepath.Join(tmp, "quarantine")
+
+	rawA := filepath.Join(cfg.Collection.RawDir, "client-a", "live", "appserver-1", "nginx", "nginx-access.log")
+	rawB := filepath.Join(cfg.Collection.RawDir, "client-b", "live", "appserver-1", "nginx", "nginx-access.log")
+	for _, path := range []string{rawA, rawB} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatalf("mkdir raw: %v", err)
+		}
+	}
+
+	lineA := `203.0.113.1 - - [17/Jun/2026:14:01:00 +0000] "GET /a HTTP/1.1" 200 10 "-" "curl/8"`
+	lineB := `203.0.113.2 - - [17/Jun/2026:14:02:00 +0000] "GET /b HTTP/1.1" 200 20 "-" "curl/8"`
+	if err := os.WriteFile(rawA, []byte(lineA+"\n"), 0o640); err != nil {
+		t.Fatalf("write raw a: %v", err)
+	}
+	if err := os.WriteFile(rawB, []byte(lineB+"\n"), 0o640); err != nil {
+		t.Fatalf("write raw b: %v", err)
+	}
+
+	service := NewService(cfg, nil)
+	from := time.Date(2026, 6, 17, 14, 0, 0, 0, time.UTC)
+	result, err := service.Combine(t.Context(), Options{LogType: "nginx-access", From: from, To: from.Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("combine: %v", err)
+	}
+	if result.SegmentsWritten != 2 {
+		t.Fatalf("segments = %d, want one per source", result.SegmentsWritten)
+	}
+
+	seen := map[string]string{}
+	for _, segment := range result.Segments {
+		seen[segment.SiteID] = segment.Path
+		lines := readCombinedLines(t, segment.Path)
+		if len(lines) != 1 || lines[0].SiteID != segment.SiteID {
+			t.Fatalf("segment %s lines = %#v, want only its source", segment.SiteID, lines)
+		}
+	}
+	if seen["client-a"] == "" || seen["client-b"] == "" || seen["client-a"] == seen["client-b"] {
+		t.Fatalf("source-scoped segment paths = %#v", seen)
+	}
+}
+
 func readCombinedLines(t *testing.T, path string) []CombinedLine {
 	t.Helper()
 	file, err := os.Open(path)

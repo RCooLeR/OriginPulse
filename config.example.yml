@@ -61,6 +61,7 @@ combiner:
 
 pipeline:
   index_workers: 3
+  max_segments: 500
 
 retention:
   enabled: true

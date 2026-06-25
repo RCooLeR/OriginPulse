@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -20,10 +21,11 @@ import (
 )
 
 type Options struct {
-	LogType string
-	From    time.Time
-	To      time.Time
-	Force   bool
+	LogType         string
+	From            time.Time
+	To              time.Time
+	Force           bool
+	AllSourceEvents bool
 }
 
 type Result struct {
@@ -57,6 +59,13 @@ type entry struct {
 	Fingerprint string
 }
 
+type segmentKey struct {
+	BucketStart time.Time
+	SiteID      string
+	Env         string
+	ContainerID string
+}
+
 type Service struct {
 	cfg  config.Config
 	repo *Repository
@@ -70,36 +79,54 @@ func (s *Service) Combine(ctx context.Context, opts Options) (Result, error) {
 	if opts.LogType == "" {
 		opts.LogType = "nginx-access"
 	}
-	if opts.From.IsZero() || opts.To.IsZero() || !opts.From.Before(opts.To) {
+	if !opts.AllSourceEvents && (opts.From.IsZero() || opts.To.IsZero() || !opts.From.Before(opts.To)) {
 		return Result{}, fmt.Errorf("combine requires a valid --from and --to range")
 	}
-	opts.From = opts.From.UTC().Truncate(time.Hour)
-	opts.To = opts.To.UTC()
+	if !opts.From.IsZero() {
+		opts.From = opts.From.UTC().Truncate(time.Hour)
+	}
+	if !opts.To.IsZero() {
+		opts.To = opts.To.UTC()
+	}
 
 	sources, err := s.sources(ctx, opts)
 	if err != nil {
 		return Result{}, err
 	}
 
-	buckets := map[time.Time]map[string]entry{}
+	buckets := map[segmentKey]map[string]entry{}
+	sourceLineCounts := map[string]int64{}
 	result := Result{}
 	for _, source := range sources {
-		if err := s.readSource(ctx, source, opts, buckets, &result); err != nil {
+		linesRead, err := s.readSource(ctx, source, opts, buckets, &result)
+		if err != nil {
 			return result, err
+		}
+		if opts.AllSourceEvents && source.RawFileID != "" {
+			sourceLineCounts[source.RawFileID] = linesRead
 		}
 	}
 
-	bucketStarts := make([]time.Time, 0, len(buckets))
-	for bucketStart := range buckets {
-		bucketStarts = append(bucketStarts, bucketStart)
+	keys := make([]segmentKey, 0, len(buckets))
+	for key := range buckets {
+		keys = append(keys, key)
 	}
-	sort.Slice(bucketStarts, func(i, j int) bool {
-		return bucketStarts[i].Before(bucketStarts[j])
+	sort.Slice(keys, func(i, j int) bool {
+		if !keys[i].BucketStart.Equal(keys[j].BucketStart) {
+			return keys[i].BucketStart.Before(keys[j].BucketStart)
+		}
+		if keys[i].SiteID != keys[j].SiteID {
+			return keys[i].SiteID < keys[j].SiteID
+		}
+		if keys[i].Env != keys[j].Env {
+			return keys[i].Env < keys[j].Env
+		}
+		return keys[i].ContainerID < keys[j].ContainerID
 	})
 
-	for _, bucketStart := range bucketStarts {
-		entries := make([]entry, 0, len(buckets[bucketStart]))
-		for _, item := range buckets[bucketStart] {
+	for _, key := range keys {
+		entries := make([]entry, 0, len(buckets[key]))
+		for _, item := range buckets[key] {
 			entries = append(entries, item)
 		}
 		sort.Slice(entries, func(i, j int) bool {
@@ -118,7 +145,7 @@ func (s *Service) Combine(ctx context.Context, opts Options) (Result, error) {
 			return entries[i].Fingerprint < entries[j].Fingerprint
 		})
 
-		manifest, err := s.writeSegment(ctx, opts.LogType, bucketStart, entries)
+		manifest, err := s.writeSegment(ctx, opts.LogType, key, entries)
 		if err != nil {
 			return result, err
 		}
@@ -127,13 +154,21 @@ func (s *Service) Combine(ctx context.Context, opts Options) (Result, error) {
 		result.Segments = append(result.Segments, manifest)
 	}
 
+	if opts.AllSourceEvents && s.repo != nil {
+		for rawFileID, lineCount := range sourceLineCounts {
+			if err := s.repo.MarkRawSourceCombined(ctx, rawFileID, lineCount); err != nil {
+				return result, err
+			}
+		}
+	}
+
 	return result, nil
 }
 
 func (s *Service) sources(ctx context.Context, opts Options) ([]RawSource, error) {
 	if s.repo != nil && s.repo.Enabled() {
 		modifiedSince := time.Time{}
-		if !opts.From.IsZero() {
+		if !opts.Force && !opts.From.IsZero() {
 			modifiedSince = opts.From.Add(-15 * time.Minute)
 		}
 		return s.repo.DownloadedRawSources(ctx, opts.LogType, modifiedSince)
@@ -178,10 +213,10 @@ func (s *Service) sourcesFromFilesystem(logType string) ([]RawSource, error) {
 	return sources, err
 }
 
-func (s *Service) readSource(ctx context.Context, source RawSource, opts Options, buckets map[time.Time]map[string]entry, result *Result) error {
+func (s *Service) readSource(ctx context.Context, source RawSource, opts Options, buckets map[segmentKey]map[string]entry, result *Result) (int64, error) {
 	reader, closer, err := openPossiblyGzip(source.LocalPath)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer closer()
 
@@ -193,7 +228,7 @@ func (s *Service) readSource(ctx context.Context, source RawSource, opts Options
 		rawLineNo++
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return rawLineNo, ctx.Err()
 		default:
 		}
 
@@ -209,23 +244,28 @@ func (s *Service) readSource(ctx context.Context, source RawSource, opts Options
 			} else {
 				result.LinesQuarantined++
 				if qErr := s.quarantine(source, "timestamp_parse_failed", raw); qErr != nil {
-					return qErr
+					return rawLineNo, qErr
 				}
 				continue
 			}
 		} else {
 			lastTS = ts
 		}
-		if ts.Before(opts.From) || !ts.Before(opts.To) {
+		if !opts.AllSourceEvents && (ts.Before(opts.From) || !ts.Before(opts.To)) {
 			continue
 		}
 
 		fp := fingerprint(source, ts, raw)
-		bucketStart := ts.Truncate(time.Hour)
-		if buckets[bucketStart] == nil {
-			buckets[bucketStart] = map[string]entry{}
+		key := segmentKey{
+			BucketStart: ts.Truncate(time.Hour),
+			SiteID:      source.SiteID,
+			Env:         source.Env,
+			ContainerID: source.ContainerID,
 		}
-		buckets[bucketStart][fp] = entry{
+		if buckets[key] == nil {
+			buckets[key] = map[string]entry{}
+		}
+		buckets[key][fp] = entry{
 			TS:          ts,
 			SiteID:      source.SiteID,
 			Env:         source.Env,
@@ -237,15 +277,18 @@ func (s *Service) readSource(ctx context.Context, source RawSource, opts Options
 			Fingerprint: fp,
 		}
 	}
-	return scanner.Err()
+	return rawLineNo, scanner.Err()
 }
 
-func (s *Service) writeSegment(ctx context.Context, logType string, bucketStart time.Time, entries []entry) (SegmentManifest, error) {
-	bucketStart = bucketStart.UTC().Truncate(time.Hour)
+func (s *Service) writeSegment(ctx context.Context, logType string, key segmentKey, entries []entry) (SegmentManifest, error) {
+	bucketStart := key.BucketStart.UTC().Truncate(time.Hour)
 	bucketEnd := bucketStart.Add(time.Hour)
 	finalPath := filepath.Join(
 		s.cfg.CombinedDir(),
 		logType,
+		sanitizeSegmentPathPart(key.SiteID),
+		sanitizeSegmentPathPart(key.Env),
+		sanitizeSegmentPathPart(key.ContainerID),
 		bucketStart.Format("2006"),
 		bucketStart.Format("01"),
 		bucketStart.Format("02"),
@@ -284,6 +327,9 @@ func (s *Service) writeSegment(ctx context.Context, logType string, bucketStart 
 	}
 
 	manifest := SegmentManifest{
+		SiteID:      key.SiteID,
+		Env:         key.Env,
+		ContainerID: key.ContainerID,
 		LogType:     logType,
 		BucketStart: bucketStart,
 		BucketEnd:   bucketEnd,
@@ -300,6 +346,18 @@ func (s *Service) writeSegment(ctx context.Context, logType string, bucketStart 
 		}
 	}
 	return manifest, nil
+}
+
+var unsafeSegmentPathChars = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+
+func sanitizeSegmentPathPart(value string) string {
+	value = strings.TrimSpace(value)
+	value = unsafeSegmentPathChars.ReplaceAllString(value, "-")
+	value = strings.Trim(value, ".-")
+	if value == "" {
+		return "unknown"
+	}
+	return value
 }
 
 func writeGzipJSONL(ctx context.Context, writer io.Writer, entries []entry) (int, *time.Time, *time.Time, error) {

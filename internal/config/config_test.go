@@ -12,6 +12,9 @@ func TestDefaultPipelineUsesParallelIndexing(t *testing.T) {
 	if cfg.Pipeline.IndexWorkers != 2 {
 		t.Fatalf("Pipeline.IndexWorkers = %d, want 2", cfg.Pipeline.IndexWorkers)
 	}
+	if cfg.Pipeline.MaxSegments != 500 {
+		t.Fatalf("Pipeline.MaxSegments = %d, want 500", cfg.Pipeline.MaxSegments)
+	}
 }
 
 func TestDefaultRetentionMatchesCurrentStoragePlan(t *testing.T) {

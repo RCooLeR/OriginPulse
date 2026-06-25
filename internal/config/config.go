@@ -98,6 +98,7 @@ type CombinerConfig struct {
 
 type PipelineConfig struct {
 	IndexWorkers int `yaml:"index_workers" json:"index_workers"`
+	MaxSegments  int `yaml:"max_segments" json:"max_segments"`
 }
 
 type RetentionConfig struct {
@@ -294,6 +295,7 @@ func Default() Config {
 		},
 		Pipeline: PipelineConfig{
 			IndexWorkers: 2,
+			MaxSegments:  500,
 		},
 		Retention: RetentionConfig{
 			Enabled:                true,
@@ -401,6 +403,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Pipeline.IndexWorkers <= 0 {
 		return errors.New("pipeline.index_workers must be positive")
+	}
+	if c.Pipeline.MaxSegments <= 0 {
+		return errors.New("pipeline.max_segments must be positive")
 	}
 	if c.Pantheon.SFTPPort == 0 {
 		return errors.New("pantheon.sftp_port must be set")
@@ -882,6 +887,9 @@ func (c *Config) normalize() {
 	}
 	if c.Pipeline.IndexWorkers == 0 {
 		c.Pipeline.IndexWorkers = 2
+	}
+	if c.Pipeline.MaxSegments == 0 {
+		c.Pipeline.MaxSegments = 500
 	}
 	if c.Retention.Interval == 0 {
 		c.Retention.Interval = 24 * time.Hour

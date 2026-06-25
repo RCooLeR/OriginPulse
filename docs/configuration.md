@@ -130,6 +130,7 @@ combiner:
 
 pipeline:
   index_workers: 3
+  max_segments: 500
 ```
 
 The settling window prevents active files from being combined too early.

@@ -22,6 +22,9 @@ type RawSource struct {
 
 type SegmentManifest struct {
 	ID          string     `json:"id,omitempty"`
+	SiteID      string     `json:"site_id,omitempty"`
+	Env         string     `json:"env,omitempty"`
+	ContainerID string     `json:"container_id,omitempty"`
 	LogType     string     `json:"log_type"`
 	BucketStart time.Time  `json:"bucket_start"`
 	BucketEnd   time.Time  `json:"bucket_end"`
@@ -95,7 +98,13 @@ SELECT id::text, site_id, env, container_id, log_type, local_path
 FROM raw_files
 WHERE status = 'downloaded'
   AND log_type = $1
-  AND ($2::timestamptz IS NULL OR remote_mtime >= $2)
+  AND (
+    combined_at IS NULL
+    OR combined_sha256 IS DISTINCT FROM sha256
+    OR $2::timestamptz IS NULL
+    OR remote_mtime >= $2
+    OR downloaded_at >= $2
+  )
 ORDER BY site_id, env, container_id, local_path`, logType, since)
 	if err != nil {
 		return nil, err
@@ -112,6 +121,23 @@ ORDER BY site_id, env, container_id, local_path`, logType, since)
 		sources = append(sources, source)
 	}
 	return sources, rows.Err()
+}
+
+func (r *Repository) MarkRawSourceCombined(ctx context.Context, rawFileID string, lineCount int64) error {
+	if !r.Enabled() || strings.TrimSpace(rawFileID) == "" {
+		return nil
+	}
+	pool, err := r.db.Pool()
+	if err != nil {
+		return err
+	}
+	_, err = pool.Exec(ctx, `
+UPDATE raw_files
+SET combined_at = now(),
+    combined_sha256 = sha256,
+    combined_line_count = $2
+WHERE id = $1::uuid`, rawFileID, lineCount)
+	return err
 }
 
 func normalizeStoredRawPath(localPath string, rawDir string) string {
@@ -162,11 +188,11 @@ func (r *Repository) UpsertSegment(ctx context.Context, manifest SegmentManifest
 
 	_, err = pool.Exec(ctx, `
 INSERT INTO combined_segments (
-  log_type, bucket_start, bucket_end, path, sha256, line_count, min_ts, max_ts, status
+  site_id, env, container_id, log_type, bucket_start, bucket_end, path, sha256, line_count, min_ts, max_ts, status
 ) VALUES (
-  $1, $2, $3, $4, $5, $6, $7, $8, $9
+  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 )
-ON CONFLICT (log_type, bucket_start) DO UPDATE
+ON CONFLICT (site_id, env, container_id, log_type, bucket_start) DO UPDATE
 SET bucket_end = EXCLUDED.bucket_end,
     path = EXCLUDED.path,
     sha256 = EXCLUDED.sha256,
@@ -204,6 +230,9 @@ SET bucket_end = EXCLUDED.bucket_end,
       ELSE combined_segments.version + 1
     END,
     generated_at = now()`,
+		manifest.SiteID,
+		manifest.Env,
+		manifest.ContainerID,
 		manifest.LogType,
 		manifest.BucketStart,
 		manifest.BucketEnd,
@@ -240,10 +269,11 @@ func (r *Repository) RecentSegmentsPage(ctx context.Context, limit int, offset i
 	}
 
 	rows, err := pool.Query(ctx, `
-SELECT id::text, log_type, bucket_start, bucket_end, path, coalesce(sha256, ''),
+	SELECT id::text, coalesce(site_id, ''), coalesce(env, ''), coalesce(container_id, ''),
+       log_type, bucket_start, bucket_end, path, coalesce(sha256, ''),
        line_count, min_ts, max_ts, status, indexed_at, indexed_at IS NOT NULL
 FROM combined_segments
-ORDER BY bucket_start DESC, log_type
+ORDER BY bucket_start DESC, site_id, env, container_id, log_type
 LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		return out, err
@@ -255,6 +285,9 @@ LIMIT $1 OFFSET $2`, limit, offset)
 		var segment SegmentManifest
 		if err := rows.Scan(
 			&segment.ID,
+			&segment.SiteID,
+			&segment.Env,
+			&segment.ContainerID,
 			&segment.LogType,
 			&segment.BucketStart,
 			&segment.BucketEnd,
@@ -305,11 +338,12 @@ func (r *Repository) PendingIndexSegments(ctx context.Context, limit int) ([]Seg
 	}
 
 	rows, err := pool.Query(ctx, `
-SELECT id::text, log_type, bucket_start, bucket_end, path, coalesce(sha256, ''),
+SELECT id::text, coalesce(site_id, ''), coalesce(env, ''), coalesce(container_id, ''),
+       log_type, bucket_start, bucket_end, path, coalesce(sha256, ''),
        line_count, min_ts, max_ts, status, indexed_at, indexed_at IS NOT NULL
 FROM combined_segments
 WHERE indexed_at IS NULL
-ORDER BY bucket_start, log_type
+ORDER BY bucket_start, site_id, env, container_id, log_type
 LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -332,13 +366,14 @@ func (r *Repository) PendingIndexSegmentsInRange(ctx context.Context, from time.
 	}
 
 	rows, err := pool.Query(ctx, `
-SELECT id::text, log_type, bucket_start, bucket_end, path, coalesce(sha256, ''),
+SELECT id::text, coalesce(site_id, ''), coalesce(env, ''), coalesce(container_id, ''),
+       log_type, bucket_start, bucket_end, path, coalesce(sha256, ''),
        line_count, min_ts, max_ts, status, indexed_at, indexed_at IS NOT NULL
 FROM combined_segments
 WHERE indexed_at IS NULL
   AND bucket_start < $2
   AND bucket_end > $1
-ORDER BY bucket_start DESC, log_type
+ORDER BY bucket_start DESC, site_id, env, container_id, log_type
 LIMIT $3`, from, to, limit)
 	if err != nil {
 		return nil, err
@@ -363,6 +398,9 @@ func scanSegmentRows(rows pgx.Rows, limit int, combinedDir string) ([]SegmentMan
 		var segment SegmentManifest
 		if err := rows.Scan(
 			&segment.ID,
+			&segment.SiteID,
+			&segment.Env,
+			&segment.ContainerID,
 			&segment.LogType,
 			&segment.BucketStart,
 			&segment.BucketEnd,

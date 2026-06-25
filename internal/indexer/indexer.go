@@ -1219,12 +1219,16 @@ ON CONFLICT (event_id, family, category) DO NOTHING`, temporaryImportID)
 func (s *Service) segmentForPath(ctx context.Context, pool *pgxpool.Pool, path string) (combiner.SegmentManifest, error) {
 	var segment combiner.SegmentManifest
 	err := pool.QueryRow(ctx, `
-SELECT id::text, log_type, bucket_start, bucket_end, path, coalesce(sha256, ''),
+SELECT id::text, coalesce(site_id, ''), coalesce(env, ''), coalesce(container_id, ''),
+       log_type, bucket_start, bucket_end, path, coalesce(sha256, ''),
        line_count, min_ts, max_ts, status, indexed_at, indexed_at IS NOT NULL
 FROM combined_segments
 WHERE path = $1`, path,
 	).Scan(
 		&segment.ID,
+		&segment.SiteID,
+		&segment.Env,
+		&segment.ContainerID,
 		&segment.LogType,
 		&segment.BucketStart,
 		&segment.BucketEnd,

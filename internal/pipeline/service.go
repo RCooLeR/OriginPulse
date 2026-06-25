@@ -18,14 +18,15 @@ import (
 )
 
 type Options struct {
-	From         time.Time `json:"from,omitempty"`
-	To           time.Time `json:"to,omitempty"`
-	Force        bool      `json:"force"`
-	SkipCombine  bool      `json:"skip_combine"`
-	LogTypes     []string  `json:"log_types,omitempty"`
-	MaxSegments  int       `json:"max_segments,omitempty"`
-	IndexWorkers int       `json:"index_workers,omitempty"`
-	TriggeredBy  string    `json:"triggered_by,omitempty"`
+	From            time.Time `json:"from,omitempty"`
+	To              time.Time `json:"to,omitempty"`
+	Force           bool      `json:"force"`
+	SkipCombine     bool      `json:"skip_combine"`
+	AllSourceEvents bool      `json:"all_source_events,omitempty"`
+	LogTypes        []string  `json:"log_types,omitempty"`
+	MaxSegments     int       `json:"max_segments,omitempty"`
+	IndexWorkers    int       `json:"index_workers,omitempty"`
+	TriggeredBy     string    `json:"triggered_by,omitempty"`
 }
 
 type Result struct {
@@ -142,9 +143,7 @@ func (s *Service) RunRecentWithOptions(ctx context.Context, triggeredBy string, 
 	from := to.Add(-45 * time.Minute)
 	opts.From = from
 	opts.To = to
-	if opts.MaxSegments <= 0 {
-		opts.MaxSegments = 100
-	}
+	opts.AllSourceEvents = true
 	opts.TriggeredBy = triggeredBy
 	return s.Run(ctx, opts)
 }
@@ -159,16 +158,18 @@ func (s *Service) run(ctx context.Context, opts Options, jobID string) (Result, 
 	if !opts.SkipCombine {
 		for _, logType := range opts.LogTypes {
 			step := s.startStep(ctx, jobID, "combine "+logType, map[string]any{
-				"log_type": logType,
-				"from":     opts.From.Format(time.RFC3339),
-				"to":       opts.To.Format(time.RFC3339),
-				"force":    opts.Force,
+				"log_type":          logType,
+				"from":              opts.From.Format(time.RFC3339),
+				"to":                opts.To.Format(time.RFC3339),
+				"force":             opts.Force,
+				"all_source_events": opts.AllSourceEvents,
 			})
 			combineResult, err := s.combiner.Combine(ctx, combiner.Options{
-				LogType: logType,
-				From:    opts.From,
-				To:      opts.To,
-				Force:   opts.Force,
+				LogType:         logType,
+				From:            opts.From,
+				To:              opts.To,
+				Force:           opts.Force,
+				AllSourceEvents: opts.AllSourceEvents,
 			})
 			if err != nil {
 				s.finishStep(step, jobs.StatusFailed, "combine failed", err, nil)
@@ -318,6 +319,9 @@ func (s *Service) pendingIndexSegments(ctx context.Context, opts Options) ([]com
 }
 
 func (s *Service) normalizeOptions(opts Options) Options {
+	if opts.MaxSegments <= 0 {
+		opts.MaxSegments = s.cfg.Pipeline.MaxSegments
+	}
 	if opts.MaxSegments <= 0 {
 		opts.MaxSegments = 500
 	}
