@@ -1,5 +1,41 @@
 name: originpulse
 
+x-originpulse-environment: &originpulse-environment
+  DATABASE_URL: postgres://${POSTGRES_USER:-originpulse}:${POSTGRES_PASSWORD:-originpulse_dev_password}@postgres:5432/${POSTGRES_DB:-originpulse}?sslmode=disable
+  ORIGINPULSE_CONFIG: /app/config.yml
+  PANTHEON_EMAIL: ${PANTHEON_EMAIL:-}
+  PANTHEON_MACHINE_TOKEN: ${PANTHEON_MACHINE_TOKEN:-}
+  PANTHEON_SSH_KEY_PATH: /run/secrets/pantheon_ssh_key
+  MAXMIND_ACCOUNT_ID: ${MAXMIND_ACCOUNT_ID:-}
+  MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+  OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma4:12b}
+  OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-10m}
+  ORIGINPULSE_SMTP_USERNAME: ${ORIGINPULSE_SMTP_USERNAME:-}
+  ORIGINPULSE_SMTP_PASSWORD: ${ORIGINPULSE_SMTP_PASSWORD:-}
+  ORIGINPULSE_PUSH_WEBHOOK_URLS: ${ORIGINPULSE_PUSH_WEBHOOK_URLS:-}
+  ORIGINPULSE_VAPID_PUBLIC_KEY: ${ORIGINPULSE_VAPID_PUBLIC_KEY:-}
+  ORIGINPULSE_VAPID_PRIVATE_KEY: ${ORIGINPULSE_VAPID_PRIVATE_KEY:-}
+  ORIGINPULSE_VAPID_SUBJECT: ${ORIGINPULSE_VAPID_SUBJECT:-mailto:originpulse@localhost}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
+x-originpulse-service: &originpulse-service
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  image: originpulse:local
+  restart: unless-stopped
+  environment: *originpulse-environment
+  volumes:
+    - ../config.yml:/app/config.yml:ro
+    - ../tmp:/app/tmp:ro
+    - originpulse_data:/app/data
+  secrets:
+    - pantheon_ssh_key
+  depends_on:
+    postgres:
+      condition: service_healthy
+
 services:
   postgres:
     image: postgres:18-alpine
@@ -28,48 +64,33 @@ services:
       timeout: 3s
       retries: 20
 
-  originpulse:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    image: originpulse:local
-    restart: unless-stopped
-    command: ["server", "-config", "/app/config.yml"]
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-originpulse}:${POSTGRES_PASSWORD:-originpulse_dev_password}@postgres:5432/${POSTGRES_DB:-originpulse}?sslmode=disable
-      ORIGINPULSE_CONFIG: /app/config.yml
-      PANTHEON_EMAIL: ${PANTHEON_EMAIL:-}
-      PANTHEON_MACHINE_TOKEN: ${PANTHEON_MACHINE_TOKEN:-}
-      PANTHEON_SSH_KEY_PATH: /run/secrets/pantheon_ssh_key
-      MAXMIND_ACCOUNT_ID: ${MAXMIND_ACCOUNT_ID:-}
-      MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma4:12b}
-      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-10m}
-      ORIGINPULSE_SMTP_USERNAME: ${ORIGINPULSE_SMTP_USERNAME:-}
-      ORIGINPULSE_SMTP_PASSWORD: ${ORIGINPULSE_SMTP_PASSWORD:-}
-      ORIGINPULSE_PUSH_WEBHOOK_URLS: ${ORIGINPULSE_PUSH_WEBHOOK_URLS:-}
-      ORIGINPULSE_VAPID_PUBLIC_KEY: ${ORIGINPULSE_VAPID_PUBLIC_KEY:-}
-      ORIGINPULSE_VAPID_PRIVATE_KEY: ${ORIGINPULSE_VAPID_PRIVATE_KEY:-}
-      ORIGINPULSE_VAPID_SUBJECT: ${ORIGINPULSE_VAPID_SUBJECT:-mailto:originpulse@localhost}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-    volumes:
-      - ../config.yml:/app/config.yml:ro
-      - ../tmp:/app/tmp:ro
-      - originpulse_data:/app/data
-    secrets:
-      - pantheon_ssh_key
+  originpulse-api:
+    <<: *originpulse-service
+    container_name: originpulse-api
+    command: ["api", "-config", "/app/config.yml"]
     ports:
       - "${ORIGINPULSE_PORT:-8080}:8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "originpulse", "healthcheck", "-url", "http://127.0.0.1:8080/health", "-timeout", "5s"]
       interval: 30s
       timeout: 6s
       retries: 5
       start_period: 20s
+
+  originpulse-collector:
+    <<: *originpulse-service
+    container_name: originpulse-collector
+    command: ["collector-worker", "-config", "/app/config.yml"]
+
+  originpulse-ingest:
+    <<: *originpulse-service
+    container_name: originpulse-ingest
+    command: ["ingest-worker", "-config", "/app/config.yml", "-interval", "${ORIGINPULSE_INGEST_INTERVAL:-1m}"]
+
+  originpulse-reports:
+    <<: *originpulse-service
+    container_name: originpulse-reports
+    command: ["reports-worker", "-config", "/app/config.yml"]
 
 secrets:
   pantheon_ssh_key:

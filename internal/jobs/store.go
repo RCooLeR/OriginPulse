@@ -502,6 +502,53 @@ WHERE status = 'running'`, reason)
 	return err
 }
 
+func (s *Store) MarkRunningInterruptedTypes(ctx context.Context, reason string, jobTypes ...string) error {
+	if !s.dbEnabled() {
+		return nil
+	}
+	cleanTypes := make([]string, 0, len(jobTypes))
+	for _, jobType := range jobTypes {
+		jobType = strings.TrimSpace(jobType)
+		if jobType != "" {
+			cleanTypes = append(cleanTypes, jobType)
+		}
+	}
+	if len(cleanTypes) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "interrupted by worker restart"
+	}
+	pool, err := s.db.Pool()
+	if err != nil {
+		return err
+	}
+	_, err = pool.Exec(ctx, `
+UPDATE job_steps s
+SET status = 'failed',
+    message = $1,
+    finished_at = now(),
+    duration_ms = greatest(0, floor(extract(epoch from (now() - s.started_at)) * 1000)::bigint),
+    last_error = $1
+FROM job_runs j
+WHERE s.job_id = j.id
+  AND s.status = 'running'
+  AND j.type = ANY($2)`, reason, cleanTypes)
+	if err != nil {
+		return err
+	}
+	_, err = pool.Exec(ctx, `
+UPDATE job_runs
+SET status = 'failed',
+    message = $1,
+    finished_at = now(),
+    duration_ms = greatest(0, floor(extract(epoch from (now() - started_at)) * 1000)::bigint),
+    last_error = $1
+WHERE status = 'running'
+  AND type = ANY($2)`, reason, cleanTypes)
+	return err
+}
+
 func cloneMeta(meta map[string]any) map[string]any {
 	if len(meta) == 0 {
 		return nil

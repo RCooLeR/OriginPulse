@@ -91,6 +91,7 @@ func run() int {
 	alertID := fs.String("alert-id", "", "stored alert id")
 	healthURL := fs.String("url", "http://127.0.0.1:8080/health", "healthcheck URL")
 	healthTimeout := fs.Duration("timeout", 5*time.Second, "healthcheck timeout")
+	workerInterval := fs.Duration("interval", 0, "worker loop interval; 0 uses command default")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -129,7 +130,24 @@ func run() int {
 	zerolog.SetGlobalLevel(level)
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
 
-	runtime, err := app.New(ctx, cfg)
+	runtimeOptions := app.Options{MarkRunningInterrupted: true}
+	switch command {
+	case "api":
+		runtimeOptions.MarkRunningInterrupted = false
+	case "collector-worker":
+		runtimeOptions.MarkRunningInterrupted = false
+		runtimeOptions.InterruptedRestartReason = "interrupted by collector worker restart"
+		runtimeOptions.InterruptedJobTypes = []string{"collect_all", "collect_site_env", "combine_recent", "archive_logs", "retention"}
+	case "ingest-worker":
+		runtimeOptions.MarkRunningInterrupted = false
+		runtimeOptions.InterruptedRestartReason = "interrupted by ingest worker restart"
+		runtimeOptions.InterruptedJobTypes = []string{"pipeline", "evaluate_alerts", "send_notifications", "refresh_ip_intel", "startup_backfill_intel"}
+	case "reports-worker":
+		runtimeOptions.MarkRunningInterrupted = false
+		runtimeOptions.InterruptedRestartReason = "interrupted by reports worker restart"
+		runtimeOptions.InterruptedJobTypes = []string{"generate_llm_reports"}
+	}
+	runtime, err := app.NewWithOptions(ctx, cfg, runtimeOptions)
 	if err != nil {
 		log.Error().Err(err).Msg("create runtime")
 		return 1
@@ -140,6 +158,26 @@ func run() int {
 	case "server":
 		if err := runtime.RunServer(ctx); err != nil {
 			log.Error().Err(err).Msg("server stopped with error")
+			return 1
+		}
+	case "api":
+		if err := runtime.RunAPI(ctx); err != nil {
+			log.Error().Err(err).Msg("API stopped with error")
+			return 1
+		}
+	case "collector-worker":
+		if err := runtime.RunCollectorWorker(ctx, *workerInterval); err != nil {
+			log.Error().Err(err).Msg("collector worker stopped with error")
+			return 1
+		}
+	case "ingest-worker":
+		if err := runtime.RunIngestWorker(ctx, *workerInterval); err != nil {
+			log.Error().Err(err).Msg("ingest worker stopped with error")
+			return 1
+		}
+	case "reports-worker":
+		if err := runtime.RunReportsWorker(ctx, *workerInterval); err != nil {
+			log.Error().Err(err).Msg("reports worker stopped with error")
 			return 1
 		}
 	case "collect":

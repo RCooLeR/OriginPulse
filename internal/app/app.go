@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -69,7 +70,17 @@ type Runtime struct {
 	scheduler       *scheduler.Scheduler
 }
 
+type Options struct {
+	MarkRunningInterrupted   bool
+	InterruptedJobTypes      []string
+	InterruptedRestartReason string
+}
+
 func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
+	return NewWithOptions(ctx, cfg, Options{MarkRunningInterrupted: true})
+}
+
+func NewWithOptions(ctx context.Context, cfg config.Config, opts Options) (*Runtime, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -86,9 +97,20 @@ func New(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	}
 
 	store := jobs.NewStore(200, storeDB)
-	if err := store.MarkRunningInterrupted(ctx, "interrupted by application restart"); err != nil {
-		storeDB.Close()
-		return nil, err
+	if len(opts.InterruptedJobTypes) > 0 {
+		reason := opts.InterruptedRestartReason
+		if reason == "" {
+			reason = "interrupted by worker restart"
+		}
+		if err := store.MarkRunningInterruptedTypes(ctx, reason, opts.InterruptedJobTypes...); err != nil {
+			storeDB.Close()
+			return nil, err
+		}
+	} else if opts.MarkRunningInterrupted {
+		if err := store.MarkRunningInterrupted(ctx, "interrupted by application restart"); err != nil {
+			storeDB.Close()
+			return nil, err
+		}
 	}
 	rawFiles := pantheon.NewRawFileRepository(storeDB)
 	collector := pantheon.NewCollector(cfg, store, rawFiles)
@@ -225,6 +247,146 @@ func (r *Runtime) RunServer(ctx context.Context) error {
 	}
 }
 
+func (r *Runtime) RunAPI(ctx context.Context) error {
+	if r.geoIPUpdater != nil && r.geoIP != nil {
+		go r.geoIPUpdater.Run(ctx, r.geoIP)
+	}
+	handler := httpapi.NewRouter(httpapi.Dependencies{
+		Config:          r.cfg,
+		DB:              r.db,
+		Auth:            r.auth,
+		Sites:           r.sites,
+		RawFiles:        r.rawFiles,
+		Combiner:        r.combiner,
+		Segments:        r.segments,
+		Indexer:         r.indexer,
+		Analytics:       r.analytics,
+		AccessAnalysis:  r.accessAnalysis,
+		Investigation:   r.investigation,
+		IPIntel:         r.ipIntel,
+		GeoIP:           r.geoIP,
+		GeoIPUpdater:    r.geoIPUpdater,
+		Alerts:          r.alerts,
+		Reports:         r.reports,
+		Notifications:   r.notifications,
+		Retention:       r.retention,
+		Archive:         r.archive,
+		ArchiveCoverage: r.archiveCoverage,
+		ArchiveImport:   r.archiveImport,
+		Backfill:        r.backfill,
+		StorageAudit:    r.storageAudit,
+		Jobs:            r.jobs,
+		Collector:       r.collector,
+		Pipeline:        r.pipeline,
+	})
+
+	server := &http.Server{
+		Addr:              r.cfg.Server.Addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Info().Str("addr", r.cfg.Server.Addr).Msg("originpulse API listening")
+		errCh <- server.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		r.Close()
+		return nil
+	case err := <-errCh:
+		r.Close()
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
+}
+
+func (r *Runtime) RunCollectorWorker(ctx context.Context, interval time.Duration) error {
+	if interval <= 0 {
+		interval = r.cfg.Collection.Interval
+	}
+	if interval <= 0 {
+		interval = 10 * time.Minute
+	}
+	if r.cfg.Retention.Enabled {
+		go r.runPeriodic(ctx, "collector maintenance", r.cfg.Retention.Interval, false, func(ctx context.Context) error {
+			if _, err := r.RunArchive(ctx, archive.Options{MaxGroups: 25, RemoveSources: true}); err != nil {
+				return err
+			}
+			_, err := r.RunRetention(ctx, retention.Options{})
+			return err
+		})
+	}
+	return r.runPeriodic(ctx, "collector", interval, true, func(ctx context.Context) error {
+		if err := r.CollectOnce(ctx); err != nil {
+			return err
+		}
+		_, err := r.CombineRecent(ctx, "collector")
+		return err
+	})
+}
+
+func (r *Runtime) RunIngestWorker(ctx context.Context, interval time.Duration) error {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	r.startStartupIntelBackfill(ctx)
+	go r.runIPIntelWorker(ctx)
+	return r.runPeriodic(ctx, "ingest", interval, true, func(ctx context.Context) error {
+		if _, err := r.RunPipeline(ctx, pipeline.Options{SkipCombine: true, TriggeredBy: "ingest-worker"}); err != nil {
+			return err
+		}
+		if err := r.EvaluateAlertsAndNotify(ctx); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+func (r *Runtime) RunReportsWorker(ctx context.Context, interval time.Duration) error {
+	if interval <= 0 {
+		interval = r.cfg.Reports.Interval
+	}
+	if interval <= 0 {
+		interval = 24 * time.Hour
+	}
+	return r.runPeriodic(ctx, "reports", interval, false, func(ctx context.Context) error {
+		_, err := r.GenerateScheduledReports(ctx)
+		return err
+	})
+}
+
+func (r *Runtime) runPeriodic(ctx context.Context, name string, interval time.Duration, immediate bool, fn func(context.Context) error) error {
+	log.Info().Dur("interval", interval).Str("worker", name).Msg("worker started")
+	if immediate {
+		if err := fn(ctx); err != nil {
+			log.Error().Err(err).Str("worker", name).Msg("worker cycle failed")
+		}
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info().Str("worker", name).Msg("worker stopped")
+			return nil
+		case <-ticker.C:
+			if err := fn(ctx); err != nil {
+				log.Error().Err(err).Str("worker", name).Msg("worker cycle failed")
+			}
+		}
+	}
+}
+
 func (r *Runtime) startStartupIntelBackfill(ctx context.Context) {
 	if r == nil || r.db == nil || !r.db.Enabled() || !r.cfg.IPIntel.Enabled || !r.cfg.IPIntel.StartupBackfill {
 		return
@@ -277,6 +439,55 @@ func (r *Runtime) startStartupIntelBackfill(ctx context.Context) {
 
 func (r *Runtime) CollectOnce(ctx context.Context) error {
 	return r.collector.CollectAll(ctx)
+}
+
+func (r *Runtime) CombineRecent(ctx context.Context, triggeredBy string) (pipeline.Result, error) {
+	now := time.Now().UTC()
+	settlingWindow := r.cfg.Combiner.SettlingWindow
+	if settlingWindow <= 0 {
+		settlingWindow = 5 * time.Minute
+	}
+	to := now.Add(-settlingWindow)
+	from := to.Add(-45 * time.Minute)
+	logTypes := append([]string(nil), r.cfg.Collection.LogTypes...)
+	if len(logTypes) == 0 {
+		logTypes = []string{"nginx-access"}
+	}
+	if strings.TrimSpace(triggeredBy) == "" {
+		triggeredBy = "collector-worker"
+	}
+	job := r.jobs.Start(ctx, "combine_recent", triggeredBy, map[string]any{
+		"from":              from.Format(time.RFC3339),
+		"to":                to.Format(time.RFC3339),
+		"all_source_events": true,
+	})
+	result := pipeline.Result{From: from, To: to, LogTypes: logTypes}
+	for _, logType := range logTypes {
+		logType = strings.TrimSpace(logType)
+		if logType == "" {
+			logType = "nginx-access"
+		}
+		combineResult, err := r.combiner.Combine(ctx, combiner.Options{
+			LogType:         logType,
+			From:            from,
+			To:              to,
+			AllSourceEvents: true,
+		})
+		if err != nil {
+			r.jobs.Finish(job.ID, jobs.StatusFailed, "combine recent failed", err)
+			return result, err
+		}
+		result.CombineResults = append(result.CombineResults, combineResult)
+		result.CombinedSegments += combineResult.SegmentsWritten
+		result.LinesCombined += combineResult.LinesCombined
+		result.LinesQuarantined += combineResult.LinesQuarantined
+	}
+	r.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, "combine recent completed", nil, map[string]any{
+		"combined_segments": result.CombinedSegments,
+		"lines_combined":    result.LinesCombined,
+		"lines_quarantined": result.LinesQuarantined,
+	})
+	return result, nil
 }
 
 func (r *Runtime) Combine(ctx context.Context, opts combiner.Options) (combiner.Result, error) {
@@ -582,6 +793,101 @@ func (r *Runtime) RecentReports(ctx context.Context, limit int, siteID string) (
 
 func (r *Runtime) GenerateReport(ctx context.Context, opts reports.Options) (reports.Report, error) {
 	return r.reports.Generate(ctx, opts)
+}
+
+func (r *Runtime) GenerateScheduledReports(ctx context.Context) (int, error) {
+	if r.reports == nil || !r.cfg.Reports.Enabled {
+		return 0, nil
+	}
+	job := r.jobs.Start(ctx, "generate_llm_reports", "reports-worker", map[string]any{"ranges": strings.Join(r.cfg.Reports.Ranges, ",")})
+	generated := 0
+	for _, reportRange := range r.cfg.Reports.Ranges {
+		reportRange = strings.TrimSpace(reportRange)
+		if reportRange == "" {
+			continue
+		}
+		if _, err := r.reports.Generate(ctx, reports.Options{Range: reportRange}); err != nil {
+			r.jobs.Finish(job.ID, jobs.StatusFailed, "LLM report generation failed", err)
+			return generated, err
+		}
+		generated++
+	}
+	r.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, "LLM reports generated", nil, map[string]any{"generated": generated})
+	log.Info().Int("generated", generated).Msg("scheduled LLM reports generated")
+	return generated, nil
+}
+
+func (r *Runtime) EvaluateAlertsAndNotify(ctx context.Context) error {
+	if r.alerts == nil || !r.alerts.Enabled() {
+		return nil
+	}
+	job := r.jobs.Start(ctx, "evaluate_alerts", "ingest-worker", map[string]any{"range": "24h"})
+	result, err := r.alerts.Evaluate(ctx, alerts.Options{Range: "24h", Limit: 200})
+	if err != nil {
+		r.jobs.Finish(job.ID, jobs.StatusFailed, "alert evaluation failed", err)
+		return err
+	}
+	r.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, "alert evaluation completed", nil, map[string]any{
+		"evaluated": result.Evaluated,
+		"upserted":  result.Upserted,
+	})
+	if r.notifications == nil || !r.cfg.Notifications.Enabled {
+		return nil
+	}
+	notifyJob := r.jobs.Start(ctx, "send_notifications", "ingest-worker", map[string]any{"min_severity": r.cfg.Notifications.MinSeverity})
+	notifyResult, err := r.notifications.NotifyOpenAlerts(ctx, 100)
+	if err != nil {
+		r.jobs.Finish(notifyJob.ID, jobs.StatusFailed, "notifications failed", err)
+		return err
+	}
+	r.jobs.FinishWithMeta(notifyJob.ID, jobs.StatusSuccess, "notifications completed", nil, map[string]any{
+		"evaluated": notifyResult.Evaluated,
+		"sent":      notifyResult.Sent,
+		"skipped":   notifyResult.Skipped,
+		"failed":    notifyResult.Failed,
+	})
+	return nil
+}
+
+func (r *Runtime) runIPIntelWorker(ctx context.Context) {
+	if r.ipIntel == nil || !r.ipIntel.Enabled() || !r.cfg.IPIntel.Enabled {
+		return
+	}
+	interval := r.cfg.IPIntel.Interval
+	if interval <= 0 {
+		interval = 15 * time.Minute
+	}
+	_ = r.runPeriodic(ctx, "ip-intel", interval, true, func(ctx context.Context) error {
+		limit := r.cfg.IPIntel.Limit
+		if limit <= 0 {
+			limit = ipintel.ResultMaxLimit
+		}
+		refreshRange := strings.TrimSpace(r.cfg.IPIntel.Range)
+		if refreshRange == "" {
+			refreshRange = "24h"
+		}
+		job := r.jobs.Start(ctx, "refresh_ip_intel", "ingest-worker", map[string]any{"range": refreshRange, "limit": limit})
+		providers, providerErr := r.ipIntel.RefreshOfficialProviderRanges(ctx)
+		result, err := r.ipIntel.RefreshTop(ctx, ipintel.Options{Range: refreshRange, Limit: limit})
+		if err != nil {
+			r.jobs.Finish(job.ID, jobs.StatusFailed, "IP intelligence refresh failed", err)
+			return err
+		}
+		if providerErr != nil {
+			log.Warn().Err(providerErr).Int("provider_ranges", providers.Ranges).Int("provider_failed", providers.Failed).Msg("provider range refresh completed with errors")
+		}
+		r.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, "IP intelligence refresh completed", nil, map[string]any{
+			"refreshed":          result.Refreshed,
+			"failed":             result.Failed,
+			"lookup_failed":      result.LookupFailed,
+			"geoip_failed":       result.GeoIPFailed,
+			"reverse_dns_failed": result.ReverseDNSFailed,
+			"providers":          providers.Providers,
+			"provider_ranges":    providers.Ranges,
+			"provider_failed":    providers.Failed,
+		})
+		return nil
+	})
 }
 
 func (r *Runtime) ReportDetail(ctx context.Context, id string) (reports.Report, error) {
