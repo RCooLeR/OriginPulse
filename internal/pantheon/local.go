@@ -32,13 +32,25 @@ func (c *Collector) collectLocalSiteEnv(ctx context.Context, jobID string, site 
 	if err != nil {
 		c.jobs.FinishStep(sourceStep, jobs.StatusFailed, "local log path is not readable", err, nil)
 		c.jobs.Finish(jobID, jobs.StatusFailed, "local log path is not readable", err)
-		return err
+		log.Error().
+			Err(err).
+			Str("site_id", site.ID).
+			Str("env", env).
+			Str("source_path", sourcePath).
+			Msg("local log path is not readable; skipping local site")
+		return nil
 	}
 	if !info.IsDir() {
 		err := fmt.Errorf("local log path %q is not a directory", sourcePath)
 		c.jobs.FinishStep(sourceStep, jobs.StatusFailed, "local log path is not a directory", err, nil)
 		c.jobs.Finish(jobID, jobs.StatusFailed, "local log path is not a directory", err)
-		return err
+		log.Error().
+			Err(err).
+			Str("site_id", site.ID).
+			Str("env", env).
+			Str("source_path", sourcePath).
+			Msg("local log path is not a directory; skipping local site")
+		return nil
 	}
 
 	rawFiles, err := c.discoverLocalRawFiles(sourcePath, site, env)
