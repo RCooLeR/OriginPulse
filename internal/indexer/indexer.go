@@ -761,9 +761,10 @@ INSERT INTO log_events (
   ts, site_id, env, container_id, log_type, severity, message, raw, fingerprint,
   segment_id, segment_line_no, raw_file_id, raw_line_no, temporary_import_id, imported_until
 )
-SELECT ts, site_id, env, container_id, log_type, nullif(severity, ''), message, raw, fingerprint,
-       $1::uuid, segment_line_no, nullif(raw_file_id, '')::uuid, raw_line_no, nullif($2, '')::uuid, $3::timestamptz
-FROM tmp_log_events
+SELECT tle.ts, tle.site_id, tle.env, tle.container_id, tle.log_type, nullif(tle.severity, ''), tle.message, tle.raw, tle.fingerprint,
+       $1::uuid, tle.segment_line_no, rf.id, tle.raw_line_no, nullif($2, '')::uuid, $3::timestamptz
+FROM tmp_log_events tle
+LEFT JOIN raw_files rf ON rf.id = nullif(tle.raw_file_id, '')::uuid
 ON CONFLICT (fingerprint, ts) DO NOTHING`, segmentID, temporaryImportID, importedUntilValue)
 	if err != nil {
 		return 0, 0, deleted, err
@@ -1158,10 +1159,11 @@ INSERT INTO access_events (
   segment_line_no, raw_file_id, raw_line_no, ip_id, path_id, query_id, user_agent_id, temporary_import_id, imported_until
 )
 SELECT
-  ts, site_id, env, container_id, nullif(client_ip, '')::inet, nullif(method, ''), nullif(scheme, ''), nullif(host, ''), nullif(path, ''), path_hash, nullif(query, ''),
-  nullif(status, 0), bytes_sent, nullif(referer, ''), nullif(user_agent, ''), user_agent_hash, nullif(request_time_ms, 0), nullif(upstream_time_ms, 0), fingerprint, nullif(segment_id, '')::uuid,
-  segment_line_no, nullif(raw_file_id, '')::uuid, nullif(raw_line_no, 0), ip_id, path_id, query_id, user_agent_id, nullif($1, '')::uuid, $2
-FROM tmp_access_events
+  tae.ts, tae.site_id, tae.env, tae.container_id, nullif(tae.client_ip, '')::inet, nullif(tae.method, ''), nullif(tae.scheme, ''), nullif(tae.host, ''), nullif(tae.path, ''), tae.path_hash, nullif(tae.query, ''),
+  nullif(tae.status, 0), tae.bytes_sent, nullif(tae.referer, ''), nullif(tae.user_agent, ''), tae.user_agent_hash, nullif(tae.request_time_ms, 0), nullif(tae.upstream_time_ms, 0), tae.fingerprint, nullif(tae.segment_id, '')::uuid,
+  tae.segment_line_no, rf.id, nullif(tae.raw_line_no, 0), tae.ip_id, tae.path_id, tae.query_id, tae.user_agent_id, nullif($1, '')::uuid, $2
+FROM tmp_access_events tae
+LEFT JOIN raw_files rf ON rf.id = nullif(tae.raw_file_id, '')::uuid
 ON CONFLICT (fingerprint, ts) DO NOTHING
 RETURNING id, segment_line_no`, temporaryImportID, nullableTime(importedUntil))
 	if err != nil {
