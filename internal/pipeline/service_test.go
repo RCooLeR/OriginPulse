@@ -57,6 +57,7 @@ func TestRecentOptionsPreservePipelineControls(t *testing.T) {
 		Force:              true,
 		SkipCombine:        true,
 		SkipRollupRecovery: true,
+		SkipRollupRebuild:  true,
 		PreferRecent:       true,
 		SiteID:             "site-a",
 		Env:                "live",
@@ -67,7 +68,7 @@ func TestRecentOptionsPreservePipelineControls(t *testing.T) {
 	service := New(config.Default(), nil, nil, nil, nil)
 	normalized := service.normalizeOptions(opts)
 
-	if !normalized.Force || !normalized.SkipCombine || !normalized.SkipRollupRecovery || !normalized.PreferRecent {
+	if !normalized.Force || !normalized.SkipCombine || !normalized.SkipRollupRecovery || !normalized.SkipRollupRebuild || !normalized.PreferRecent {
 		t.Fatal("boolean pipeline controls were not preserved")
 	}
 	if normalized.SiteID != "site-a" || normalized.Env != "live" {

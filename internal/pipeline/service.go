@@ -24,6 +24,7 @@ type Options struct {
 	Force              bool      `json:"force"`
 	SkipCombine        bool      `json:"skip_combine"`
 	SkipRollupRecovery bool      `json:"skip_rollup_recovery,omitempty"`
+	SkipRollupRebuild  bool      `json:"skip_rollup_rebuild,omitempty"`
 	PreferRecent       bool      `json:"prefer_recent,omitempty"`
 	SiteID             string    `json:"site_id,omitempty"`
 	Env                string    `json:"env,omitempty"`
@@ -105,11 +106,19 @@ func (s *Service) Run(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	var result Result
-	err := s.segments.WithPipelineLock(ctx, func(ctx context.Context) error {
+	runPipeline := func(ctx context.Context) error {
 		var runErr error
 		result, runErr = s.run(ctx, opts, job.ID)
 		return runErr
-	})
+	}
+	var err error
+	if isScopedPipeline(opts) {
+		err = s.segments.WithPipelineLockForScope(ctx, opts.SiteID, opts.Env, runPipeline)
+	} else if opts.SkipCombine {
+		err = runPipeline(ctx)
+	} else {
+		err = s.segments.WithPipelineLock(ctx, runPipeline)
+	}
 	if s.jobs != nil {
 		if err != nil {
 			s.jobs.FinishWithMeta(job.ID, jobs.StatusFailed, "pipeline failed", err, resultJobMeta(result))
@@ -157,6 +166,10 @@ func (s *Service) RunRecentWithOptions(ctx context.Context, triggeredBy string, 
 	opts.AllSourceEvents = true
 	opts.TriggeredBy = triggeredBy
 	return s.Run(ctx, opts)
+}
+
+func isScopedPipeline(opts Options) bool {
+	return strings.TrimSpace(opts.SiteID) != "" || strings.TrimSpace(opts.Env) != ""
 }
 
 func (s *Service) run(ctx context.Context, opts Options, jobID string) (Result, error) {
@@ -249,7 +262,7 @@ func (s *Service) run(ctx context.Context, opts Options, jobID string) (Result, 
 			repairedSegmentIDs = append(repairedSegmentIDs, indexResult.SegmentID)
 		}
 	}
-	if result.IndexedSegments > 0 && !repairStart.IsZero() && repairEnd.After(repairStart) {
+	if result.IndexedSegments > 0 && !opts.SkipRollupRebuild && !repairStart.IsZero() && repairEnd.After(repairStart) {
 		step := s.startStep(ctx, jobID, "rebuild rollups", map[string]any{
 			"from": repairStart.Format(time.RFC3339),
 			"to":   repairEnd.Format(time.RFC3339),
@@ -425,7 +438,18 @@ func (s *Service) indexPendingSegmentsBySite(ctx context.Context, parentJobID st
 			siteJobID = siteJob.ID
 		}
 
-		siteResults, err := s.indexPendingSegments(ctx, siteJobID, group.Segments, opts)
+		var siteResults []indexer.Result
+		indexSite := func(ctx context.Context) error {
+			var siteErr error
+			siteResults, siteErr = s.indexPendingSegments(ctx, siteJobID, group.Segments, opts)
+			return siteErr
+		}
+		var err error
+		if isScopedPipeline(opts) {
+			err = indexSite(ctx)
+		} else {
+			err = s.segments.WithPipelineLockForScope(ctx, group.SiteID, "", indexSite)
+		}
 		allResults = append(allResults, siteResults...)
 		meta := map[string]any{
 			"parent_job_id":     parentJobID,

@@ -481,12 +481,16 @@ func (r *Runtime) CollectAndPipelineSitesOnce(ctx context.Context) error {
 				if ctx.Err() != nil || r.pipeline == nil || !r.pipeline.Enabled() {
 					return
 				}
-				pipelineResult, pipelineErr := r.pipeline.RunRecentWithOptions(ctx, "collector-worker", pipeline.Options{
-					SiteID:             site.ID,
-					Env:                env,
-					SkipRollupRecovery: true,
-				})
+				pipelineResult, pipelineErr := r.runSitePostCollectionPipeline(ctx, site.ID, env)
 				if pipelineErr != nil {
+					if errors.Is(pipelineErr, db.ErrLockUnavailable) {
+						log.Warn().
+							Err(pipelineErr).
+							Str("site_id", site.ID).
+							Str("env", env).
+							Msg("site post-collection pipeline skipped; same site is already indexing")
+						return
+					}
 					log.Error().
 						Err(pipelineErr).
 						Str("site_id", site.ID).
@@ -516,6 +520,45 @@ func (r *Runtime) CollectAndPipelineSitesOnce(ctx context.Context) error {
 		return firstErr
 	}
 	return ctx.Err()
+}
+
+func (r *Runtime) runSitePostCollectionPipeline(ctx context.Context, siteID string, env string) (pipeline.Result, error) {
+	const retryDelay = 2 * time.Second
+	deadline := time.Now().Add(90 * time.Second)
+	var lastResult pipeline.Result
+	for attempt := 1; ; attempt++ {
+		result, err := r.pipeline.RunRecentWithOptions(ctx, "collector-worker", pipeline.Options{
+			SiteID:             siteID,
+			Env:                env,
+			SkipRollupRecovery: true,
+			SkipRollupRebuild:  true,
+		})
+		lastResult = result
+		if err == nil || !errors.Is(err, db.ErrLockUnavailable) {
+			return result, err
+		}
+		if time.Now().Add(retryDelay).After(deadline) {
+			log.Warn().
+				Err(err).
+				Str("site_id", siteID).
+				Str("env", env).
+				Int("attempt", attempt).
+				Msg("site post-collection pipeline lock unavailable; leaving segments for ingest worker")
+			return lastResult, err
+		}
+		log.Debug().
+			Err(err).
+			Str("site_id", siteID).
+			Str("env", env).
+			Int("attempt", attempt).
+			Dur("retry_after", retryDelay).
+			Msg("site post-collection pipeline waiting for pipeline lock")
+		select {
+		case <-ctx.Done():
+			return lastResult, ctx.Err()
+		case <-time.After(retryDelay):
+		}
+	}
 }
 
 func (r *Runtime) CombineRecent(ctx context.Context, triggeredBy string) (pipeline.Result, error) {

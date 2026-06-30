@@ -2,6 +2,7 @@ package combiner
 
 import (
 	"context"
+	"hash/fnv"
 	"path/filepath"
 	"strings"
 	"time"
@@ -53,6 +54,7 @@ type Repository struct {
 
 const (
 	pipelineLockKey        int64 = 7720002
+	pipelineScopedLockBase int64 = 7720002000
 	RecentSegmentsMaxLimit       = 500
 )
 
@@ -72,10 +74,25 @@ func (r *Repository) Enabled() bool {
 }
 
 func (r *Repository) WithPipelineLock(ctx context.Context, fn func(context.Context) error) error {
+	return r.WithPipelineLockForScope(ctx, "", "", fn)
+}
+
+func (r *Repository) WithPipelineLockForScope(ctx context.Context, siteID string, env string, fn func(context.Context) error) error {
 	if !r.Enabled() {
 		return fn(ctx)
 	}
-	return r.db.WithAdvisoryLock(ctx, pipelineLockKey, fn)
+	return r.db.WithAdvisoryLock(ctx, pipelineLockKeyForScope(siteID, env), fn)
+}
+
+func pipelineLockKeyForScope(siteID string, env string) int64 {
+	siteID = strings.TrimSpace(strings.ToLower(siteID))
+	env = strings.TrimSpace(strings.ToLower(env))
+	if siteID == "" && env == "" {
+		return pipelineLockKey
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(siteID + "\x00" + env))
+	return pipelineScopedLockBase + int64(h.Sum64()%1_000_000_000)
 }
 
 func (r *Repository) DownloadedRawSources(ctx context.Context, logType string, modifiedSince time.Time, siteID string, env string) ([]RawSource, error) {
