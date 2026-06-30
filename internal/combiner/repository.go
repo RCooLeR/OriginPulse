@@ -78,7 +78,7 @@ func (r *Repository) WithPipelineLock(ctx context.Context, fn func(context.Conte
 	return r.db.WithAdvisoryLock(ctx, pipelineLockKey, fn)
 }
 
-func (r *Repository) DownloadedRawSources(ctx context.Context, logType string, modifiedSince time.Time) ([]RawSource, error) {
+func (r *Repository) DownloadedRawSources(ctx context.Context, logType string, modifiedSince time.Time, siteID string, env string) ([]RawSource, error) {
 	if !r.Enabled() {
 		return nil, nil
 	}
@@ -98,6 +98,8 @@ SELECT id::text, site_id, env, container_id, log_type, local_path
 FROM raw_files
 WHERE status = 'downloaded'
   AND log_type = $1
+  AND ($3 = '' OR site_id = $3)
+  AND ($4 = '' OR env = $4)
   AND (
     combined_at IS NULL
     OR combined_sha256 IS DISTINCT FROM sha256
@@ -105,7 +107,7 @@ WHERE status = 'downloaded'
     OR remote_mtime >= $2
     OR downloaded_at >= $2
   )
-ORDER BY site_id, env, container_id, local_path`, logType, since)
+ORDER BY site_id, env, container_id, local_path`, logType, since, strings.TrimSpace(siteID), strings.TrimSpace(env))
 	if err != nil {
 		return nil, err
 	}
@@ -327,18 +329,26 @@ func normalizeRecentSegmentsOffset(offset int) int {
 }
 
 func (r *Repository) PendingIndexSegments(ctx context.Context, limit int) ([]SegmentManifest, error) {
-	return r.pendingIndexSegments(ctx, limit, false, false)
+	return r.pendingIndexSegments(ctx, limit, false, false, "", "")
 }
 
 func (r *Repository) RecentPendingIndexSegments(ctx context.Context, limit int) ([]SegmentManifest, error) {
-	return r.pendingIndexSegments(ctx, limit, true, false)
+	return r.RecentPendingIndexSegmentsForScope(ctx, limit, "", "")
+}
+
+func (r *Repository) RecentPendingIndexSegmentsForScope(ctx context.Context, limit int, siteID string, env string) ([]SegmentManifest, error) {
+	return r.pendingIndexSegments(ctx, limit, true, false, siteID, env)
 }
 
 func (r *Repository) ReindexSegments(ctx context.Context, limit int, newestFirst bool) ([]SegmentManifest, error) {
-	return r.pendingIndexSegments(ctx, limit, newestFirst, true)
+	return r.ReindexSegmentsForScope(ctx, limit, newestFirst, "", "")
 }
 
-func (r *Repository) pendingIndexSegments(ctx context.Context, limit int, newestFirst bool, includeIndexed bool) ([]SegmentManifest, error) {
+func (r *Repository) ReindexSegmentsForScope(ctx context.Context, limit int, newestFirst bool, siteID string, env string) ([]SegmentManifest, error) {
+	return r.pendingIndexSegments(ctx, limit, newestFirst, true, siteID, env)
+}
+
+func (r *Repository) pendingIndexSegments(ctx context.Context, limit int, newestFirst bool, includeIndexed bool, siteID string, env string) ([]SegmentManifest, error) {
 	if !r.Enabled() {
 		return []SegmentManifest{}, nil
 	}
@@ -359,8 +369,10 @@ SELECT id::text, coalesce(site_id, ''), coalesce(env, ''), coalesce(container_id
        line_count, min_ts, max_ts, status, indexed_at, indexed_at IS NOT NULL
 FROM combined_segments
 WHERE ($2 OR indexed_at IS NULL)
+  AND ($3 = '' OR site_id = $3)
+  AND ($4 = '' OR env = $4)
 ORDER BY bucket_start `+orderDirection+`, site_id, env, container_id, log_type
-LIMIT $1`, limit, includeIndexed)
+LIMIT $1`, limit, includeIndexed, strings.TrimSpace(siteID), strings.TrimSpace(env))
 	if err != nil {
 		return nil, err
 	}
@@ -368,16 +380,16 @@ LIMIT $1`, limit, includeIndexed)
 }
 
 func (r *Repository) PendingIndexSegmentsInRange(ctx context.Context, from time.Time, to time.Time, limit int) ([]SegmentManifest, error) {
-	return r.IndexSegmentsInRange(ctx, from, to, limit, false)
+	return r.IndexSegmentsInRange(ctx, from, to, limit, false, "", "")
 }
 
-func (r *Repository) IndexSegmentsInRange(ctx context.Context, from time.Time, to time.Time, limit int, includeIndexed bool) ([]SegmentManifest, error) {
+func (r *Repository) IndexSegmentsInRange(ctx context.Context, from time.Time, to time.Time, limit int, includeIndexed bool, siteID string, env string) ([]SegmentManifest, error) {
 	if !r.Enabled() {
 		return []SegmentManifest{}, nil
 	}
 	limit = normalizePendingIndexLimit(limit)
 	if from.IsZero() || to.IsZero() || !from.Before(to) {
-		return r.pendingIndexSegments(ctx, limit, false, includeIndexed)
+		return r.pendingIndexSegments(ctx, limit, false, includeIndexed, siteID, env)
 	}
 
 	pool, err := r.db.Pool()
@@ -393,8 +405,10 @@ FROM combined_segments
 WHERE ($4 OR indexed_at IS NULL)
   AND bucket_start < $2
   AND bucket_end > $1
+  AND ($5 = '' OR site_id = $5)
+  AND ($6 = '' OR env = $6)
 ORDER BY bucket_start DESC, site_id, env, container_id, log_type
-LIMIT $3`, from, to, limit, includeIndexed)
+LIMIT $3`, from, to, limit, includeIndexed, strings.TrimSpace(siteID), strings.TrimSpace(env))
 	if err != nil {
 		return nil, err
 	}

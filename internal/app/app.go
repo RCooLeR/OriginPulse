@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -327,11 +328,7 @@ func (r *Runtime) RunCollectorWorker(ctx context.Context, interval time.Duration
 		})
 	}
 	return r.runPeriodic(ctx, "collector", interval, true, func(ctx context.Context) error {
-		if err := r.CollectOnce(ctx); err != nil {
-			return err
-		}
-		_, err := r.CombineRecent(ctx, "collector")
-		return err
+		return r.CollectAndPipelineSitesOnce(ctx)
 	})
 }
 
@@ -439,6 +436,86 @@ func (r *Runtime) startStartupIntelBackfill(ctx context.Context) {
 
 func (r *Runtime) CollectOnce(ctx context.Context) error {
 	return r.collector.CollectAll(ctx)
+}
+
+func (r *Runtime) CollectAndPipelineSitesOnce(ctx context.Context) error {
+	if r.collector == nil {
+		return nil
+	}
+	sites := r.cfg.EnabledSites()
+	if len(sites) == 0 {
+		return r.CollectOnce(ctx)
+	}
+	workerCount := r.cfg.Collection.MaxParallelSites
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+	sem := make(chan struct{}, workerCount)
+	var wg sync.WaitGroup
+	var firstErr error
+	var errMu sync.Mutex
+
+	for _, site := range sites {
+		for _, env := range site.Envs {
+			site := site
+			env := env
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				select {
+				case sem <- struct{}{}:
+				case <-ctx.Done():
+					return
+				}
+
+				collectErr := r.collector.CollectSiteEnv(ctx, site, env, "collector-worker")
+				<-sem
+				if collectErr != nil {
+					log.Error().Err(collectErr).Str("site_id", site.ID).Str("env", env).Msg("site collection failed")
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = collectErr
+					}
+					errMu.Unlock()
+				}
+				if ctx.Err() != nil || r.pipeline == nil || !r.pipeline.Enabled() {
+					return
+				}
+				pipelineResult, pipelineErr := r.pipeline.RunRecentWithOptions(ctx, "collector-worker", pipeline.Options{
+					SiteID:             site.ID,
+					Env:                env,
+					SkipRollupRecovery: true,
+				})
+				if pipelineErr != nil {
+					log.Error().
+						Err(pipelineErr).
+						Str("site_id", site.ID).
+						Str("env", env).
+						Int("combined_segments", pipelineResult.CombinedSegments).
+						Int("indexed_segments", pipelineResult.IndexedSegments).
+						Msg("site post-collection pipeline failed")
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = pipelineErr
+					}
+					errMu.Unlock()
+					return
+				}
+				log.Info().
+					Str("site_id", site.ID).
+					Str("env", env).
+					Int("combined_segments", pipelineResult.CombinedSegments).
+					Int("indexed_segments", pipelineResult.IndexedSegments).
+					Msg("site post-collection pipeline completed")
+			}()
+		}
+	}
+
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	return ctx.Err()
 }
 
 func (r *Runtime) CombineRecent(ctx context.Context, triggeredBy string) (pipeline.Result, error) {

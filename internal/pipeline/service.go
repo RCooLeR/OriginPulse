@@ -25,6 +25,8 @@ type Options struct {
 	SkipCombine        bool      `json:"skip_combine"`
 	SkipRollupRecovery bool      `json:"skip_rollup_recovery,omitempty"`
 	PreferRecent       bool      `json:"prefer_recent,omitempty"`
+	SiteID             string    `json:"site_id,omitempty"`
+	Env                string    `json:"env,omitempty"`
 	AllSourceEvents    bool      `json:"all_source_events,omitempty"`
 	LogTypes           []string  `json:"log_types,omitempty"`
 	MaxSegments        int       `json:"max_segments,omitempty"`
@@ -168,6 +170,8 @@ func (s *Service) run(ctx context.Context, opts Options, jobID string) (Result, 
 		for _, logType := range opts.LogTypes {
 			step := s.startStep(ctx, jobID, "combine "+logType, map[string]any{
 				"log_type":          logType,
+				"site_id":           opts.SiteID,
+				"env":               opts.Env,
 				"from":              opts.From.Format(time.RFC3339),
 				"to":                opts.To.Format(time.RFC3339),
 				"force":             opts.Force,
@@ -179,6 +183,8 @@ func (s *Service) run(ctx context.Context, opts Options, jobID string) (Result, 
 				To:              opts.To,
 				Force:           opts.Force,
 				AllSourceEvents: opts.AllSourceEvents,
+				SiteID:          opts.SiteID,
+				Env:             opts.Env,
 			})
 			if err != nil {
 				s.finishStep(step, jobs.StatusFailed, "combine failed", err, nil)
@@ -325,11 +331,11 @@ func isAccessLogType(logType string) bool {
 func (s *Service) pendingIndexSegments(ctx context.Context, opts Options) ([]combiner.SegmentManifest, error) {
 	if opts.PreferRecent && (opts.From.IsZero() || opts.To.IsZero() || !opts.From.Before(opts.To)) {
 		if opts.Force {
-			return s.segments.ReindexSegments(ctx, opts.MaxSegments, true)
+			return s.segments.ReindexSegmentsForScope(ctx, opts.MaxSegments, true, opts.SiteID, opts.Env)
 		}
-		return s.segments.RecentPendingIndexSegments(ctx, opts.MaxSegments)
+		return s.segments.RecentPendingIndexSegmentsForScope(ctx, opts.MaxSegments, opts.SiteID, opts.Env)
 	}
-	inRange, err := s.segments.IndexSegmentsInRange(ctx, opts.From, opts.To, opts.MaxSegments, opts.Force)
+	inRange, err := s.segments.IndexSegmentsInRange(ctx, opts.From, opts.To, opts.MaxSegments, opts.Force, opts.SiteID, opts.Env)
 	if err != nil {
 		return nil, err
 	}

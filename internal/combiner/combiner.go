@@ -24,6 +24,8 @@ type Options struct {
 	LogType         string
 	From            time.Time
 	To              time.Time
+	SiteID          string
+	Env             string
 	Force           bool
 	AllSourceEvents bool
 }
@@ -171,7 +173,7 @@ func (s *Service) sources(ctx context.Context, opts Options) ([]RawSource, error
 		if !opts.Force && !opts.From.IsZero() {
 			modifiedSince = opts.From.Add(-15 * time.Minute)
 		}
-		return s.repo.DownloadedRawSources(ctx, opts.LogType, modifiedSince)
+		return s.repo.DownloadedRawSources(ctx, opts.LogType, modifiedSince, opts.SiteID, opts.Env)
 	}
 	return s.sourcesFromFilesystem(opts.LogType)
 }

@@ -58,6 +58,8 @@ func TestRecentOptionsPreservePipelineControls(t *testing.T) {
 		SkipCombine:        true,
 		SkipRollupRecovery: true,
 		PreferRecent:       true,
+		SiteID:             "site-a",
+		Env:                "live",
 		LogTypes:           []string{"nginx-access", "php-error"},
 		MaxSegments:        7,
 		IndexWorkers:       4,
@@ -67,6 +69,9 @@ func TestRecentOptionsPreservePipelineControls(t *testing.T) {
 
 	if !normalized.Force || !normalized.SkipCombine || !normalized.SkipRollupRecovery || !normalized.PreferRecent {
 		t.Fatal("boolean pipeline controls were not preserved")
+	}
+	if normalized.SiteID != "site-a" || normalized.Env != "live" {
+		t.Fatalf("scope = %q/%q, want site-a/live", normalized.SiteID, normalized.Env)
 	}
 	if normalized.MaxSegments != 7 {
 		t.Fatalf("MaxSegments = %d, want 7", normalized.MaxSegments)
