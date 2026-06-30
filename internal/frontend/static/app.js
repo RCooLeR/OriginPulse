@@ -35,6 +35,7 @@ const alertRequestPageSize = 6;
 const userAgentDetailPageSize = 6;
 const securitySignalDetailPageSize = 6;
 const ipDetailPageSize = 6;
+const issueEventPageSize = 10;
 const drawerHistoryLimit = 500;
 const analysisHistoryLimit = 500;
 const dashboardAutoRefreshMs = 60 * 1000;
@@ -3147,7 +3148,7 @@ function issueTopPathsPanel(kind, sourceRows = null) {
 function issueEventsPanel(kind, sourceRows = null) {
   const rows = sourceRows || filtered(searchItems(state.data.traffic.recent_errors || [], (item) => `${item.status} ${item.site_id} ${item.env} ${item.client_ip} ${item.method} ${item.path} ${item.user_agent}`));
   const key = issuePageKey(kind, "Events");
-  const page = paginate(rows, state.pages[key], 4);
+  const page = paginate(rows, state.pages[key], issueEventPageSize);
   state.pages[key] = page.page;
   return `
     <article class="panel">
@@ -3317,7 +3318,7 @@ function eventsPanel() {
   return `
     <article class="panel">
       <div class="panel-head"><div><h2>Recent Error Rows</h2><p>Latest 4xx/5xx evidence.</p></div></div>
-      ${eventsTable((state.data.traffic.recent_errors || []).slice(0, 8))}
+      ${eventsTable((state.data.traffic.recent_errors || []).slice(0, issueEventPageSize))}
     </article>
   `;
 }
