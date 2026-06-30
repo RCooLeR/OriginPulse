@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +50,9 @@ type Result struct {
 	SecurityProbes    int               `json:"security_probes"`
 	ErrorEvents       int               `json:"error_events"`
 	SlowRequests      int               `json:"slow_request_events"`
+	FailedSites       int               `json:"failed_sites,omitempty"`
+	FailedSegments    int               `json:"failed_segments,omitempty"`
+	FailedSiteIDs     []string          `json:"failed_site_ids,omitempty"`
 	CombineResults    []combiner.Result `json:"combine_results,omitempty"`
 	IndexResults      []indexer.Result  `json:"index_results,omitempty"`
 }
@@ -106,7 +110,7 @@ func (s *Service) Run(ctx context.Context, opts Options) (Result, error) {
 	})
 	if s.jobs != nil {
 		if err != nil {
-			s.jobs.Finish(job.ID, jobs.StatusFailed, "pipeline failed", err)
+			s.jobs.FinishWithMeta(job.ID, jobs.StatusFailed, "pipeline failed", err, resultJobMeta(result))
 		} else {
 			s.jobs.FinishWithMeta(job.ID, jobs.StatusSuccess, "pipeline completed", nil, resultJobMeta(result))
 		}
@@ -128,6 +132,9 @@ func resultJobMeta(result Result) map[string]any {
 		"security_probes":     result.SecurityProbes,
 		"error_events":        result.ErrorEvents,
 		"slow_request_events": result.SlowRequests,
+		"failed_sites":        result.FailedSites,
+		"failed_segments":     result.FailedSegments,
+		"failed_site_ids":     result.FailedSiteIDs,
 	}
 }
 
@@ -212,7 +219,7 @@ func (s *Service) run(ctx context.Context, opts Options, jobID string) (Result, 
 	var repairStart time.Time
 	var repairEnd time.Time
 	repairedSegmentIDs := make([]string, 0, len(pending))
-	indexResults, indexErr := s.indexPendingSegments(ctx, jobID, pending, opts)
+	indexResults, indexErr := s.indexPendingSegmentsBySite(ctx, jobID, pending, opts, &result)
 	for _, indexResult := range indexResults {
 		result.IndexResults = append(result.IndexResults, indexResult)
 		result.IndexedSegments++
@@ -268,6 +275,16 @@ func (s *Service) run(ctx context.Context, opts Options, jobID string) (Result, 
 		result.RollupsUpdated += recovered
 	}
 	if indexErr != nil {
+		log.Warn().
+			Time("from", result.From).
+			Time("to", result.To).
+			Int("combined_segments", result.CombinedSegments).
+			Int("indexed_segments", result.IndexedSegments).
+			Int("failed_sites", result.FailedSites).
+			Int("failed_segments", result.FailedSegments).
+			Strs("failed_site_ids", result.FailedSiteIDs).
+			Err(indexErr).
+			Msg("pipeline completed with site failures")
 		return result, indexErr
 	}
 
@@ -284,6 +301,9 @@ func (s *Service) run(ctx context.Context, opts Options, jobID string) (Result, 
 		Int("security_probes", result.SecurityProbes).
 		Int("error_events", result.ErrorEvents).
 		Int("slow_request_events", result.SlowRequests).
+		Int("failed_sites", result.FailedSites).
+		Int("failed_segments", result.FailedSegments).
+		Strs("failed_site_ids", result.FailedSiteIDs).
 		Msg("pipeline completed")
 
 	return result, nil
@@ -374,6 +394,100 @@ type indexedSegmentResult struct {
 	err    error
 }
 
+type siteSegmentGroup struct {
+	SiteID   string
+	Segments []combiner.SegmentManifest
+}
+
+func (s *Service) indexPendingSegmentsBySite(ctx context.Context, parentJobID string, pending []combiner.SegmentManifest, opts Options, result *Result) ([]indexer.Result, error) {
+	groups := groupSegmentsBySite(pending)
+	if len(groups) == 0 {
+		return []indexer.Result{}, nil
+	}
+
+	allResults := make([]indexer.Result, 0, len(pending))
+	failures := make([]string, 0)
+	for _, group := range groups {
+		siteJobID := parentJobID
+		if s.jobs != nil {
+			siteJob := s.jobs.Start(ctx, "pipeline_site", opts.TriggeredBy, map[string]any{
+				"parent_job_id": parentJobID,
+				"site_id":       group.SiteID,
+				"segments":      len(group.Segments),
+				"force":         opts.Force,
+			})
+			siteJobID = siteJob.ID
+		}
+
+		siteResults, err := s.indexPendingSegments(ctx, siteJobID, group.Segments, opts)
+		allResults = append(allResults, siteResults...)
+		meta := map[string]any{
+			"parent_job_id":     parentJobID,
+			"site_id":           group.SiteID,
+			"segments":          len(group.Segments),
+			"indexed_segments":  len(siteResults),
+			"failed_segments":   len(group.Segments) - len(siteResults),
+			"events_inserted":   sumIndexResults(siteResults, func(item indexer.Result) int { return item.EventsInserted }),
+			"events_stored":     sumIndexResults(siteResults, func(item indexer.Result) int { return item.EventsStored }),
+			"events_skipped":    sumIndexResults(siteResults, func(item indexer.Result) int { return item.EventsSkipped }),
+			"security_probes":   sumIndexResults(siteResults, func(item indexer.Result) int { return item.SecurityProbes }),
+			"error_events":      sumIndexResults(siteResults, func(item indexer.Result) int { return item.ErrorEvents }),
+			"slow_request_rows": sumIndexResults(siteResults, func(item indexer.Result) int { return item.SlowRequestEvents }),
+		}
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", group.SiteID, err))
+			if result != nil {
+				result.FailedSites++
+				result.FailedSegments += len(group.Segments) - len(siteResults)
+				result.FailedSiteIDs = append(result.FailedSiteIDs, group.SiteID)
+			}
+			if s.jobs != nil {
+				s.jobs.FinishWithMeta(siteJobID, jobs.StatusFailed, "site pipeline failed", err, meta)
+			}
+			log.Error().
+				Err(err).
+				Str("site_id", group.SiteID).
+				Int("indexed_segments", len(siteResults)).
+				Int("failed_segments", len(group.Segments)-len(siteResults)).
+				Msg("site pipeline failed; continuing with remaining sites")
+			continue
+		}
+		if s.jobs != nil {
+			s.jobs.FinishWithMeta(siteJobID, jobs.StatusSuccess, "site pipeline completed", nil, meta)
+		}
+	}
+	if len(failures) > 0 {
+		return allResults, fmt.Errorf("%d site pipeline(s) failed: %s", len(failures), strings.Join(failures, "; "))
+	}
+	return allResults, nil
+}
+
+func groupSegmentsBySite(pending []combiner.SegmentManifest) []siteSegmentGroup {
+	groups := make([]siteSegmentGroup, 0)
+	indexBySite := map[string]int{}
+	for _, segment := range pending {
+		siteID := strings.TrimSpace(segment.SiteID)
+		if siteID == "" {
+			siteID = "unknown"
+		}
+		if idx, ok := indexBySite[siteID]; ok {
+			groups[idx].Segments = append(groups[idx].Segments, segment)
+			continue
+		}
+		indexBySite[siteID] = len(groups)
+		groups = append(groups, siteSegmentGroup{SiteID: siteID, Segments: []combiner.SegmentManifest{segment}})
+	}
+	return groups
+}
+
+func sumIndexResults(items []indexer.Result, value func(indexer.Result) int) int {
+	total := 0
+	for _, item := range items {
+		total += value(item)
+	}
+	return total
+}
+
 func (s *Service) indexPendingSegments(ctx context.Context, jobID string, pending []combiner.SegmentManifest, opts Options) ([]indexer.Result, error) {
 	if len(pending) == 0 {
 		return []indexer.Result{}, nil
@@ -398,6 +512,8 @@ func (s *Service) indexPendingSegments(ctx context.Context, jobID string, pendin
 				segment := pending[idx]
 				step := s.startStep(ctx, jobID, "index segment", map[string]any{
 					"segment_id":   segment.ID,
+					"site_id":      segment.SiteID,
+					"env":          segment.Env,
 					"log_type":     segment.LogType,
 					"bucket_start": segment.BucketStart.Format(time.RFC3339),
 					"bucket_end":   segment.BucketEnd.Format(time.RFC3339),

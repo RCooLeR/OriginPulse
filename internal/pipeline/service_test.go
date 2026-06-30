@@ -2,7 +2,9 @@ package pipeline
 
 import (
 	"testing"
+	"time"
 
+	"originpulse/internal/combiner"
 	"originpulse/internal/config"
 )
 
@@ -87,6 +89,9 @@ func TestResultJobMetaIncludesPipelineCounters(t *testing.T) {
 		SecurityProbes:    13,
 		ErrorEvents:       17,
 		SlowRequests:      19,
+		FailedSites:       2,
+		FailedSegments:    4,
+		FailedSiteIDs:     []string{"site-a", "site-b"},
 	})
 
 	if meta["combined_segments"] != 2 || meta["indexed_segments"] != 3 {
@@ -100,5 +105,34 @@ func TestResultJobMetaIncludesPipelineCounters(t *testing.T) {
 	}
 	if meta["error_events"] != 17 || meta["slow_request_events"] != 19 {
 		t.Fatalf("signal counters = %#v", meta)
+	}
+	if meta["failed_sites"] != 2 || meta["failed_segments"] != 4 {
+		t.Fatalf("failure counters = %#v", meta)
+	}
+	if got := meta["failed_site_ids"].([]string); len(got) != 2 || got[0] != "site-a" || got[1] != "site-b" {
+		t.Fatalf("failed_site_ids = %#v", meta["failed_site_ids"])
+	}
+}
+
+func TestGroupSegmentsBySitePreservesSiteOrder(t *testing.T) {
+	now := time.Now()
+	groups := groupSegmentsBySite([]combiner.SegmentManifest{
+		{ID: "1", SiteID: "site-a", BucketStart: now},
+		{ID: "2", SiteID: "site-b", BucketStart: now},
+		{ID: "3", SiteID: "site-a", BucketStart: now},
+		{ID: "4", SiteID: "", BucketStart: now},
+	})
+
+	if len(groups) != 3 {
+		t.Fatalf("groups = %#v, want 3 groups", groups)
+	}
+	if groups[0].SiteID != "site-a" || len(groups[0].Segments) != 2 {
+		t.Fatalf("first group = %#v, want site-a with two segments", groups[0])
+	}
+	if groups[1].SiteID != "site-b" || len(groups[1].Segments) != 1 {
+		t.Fatalf("second group = %#v, want site-b with one segment", groups[1])
+	}
+	if groups[2].SiteID != "unknown" || len(groups[2].Segments) != 1 {
+		t.Fatalf("third group = %#v, want unknown with one segment", groups[2])
 	}
 }
