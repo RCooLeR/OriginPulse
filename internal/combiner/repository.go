@@ -327,14 +327,18 @@ func normalizeRecentSegmentsOffset(offset int) int {
 }
 
 func (r *Repository) PendingIndexSegments(ctx context.Context, limit int) ([]SegmentManifest, error) {
-	return r.pendingIndexSegments(ctx, limit, false)
+	return r.pendingIndexSegments(ctx, limit, false, false)
 }
 
 func (r *Repository) RecentPendingIndexSegments(ctx context.Context, limit int) ([]SegmentManifest, error) {
-	return r.pendingIndexSegments(ctx, limit, true)
+	return r.pendingIndexSegments(ctx, limit, true, false)
 }
 
-func (r *Repository) pendingIndexSegments(ctx context.Context, limit int, newestFirst bool) ([]SegmentManifest, error) {
+func (r *Repository) ReindexSegments(ctx context.Context, limit int, newestFirst bool) ([]SegmentManifest, error) {
+	return r.pendingIndexSegments(ctx, limit, newestFirst, true)
+}
+
+func (r *Repository) pendingIndexSegments(ctx context.Context, limit int, newestFirst bool, includeIndexed bool) ([]SegmentManifest, error) {
 	if !r.Enabled() {
 		return []SegmentManifest{}, nil
 	}
@@ -354,9 +358,9 @@ SELECT id::text, coalesce(site_id, ''), coalesce(env, ''), coalesce(container_id
        log_type, bucket_start, bucket_end, path, coalesce(sha256, ''),
        line_count, min_ts, max_ts, status, indexed_at, indexed_at IS NOT NULL
 FROM combined_segments
-WHERE indexed_at IS NULL
+WHERE ($2 OR indexed_at IS NULL)
 ORDER BY bucket_start `+orderDirection+`, site_id, env, container_id, log_type
-LIMIT $1`, limit)
+LIMIT $1`, limit, includeIndexed)
 	if err != nil {
 		return nil, err
 	}
@@ -364,12 +368,16 @@ LIMIT $1`, limit)
 }
 
 func (r *Repository) PendingIndexSegmentsInRange(ctx context.Context, from time.Time, to time.Time, limit int) ([]SegmentManifest, error) {
+	return r.IndexSegmentsInRange(ctx, from, to, limit, false)
+}
+
+func (r *Repository) IndexSegmentsInRange(ctx context.Context, from time.Time, to time.Time, limit int, includeIndexed bool) ([]SegmentManifest, error) {
 	if !r.Enabled() {
 		return []SegmentManifest{}, nil
 	}
 	limit = normalizePendingIndexLimit(limit)
 	if from.IsZero() || to.IsZero() || !from.Before(to) {
-		return r.PendingIndexSegments(ctx, limit)
+		return r.pendingIndexSegments(ctx, limit, false, includeIndexed)
 	}
 
 	pool, err := r.db.Pool()
@@ -382,11 +390,11 @@ SELECT id::text, coalesce(site_id, ''), coalesce(env, ''), coalesce(container_id
        log_type, bucket_start, bucket_end, path, coalesce(sha256, ''),
        line_count, min_ts, max_ts, status, indexed_at, indexed_at IS NOT NULL
 FROM combined_segments
-WHERE indexed_at IS NULL
+WHERE ($4 OR indexed_at IS NULL)
   AND bucket_start < $2
   AND bucket_end > $1
 ORDER BY bucket_start DESC, site_id, env, container_id, log_type
-LIMIT $3`, from, to, limit)
+LIMIT $3`, from, to, limit, includeIndexed)
 	if err != nil {
 		return nil, err
 	}

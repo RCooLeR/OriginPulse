@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"originpulse/internal/db"
@@ -253,8 +254,26 @@ func (s *Service) Traffic(ctx context.Context, opts Options) (Traffic, error) {
 	}
 
 	bucketSeconds := timelineBucketSeconds(out.Until.Sub(out.Since))
+	timelineRollupsReady := false
 	started = time.Now()
-	timelineRows, err := pool.Query(ctx, `
+	timelineRollupsReady, err = rollups.TimelineRollupsReady(ctx, pool, out.Since, out.Until, out.SiteID)
+	recordTiming("timeline_rollups_ready", started)
+	if err != nil {
+		return out, err
+	}
+	if timelineRollupsReady {
+		if err := timed("timeline_rollups", func() error { return loadTimelineFromRollups(ctx, pool, &out, bucketSeconds) }); err != nil {
+			return out, err
+		}
+	} else if err := timed("timeline_raw", func() error { return loadTimelineFromRaw(ctx, pool, &out, bucketSeconds) }); err != nil {
+		return out, err
+	}
+
+	return out, nil
+}
+
+func loadTimelineFromRollups(ctx context.Context, pool *pgxpool.Pool, out *Traffic, bucketSeconds int) error {
+	rows, err := pool.Query(ctx, `
 WITH buckets AS (
   SELECT to_timestamp(floor(extract(epoch FROM bucket_ts) / $4::double precision) * $4::double precision) AS bucket_ts,
          sum(requests)::bigint AS requests,
@@ -273,25 +292,47 @@ SELECT bucket_ts,
 FROM buckets
 ORDER BY bucket_ts ASC`, out.Since, out.Until, out.SiteID, bucketSeconds)
 	if err != nil {
-		recordTiming("timeline", started)
-		return out, err
+		return err
 	}
-	defer timelineRows.Close()
-	for timelineRows.Next() {
+	return scanTimelineRows(rows, out)
+}
+
+func loadTimelineFromRaw(ctx context.Context, pool *pgxpool.Pool, out *Traffic, bucketSeconds int) error {
+	rows, err := pool.Query(ctx, `
+WITH buckets AS (
+  SELECT to_timestamp(floor(extract(epoch FROM ts) / $4::double precision) * $4::double precision) AS bucket_ts,
+         count(*)::bigint AS requests,
+         count(*) FILTER (WHERE status >= 400 AND status < 500)::bigint AS status_4xx,
+         count(*) FILTER (WHERE status >= 500 AND status < 600)::bigint AS status_5xx
+  FROM access_events
+  WHERE ts >= $1 AND ts < $2 AND ($3 = '' OR site_id = $3)
+  GROUP BY 1
+  ORDER BY 1 DESC
+  LIMIT 180
+)
+SELECT bucket_ts,
+       requests,
+       status_4xx,
+       status_5xx
+FROM buckets
+ORDER BY bucket_ts ASC`, out.Since, out.Until, out.SiteID, bucketSeconds)
+	if err != nil {
+		return err
+	}
+	return scanTimelineRows(rows, out)
+}
+
+func scanTimelineRows(rows pgx.Rows, out *Traffic) error {
+	defer rows.Close()
+	out.Timeline = out.Timeline[:0]
+	for rows.Next() {
 		var item TimelineBucket
-		if err := timelineRows.Scan(&item.BucketTS, &item.Requests, &item.Status4xx, &item.Status5xx); err != nil {
-			recordTiming("timeline", started)
-			return out, err
+		if err := rows.Scan(&item.BucketTS, &item.Requests, &item.Status4xx, &item.Status5xx); err != nil {
+			return err
 		}
 		out.Timeline = append(out.Timeline, item)
 	}
-	if err := timelineRows.Err(); err != nil {
-		recordTiming("timeline", started)
-		return out, err
-	}
-	recordTiming("timeline", started)
-
-	return out, nil
+	return rows.Err()
 }
 
 func loadRecentErrorsFromFacts(ctx context.Context, pool *pgxpool.Pool, out *Traffic, limit int) error {

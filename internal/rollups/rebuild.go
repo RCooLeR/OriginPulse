@@ -50,6 +50,27 @@ SELECT
 	return statusRequests == minuteRequests, nil
 }
 
+func TimelineRollupsReady(ctx context.Context, pool *pgxpool.Pool, since time.Time, until time.Time, siteID string) (bool, error) {
+	start, end, ok := FullMinuteRange(since, until)
+	if !ok {
+		return true, nil
+	}
+	var eventRequests int64
+	var minuteRequests int64
+	err := pool.QueryRow(ctx, `
+SELECT
+  (SELECT count(*)::bigint
+   FROM access_events
+   WHERE ts >= $1 AND ts < $2 AND ($3 = '' OR site_id = $3)),
+  (SELECT coalesce(sum(requests), 0)::bigint
+   FROM rollup_1m
+   WHERE bucket_ts >= $1 AND bucket_ts < $2 AND ($3 = '' OR site_id = $3))`, start, end, siteID).Scan(&eventRequests, &minuteRequests)
+	if err != nil {
+		return false, err
+	}
+	return eventRequests == minuteRequests, nil
+}
+
 func FullHourRange(since time.Time, until time.Time) (time.Time, time.Time, bool) {
 	start := since.UTC().Truncate(time.Hour)
 	if !start.Equal(since.UTC()) {

@@ -304,13 +304,19 @@ func isAccessLogType(logType string) bool {
 
 func (s *Service) pendingIndexSegments(ctx context.Context, opts Options) ([]combiner.SegmentManifest, error) {
 	if opts.PreferRecent && (opts.From.IsZero() || opts.To.IsZero() || !opts.From.Before(opts.To)) {
+		if opts.Force {
+			return s.segments.ReindexSegments(ctx, opts.MaxSegments, true)
+		}
 		return s.segments.RecentPendingIndexSegments(ctx, opts.MaxSegments)
 	}
-	inRange, err := s.segments.PendingIndexSegmentsInRange(ctx, opts.From, opts.To, opts.MaxSegments)
+	inRange, err := s.segments.IndexSegmentsInRange(ctx, opts.From, opts.To, opts.MaxSegments, opts.Force)
 	if err != nil {
 		return nil, err
 	}
 	if len(inRange) >= opts.MaxSegments {
+		return inRange, nil
+	}
+	if opts.Force && !opts.From.IsZero() && !opts.To.IsZero() && opts.From.Before(opts.To) {
 		return inRange, nil
 	}
 	backlog, err := s.segments.PendingIndexSegments(ctx, opts.MaxSegments-len(inRange))
