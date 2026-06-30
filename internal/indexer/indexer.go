@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/url"
 	"os"
@@ -30,6 +31,8 @@ import (
 )
 
 var ErrDatabaseRequired = errors.New("indexing requires DATABASE_URL")
+
+const segmentIndexLockBase int64 = 7720010000
 
 type Options struct {
 	SegmentPath string
@@ -595,20 +598,11 @@ func (s *Service) bulkStoreEvents(ctx context.Context, pool *pgxpool.Pool, segme
 
 	deleted := 0
 	if deleteExistingSegment {
-		if _, err := tx.Exec(ctx, `DELETE FROM security_probe_events WHERE segment_id = $1::uuid`, segmentID); err != nil {
-			return 0, 0, 0, 0, 0, 0, err
-		}
-		if _, err := tx.Exec(ctx, `DELETE FROM error_events WHERE segment_id = $1::uuid`, segmentID); err != nil {
-			return 0, 0, 0, 0, 0, 0, err
-		}
-		if _, err := tx.Exec(ctx, `DELETE FROM slow_request_events WHERE segment_id = $1::uuid`, segmentID); err != nil {
-			return 0, 0, 0, 0, 0, 0, err
-		}
-		tag, err := tx.Exec(ctx, `DELETE FROM access_events WHERE segment_id = $1::uuid`, segmentID)
+		var err error
+		deleted, err = deleteExistingAccessSegment(ctx, tx, segmentID)
 		if err != nil {
 			return 0, 0, 0, 0, 0, 0, err
 		}
-		deleted = int(tag.RowsAffected())
 	}
 
 	insertedIDs, err := s.bulkInsertAccessEvents(ctx, tx, segmentID, events, temporaryImportID, importedUntil)
@@ -631,6 +625,61 @@ func (s *Service) bulkStoreEvents(ctx context.Context, pool *pgxpool.Pool, segme
 	return inserted, conflicted, deleted, securityProbes, errorFacts, slowFacts, nil
 }
 
+func deleteExistingAccessSegment(ctx context.Context, tx pgx.Tx, segmentID string) (int, error) {
+	if strings.TrimSpace(segmentID) == "" {
+		return 0, nil
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, segmentIndexLockKey(segmentID)); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `
+CREATE TEMP TABLE tmp_delete_access_event_ids (
+  event_id bigint PRIMARY KEY
+) ON COMMIT DROP`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `TRUNCATE tmp_delete_access_event_ids`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `
+INSERT INTO tmp_delete_access_event_ids (event_id)
+SELECT id
+FROM access_events
+WHERE segment_id = $1::uuid
+ORDER BY id`, segmentID); err != nil {
+		return 0, err
+	}
+	for _, statement := range []string{
+		`DELETE FROM security_probe_events WHERE event_id IN (SELECT event_id FROM tmp_delete_access_event_ids)`,
+		`DELETE FROM error_events WHERE event_id IN (SELECT event_id FROM tmp_delete_access_event_ids)`,
+		`DELETE FROM slow_request_events WHERE event_id IN (SELECT event_id FROM tmp_delete_access_event_ids)`,
+	} {
+		if _, err := tx.Exec(ctx, statement); err != nil {
+			return 0, err
+		}
+	}
+	for _, statement := range []string{
+		`DELETE FROM security_probe_events WHERE segment_id = $1::uuid`,
+		`DELETE FROM error_events WHERE segment_id = $1::uuid`,
+		`DELETE FROM slow_request_events WHERE segment_id = $1::uuid`,
+	} {
+		if _, err := tx.Exec(ctx, statement, segmentID); err != nil {
+			return 0, err
+		}
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM access_events WHERE id IN (SELECT event_id FROM tmp_delete_access_event_ids)`)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+func segmentIndexLockKey(segmentID string) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(strings.TrimSpace(strings.ToLower(segmentID))))
+	return segmentIndexLockBase + int64(h.Sum64()%1_000_000_000)
+}
+
 func (s *Service) bulkStoreLogEvents(ctx context.Context, pool *pgxpool.Pool, segmentID string, events []parsedLogEvent, temporaryImportID string, importedUntil time.Time, deleteExistingSegment bool) (int, int, int, error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
@@ -646,6 +695,9 @@ func (s *Service) bulkStoreLogEvents(ctx context.Context, pool *pgxpool.Pool, se
 
 	deleted := 0
 	if deleteExistingSegment {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, segmentIndexLockKey(segmentID)); err != nil {
+			return 0, 0, 0, err
+		}
 		tag, err := tx.Exec(ctx, `DELETE FROM log_events WHERE segment_id = $1::uuid`, segmentID)
 		if err != nil {
 			return 0, 0, 0, err
