@@ -32,6 +32,20 @@ func TestMatchUserAgent(t *testing.T) {
 			knownActor: "OpenAI",
 		},
 		{
+			name:       "amazon quick",
+			userAgent:  "aws-quick-on-behalf-of-B2feb70f",
+			family:     "amazon-quick",
+			actorType:  "crawler",
+			knownActor: "Amazon Quick",
+		},
+		{
+			name:       "cohere training crawler",
+			userAgent:  "cohere-training-data-crawler/1.0",
+			family:     "cohere",
+			actorType:  "crawler",
+			knownActor: "Cohere",
+		},
+		{
 			name:       "uptime robot",
 			userAgent:  "UptimeRobot/2.0",
 			family:     "uptimerobot",

@@ -25,6 +25,16 @@ func TestAnalyzeKnownCrawler(t *testing.T) {
 	}
 }
 
+func TestAnalyzeAmazonQuickCrawler(t *testing.T) {
+	got := Analyze("aws-quick-on-behalf-of-B2feb70f", 5000)
+	if got.Family != "amazon-quick" || got.ActorType != "crawler" || got.KnownActor != "Amazon Quick" {
+		t.Fatalf("amazon quick crawler = %q/%q/%q, want amazon-quick/crawler/Amazon Quick", got.Family, got.ActorType, got.KnownActor)
+	}
+	if !got.IsBot || got.IsTool {
+		t.Fatalf("bot/tool = %v/%v, want true/false", got.IsBot, got.IsTool)
+	}
+}
+
 func TestAnalyzeTool(t *testing.T) {
 	got := Analyze("curl/8.7.1", 3)
 	if got.Family != "curl" || got.ActorType != "tool" || got.BrowserVersion != "8.7.1" {

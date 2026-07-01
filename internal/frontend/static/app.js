@@ -41,12 +41,33 @@ const analysisHistoryLimit = 500;
 const dashboardAutoRefreshMs = 60 * 1000;
 const PHP_LOG_TYPES = ["php-error", "php-slow"];
 const MYSQL_LOG_TYPES = ["mysql", "mysql-slow"];
+const AI_BOT_ACTORS = [
+  "amazon quick",
+  "anthropic",
+  "bytedance",
+  "cohere",
+  "diffbot",
+  "openai",
+  "perplexity",
+  "you.com",
+];
+const AI_BOT_PATTERN = /\b(gptbot|chatgpt-user|oai-searchbot|claudebot|claude-web|claude-searchbot|claude-user|anthropic-ai|perplexitybot|perplexity-user|bytespider|amazonbot|aws-quick-on-behalf-of|google-extended|googleother|googleother-image|googleother-video|applebot-extended|meta-externalagent|facebookbot|diffbot|imagesiftbot|cohere-ai|cohere-training-data-crawler|omgili|omgilibot|youbot|ccbot)\b/i;
+const SEARCH_BOT_PATTERN = /\b(googlebot|bingbot|msnbot|duckduckbot|duckassistbot|applebot|yandexbot|baiduspider|slurp|teoma|aolbot|ask jeeves)\b/i;
+const SEO_BOT_PATTERN = /\b(ahrefsbot|ahrefssiteaudit|semrushbot|semrush|dotbot|mj12bot|blexbot|screaming frog seo spider|sitebulb|addsearchbot|dataforseobot)\b/i;
+const SOCIAL_BOT_PATTERN = /\b(facebookexternalhit|facebot|facebookcatalog|facebookbot|meta-externalagent|twitterbot|linkedinbot|slackbot-linkexpanding|slackbot)\b/i;
+const MONITOR_BOT_PATTERN = /\b(uptimerobot|uptime robot|pingdom|statuscake|datadog|newrelic|new relic)\b/i;
+const TOOL_BOT_PATTERN = /\b(curl|wget|go-http-client|python-requests|python-urllib|aiohttp|scrapy|okhttp|postmanruntime|axios|node-fetch|java)\b/i;
+const SEARCH_BOT_ACTORS = ["google", "bing", "microsoft", "duckduckgo", "apple", "yandex", "baidu", "yahoo", "ask", "aol"];
+const SEO_BOT_ACTORS = ["ahrefs", "semrush", "moz", "majestic", "blexbot", "screaming frog", "sitebulb", "addsearch", "dataforseo"];
+const SOCIAL_BOT_ACTORS = ["meta", "facebook", "x", "twitter", "linkedin", "slack"];
+const MONITOR_BOT_ACTORS = ["uptimerobot", "pingdom", "statuscake", "datadog", "newrelic", "new relic"];
 
 const state = {
   route: pathToRoute[location.pathname] || "overview",
   range: new URLSearchParams(location.search).get("range") || "24h",
   siteID: new URLSearchParams(location.search).get("site_id") || "",
   search: "",
+  botFilter: "all",
   reportType: "all",
   rawFileStatus: "all",
   pipeline: {
@@ -276,6 +297,13 @@ function wireEvents() {
     void runAdvancedSearch();
   });
   document.addEventListener("change", async (event) => {
+    const botFilter = event.target.closest("[data-bot-filter]");
+    if (botFilter) {
+      state.botFilter = botFilter.value || "all";
+      resetPagination();
+      render();
+      return;
+    }
     const reportType = event.target.closest("[data-report-type-filter]");
     if (reportType) {
       state.reportType = reportType.value || "all";
@@ -1163,34 +1191,132 @@ function securityLoadingPanel(message) {
 function renderBots() {
   const analysisAgents = state.data.analysis.user_agents || [];
   const fallbackAgents = analysisAgents.length ? analysisAgents : userAgentsFromEvents(state.data.traffic.recent_errors || []);
-  const agents = filtered(searchItems(fallbackAgents, (item) => `${item.family} ${item.known_actor} ${item.actor_type} ${item.sample}`));
-  const verified = agents.filter((item) => /bot|crawler|search|google|bing|claude|gpt/i.test(`${item.family} ${item.known_actor} ${item.actor_type} ${item.sample}`));
-  const suspicious = agents.filter((item) => /python|curl|scrapy|aiohttp|bot|scanner/i.test(`${item.family} ${item.sample}`) && !/google|bing/i.test(`${item.known_actor} ${item.sample}`));
+  const agents = filtered(searchItems(fallbackAgents, botAgentSearchText));
+  const knownBots = agents.filter(isKnownBotAgent);
+  const aiAgents = agents.filter(isKnownAIBot);
+  const verified = agents.filter(isVerifiedBotAgent);
+  const suspicious = agents.filter(isSuspiciousBotAgent);
+  const automationAgents = knownBots.length ? knownBots : agents;
+  const visibleAgents = botFilterRows(automationAgents);
   const sourceRows = (state.data.analysis.source_ips || []).length ? state.data.analysis.source_ips : (state.data.traffic.top_ips || []);
-  const ips = filtered(searchItems(sourceRows.filter((ip) => /bot|crawler|script|service|unknown/i.test(`${ip.actor_type} ${ip.known_actor} ${ip.reverse_dns}`)), (ip) => `${ip.ip} ${ip.actor_type} ${ip.known_actor} ${ip.reverse_dns}`));
+  const sourceIPs = filtered(searchItems(sourceRows.filter(isBotLikeSourceIP), (ip) => `${ip.ip} ${ip.actor_type} ${ip.known_actor} ${ip.reverse_dns}`));
+  const visibleIPs = botFilterRows(sourceIPs);
   return `
+    ${botFilterBar(visibleAgents.length, automationAgents.length)}
     ${metricGrid([
-      metric("Bot Traffic Ratio", formatPercent(ratio(sum(agents, "requests"), state.data.analysis?.totals?.requests)), "fa-robot", "green"),
+      metric("Bot Traffic Ratio", formatPercent(ratio(sum(knownBots.length ? knownBots : agents, "requests"), state.data.analysis?.totals?.requests)), "fa-robot", "green"),
+      metric("AI Bot Requests", sum(aiAgents, "requests"), "fa-brain", "purple"),
       metric("Verified Bots", sum(verified, "requests"), "fa-shield-halved", "green"),
       metric("Suspicious Bots", sum(suspicious, "requests"), "fa-triangle-exclamation", "amber"),
-      metric("Blocked / Watch", ips.filter((item) => item.manual_action === "suspicious" || item.risk_score >= 70).length, "fa-ban", "red"),
+      metric("Blocked / Watch", visibleIPs.filter((item) => item.manual_action === "suspicious" || item.risk_score >= 70).length, "fa-ban", "red"),
     ])}
     <section class="layout-2">
       <article class="panel chart-card">
         <div class="panel-head"><div><h2>Bot Traffic Over Time</h2><p>Known and scripted clients within selected range.</p></div></div>
         <canvas id="trafficLine" class="large-chart"></canvas>
       </article>
-      ${botRecommendationsPanel(verified, suspicious, ips)}
+      ${botRecommendationsPanel(verified, suspicious, sourceIPs, aiAgents)}
     </section>
     <section class="layout-2">
-      ${botDetectedAgentsPanel(agents)}
-      ${botSourceIPsPanel(ips)}
+      ${botDetectedAgentsPanel(visibleAgents)}
+      ${botSourceIPsPanel(visibleIPs)}
     </section>
   `;
 }
 
-function botRecommendationsPanel(verified, suspicious, ips) {
+function botFilterBar(visibleCount, totalCount) {
+  const options = [
+    ["all", "All automation"],
+    ["ai", "AI bots"],
+    ["search", "Search engines"],
+    ["seo", "SEO crawlers"],
+    ["social", "Social previews"],
+    ["monitors", "Monitors"],
+    ["tools", "Tools / scripts"],
+    ["suspicious", "Suspicious bots"],
+    ["other", "Other bots"],
+  ];
+  return `
+    <section class="toolbar page-toolbar">
+      <label class="select-shell compact">
+        <span>Bot filter</span>
+        <select data-bot-filter aria-label="Bot filter">
+          ${options.map(([value, label]) => `<option value="${value}" ${state.botFilter === value ? "selected" : ""}>${label}</option>`).join("")}
+        </select>
+      </label>
+      <span class="pill">${formatNumber(visibleCount)} of ${formatNumber(totalCount)} agents</span>
+    </section>
+  `;
+}
+
+function botFilterRows(rows) {
+  if (state.botFilter === "all") return rows;
+  return rows.filter((row) => botCategory(row) === state.botFilter);
+}
+
+function botCategory(item) {
+  if (isKnownAIBot(item)) return "ai";
+  const text = botCategoryText(item);
+  const actor = botActorName(item);
+  if (SEARCH_BOT_PATTERN.test(text) || SEARCH_BOT_ACTORS.includes(actor)) return "search";
+  if (SEO_BOT_PATTERN.test(text) || SEO_BOT_ACTORS.includes(actor)) return "seo";
+  if (SOCIAL_BOT_PATTERN.test(text) || SOCIAL_BOT_ACTORS.includes(actor)) return "social";
+  if (MONITOR_BOT_PATTERN.test(text) || MONITOR_BOT_ACTORS.includes(actor) || String(item.actor_type || "").toLowerCase() === "monitor") return "monitors";
+  if (TOOL_BOT_PATTERN.test(text) || String(item.actor_type || "").toLowerCase() === "tool") return "tools";
+  if (isSuspiciousBotAgent(item) || isSuspiciousBotSourceIP(item)) return "suspicious";
+  return "other";
+}
+
+function botActorName(item) {
+  return String(item.known_actor || item.family || "").trim().toLowerCase();
+}
+
+function botCategoryText(item) {
+  return `${item.family || ""} ${item.known_actor || ""} ${item.actor_type || ""} ${item.sample || ""} ${item.reverse_dns || ""}`.toLowerCase();
+}
+
+function botAgentSearchText(item) {
+  return `${item.family} ${item.known_actor} ${item.actor_type} ${item.sample}`;
+}
+
+function isKnownBotAgent(item) {
+  const info = parseUserAgent(item);
+  const actor = String(item.actor_type || info.actorType || "").toLowerCase();
+  return Boolean(info.isBot || /crawler|fetcher|monitor|bot|spider/.test(actor) || /bot|crawler|spider|slurp/i.test(botAgentSearchText(item)));
+}
+
+function isVerifiedBotAgent(item) {
+  return /bot|crawler|search|google|bing|claude|gpt|openai|anthropic|perplexity/i.test(botAgentSearchText(item));
+}
+
+function isSuspiciousBotAgent(item) {
+  const text = `${item.family || ""} ${item.known_actor || ""} ${item.actor_type || ""} ${item.sample || ""}`;
+  return Number(item.risk_score || 0) >= 70 || /python|curl|scrapy|aiohttp|scanner|sqlmap|nikto|nuclei|masscan|zgrab|gobuster|ffuf|dirsearch|feroxbuster/i.test(text);
+}
+
+function isBotLikeSourceIP(item) {
+  return /bot|crawler|script|service|unknown|search|openai|anthropic|perplexity|amazon quick/i.test(`${item.actor_type} ${item.known_actor} ${item.reverse_dns}`);
+}
+
+function isSuspiciousBotSourceIP(item) {
+  return item.manual_action === "suspicious" || Number(item.risk_score || 0) >= 70 || /scanner|abuse|malicious/i.test(`${item.actor_type} ${item.known_actor} ${item.reverse_dns}`);
+}
+
+function isKnownAIBot(item) {
+  const text = `${item.family || ""} ${item.known_actor || ""} ${item.actor_type || ""} ${item.sample || ""} ${item.reverse_dns || ""}`.toLowerCase();
+  if (AI_BOT_PATTERN.test(text)) return true;
+  const known = String(item.known_actor || "").toLowerCase();
+  const family = String(item.family || "").toLowerCase();
+  return AI_BOT_ACTORS.some((actor) => known === actor || family === actor.replace(/[^a-z0-9]+/g, "-"));
+}
+
+function botRecommendationsPanel(verified, suspicious, ips, aiAgents) {
   const rows = [
+    {
+      title: "Review known AI crawlers",
+      meta: `${formatNumber(sum(aiAgents, "requests"))} requests from AI crawler families`,
+      value: "Filter",
+    },
     {
       title: "Allow verified search bots",
       meta: `${formatNumber(sum(verified, "requests"))} requests from known crawler families`,
@@ -4033,7 +4159,30 @@ function detectBot(sample, knownActor = "") {
     [/Aolbot\/?([\d.]*)/i, "AOLbot", "AOL"],
     [/GPTBot\/?([\d.]*)/i, "GPTBot", "OpenAI"],
     [/ChatGPT-User\/?([\d.]*)/i, "ChatGPT User", "OpenAI"],
+    [/OAI-SearchBot\/?([\d.]*)/i, "OAI SearchBot", "OpenAI"],
     [/ClaudeBot\/?([\d.]*)/i, "ClaudeBot", "Anthropic"],
+    [/Claude-Web\/?([\d.]*)/i, "Claude Web", "Anthropic"],
+    [/Claude-SearchBot\/?([\d.]*)/i, "Claude SearchBot", "Anthropic"],
+    [/Claude-User\/?([\d.]*)/i, "Claude User", "Anthropic"],
+    [/Anthropic-AI\/?([\d.]*)/i, "Anthropic AI", "Anthropic"],
+    [/PerplexityBot\/?([\d.]*)/i, "PerplexityBot", "Perplexity"],
+    [/Perplexity-User\/?([\d.]*)/i, "Perplexity User", "Perplexity"],
+    [/Bytespider\/?([\d.]*)/i, "Bytespider", "ByteDance"],
+    [/Amazonbot\/?([\d.]*)/i, "Amazonbot", "Amazon"],
+    [/aws-quick-on-behalf-of-?([a-z0-9-]*)/i, "Amazon Quick", "Amazon Quick"],
+    [/GoogleOther(?:-Image|-Video)?\/?([\d.]*)/i, "GoogleOther", "Google"],
+    [/Google-Extended\/?([\d.]*)/i, "Google Extended", "Google"],
+    [/Applebot-Extended\/?([\d.]*)/i, "Applebot Extended", "Apple"],
+    [/meta-externalagent\/?([\d.]*)/i, "Meta External Agent", "Meta"],
+    [/facebookbot\/?([\d.]*)/i, "FacebookBot", "Meta"],
+    [/CCBot\/?([\d.]*)/i, "CCBot", "Common Crawl"],
+    [/Diffbot\/?([\d.]*)/i, "Diffbot", "Diffbot"],
+    [/ImagesiftBot\/?([\d.]*)/i, "ImagesiftBot", knownActor || ""],
+    [/cohere-ai\/?([\d.]*)/i, "Cohere AI", "Cohere"],
+    [/cohere-training-data-crawler\/?([\d.]*)/i, "Cohere Training Data Crawler", "Cohere"],
+    [/Omgili(?:bot)?\/?([\d.]*)/i, "Omgili", "Omgili"],
+    [/YouBot\/?([\d.]*)/i, "YouBot", "You.com"],
+    [/DataForSeoBot\/?([\d.]*)/i, "DataForSEO Bot", "DataForSEO"],
     [/AhrefsBot\/?([\d.]*)/i, "AhrefsBot", "Ahrefs"],
     [/SemrushBot\/?([\d.]*)/i, "SemrushBot", "Semrush"],
     [/facebookexternalhit\/?([\d.]*)/i, "Facebook crawler", "Meta"],

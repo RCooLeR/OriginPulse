@@ -49,6 +49,9 @@ Provider and bot recognition can include services such as:
 - AhrefsBot
 - AddSearchBot
 - OpenAI and Anthropic provider ranges where official lists are available
+- AI crawler user agents such as GPTBot, OAI-SearchBot, ClaudeBot, PerplexityBot, Bytespider, Amazonbot, and Amazon Quick `aws-quick-on-behalf-of-*`
+
+The Bot / Crawler Analysis view can filter automation into AI bots, search engines, SEO crawlers, social previews, monitors, tools/scripts, suspicious bots, and other bot traffic.
 
 Only use official maintained lists or documented provider sources for provider verification.
 

@@ -371,6 +371,10 @@ dd {
   flex-wrap: wrap;
 }
 
+.page-toolbar {
+  margin: 0 0 14px;
+}
+
 .select-shell {
   min-width: 260px;
   padding: 8px 12px;
