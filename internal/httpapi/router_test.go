@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"originpulse/internal/accessanalysis"
 	"originpulse/internal/alerts"
 	"originpulse/internal/combiner"
@@ -71,6 +73,60 @@ func TestRootHealthAliasReturnsJSON(t *testing.T) {
 	}
 	if body["service"] != "originpulse" {
 		t.Fatalf("service = %#v, want originpulse", body["service"])
+	}
+}
+
+func TestHealthPreservesPeerAddress(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		header string
+		value  string
+	}{
+		{name: "direct request"},
+		{name: "true client IP", header: "True-Client-IP", value: "198.51.100.10"},
+		{name: "real IP", header: "X-Real-IP", value: "198.51.100.11"},
+		{name: "forwarded chain", header: "X-Forwarded-For", value: "198.51.100.12, 203.0.113.20, 203.0.113.21"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := NewRouter(Dependencies{})
+			var observedPeer string
+			handler.(chi.Router).Get("/test-peer-address", func(w http.ResponseWriter, r *http.Request) {
+				observedPeer = r.RemoteAddr
+				w.WriteHeader(http.StatusNoContent)
+			})
+			req := httptest.NewRequest(http.MethodGet, "/health", nil)
+			const peer = "192.0.2.30:54321"
+			req.RemoteAddr = peer
+			if tc.header != "" {
+				req.Header.Set(tc.header, tc.value)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("content-type = %q, want application/json", got)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode health response: %v", err)
+			}
+			if body["service"] != "originpulse" {
+				t.Fatalf("service = %#v, want originpulse", body["service"])
+			}
+			peerReq := httptest.NewRequest(http.MethodGet, "/test-peer-address", nil)
+			peerReq.RemoteAddr = peer
+			peerReq.Header = req.Header.Clone()
+			peerRec := httptest.NewRecorder()
+			handler.ServeHTTP(peerRec, peerReq)
+			if peerRec.Code != http.StatusNoContent {
+				t.Fatalf("peer probe status = %d, want %d", peerRec.Code, http.StatusNoContent)
+			}
+			if observedPeer != peer {
+				t.Fatalf("downstream peer address = %q, want %q", observedPeer, peer)
+			}
+		})
 	}
 }
 
