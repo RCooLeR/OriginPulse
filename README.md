@@ -43,6 +43,10 @@ them into the API and collector and binds its published ports to localhost:
 docker compose --env-file docker/.env -f docker/docker-compose.yml up --build -d
 ```
 
+The stack automatically adds and replaces SSH host keys, storing them in its
+persistent data volume. See [Docker setup](docker/README.md) to use strict host
+verification instead.
+
 Open the UI:
 
 ```text

@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,6 +79,8 @@ type SSHConfig struct {
 	PrivateKeyPathEnv     string `yaml:"private_key_path_env" json:"private_key_path_env"`
 	KnownHostsPath        string `yaml:"known_hosts_path" json:"known_hosts_path"`
 	KnownHostsPathEnv     string `yaml:"known_hosts_path_env" json:"known_hosts_path_env"`
+	AutoUpdateHostKeys    bool   `yaml:"auto_update_host_keys" json:"auto_update_host_keys"`
+	AutoUpdateHostKeysEnv string `yaml:"auto_update_host_keys_env" json:"auto_update_host_keys_env"`
 	InsecureIgnoreHostKey bool   `yaml:"insecure_ignore_host_key" json:"insecure_ignore_host_key"`
 	AllowLegacyRSA        bool   `yaml:"allow_legacy_rsa" json:"allow_legacy_rsa"`
 }
@@ -222,6 +225,7 @@ type CredentialSummary struct {
 	SSHKeyPath             string `json:"ssh_key_path"`
 	KnownHostsConfigured   bool   `json:"known_hosts_configured"`
 	KnownHostsPath         string `json:"known_hosts_path"`
+	AutoUpdateHostKeys     bool   `json:"auto_update_host_keys"`
 	InsecureSSHHostKey     bool   `json:"insecure_ssh_host_key"`
 	LegacySSHRSAEnabled    bool   `json:"legacy_ssh_rsa_enabled"`
 }
@@ -275,6 +279,7 @@ func Default() Config {
 			SSH: SSHConfig{
 				PrivateKeyPathEnv:     "PANTHEON_SSH_KEY_PATH",
 				KnownHostsPathEnv:     "PANTHEON_KNOWN_HOSTS_PATH",
+				AutoUpdateHostKeysEnv: "PANTHEON_AUTO_UPDATE_HOST_KEYS",
 				InsecureIgnoreHostKey: true,
 				AllowLegacyRSA:        true,
 			},
@@ -420,6 +425,11 @@ func (c *Config) Validate() error {
 	}
 	if c.Pantheon.SFTPPort == 0 {
 		return errors.New("pantheon.sftp_port must be set")
+	}
+	if value := strings.TrimSpace(os.Getenv(c.Pantheon.SSH.AutoUpdateHostKeysEnv)); value != "" {
+		if _, err := strconv.ParseBool(value); err != nil {
+			return fmt.Errorf("%s must be a boolean", c.Pantheon.SSH.AutoUpdateHostKeysEnv)
+		}
 	}
 	if c.Retention.Enabled {
 		if c.Retention.Interval <= 0 {
@@ -580,6 +590,7 @@ func (c Config) CredentialSummary() CredentialSummary {
 		SSHKeyPath:             sshPath,
 		KnownHostsConfigured:   knownHosts != "",
 		KnownHostsPath:         knownHosts,
+		AutoUpdateHostKeys:     c.SSHAutoUpdateHostKeys(),
 		InsecureSSHHostKey:     c.Pantheon.SSH.InsecureIgnoreHostKey,
 		LegacySSHRSAEnabled:    c.Pantheon.SSH.AllowLegacyRSA,
 	}
@@ -614,6 +625,14 @@ func (c Config) SSHKnownHostsPath() string {
 		}
 	}
 	return strings.TrimSpace(c.Pantheon.SSH.KnownHostsPath)
+}
+
+func (c Config) SSHAutoUpdateHostKeys() bool {
+	if value := strings.TrimSpace(os.Getenv(c.Pantheon.SSH.AutoUpdateHostKeysEnv)); value != "" {
+		enabled, _ := strconv.ParseBool(value)
+		return enabled
+	}
+	return c.Pantheon.SSH.AutoUpdateHostKeys
 }
 
 func (c Config) OllamaBaseURL() string {
@@ -864,6 +883,9 @@ func (c *Config) normalize() {
 	}
 	if c.Pantheon.SSH.KnownHostsPathEnv == "" {
 		c.Pantheon.SSH.KnownHostsPathEnv = "PANTHEON_KNOWN_HOSTS_PATH"
+	}
+	if c.Pantheon.SSH.AutoUpdateHostKeysEnv == "" {
+		c.Pantheon.SSH.AutoUpdateHostKeysEnv = "PANTHEON_AUTO_UPDATE_HOST_KEYS"
 	}
 	if c.Ollama.BaseURLEnv == "" {
 		c.Ollama.BaseURLEnv = "OLLAMA_BASE_URL"

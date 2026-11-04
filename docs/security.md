@@ -30,7 +30,13 @@ Keep these out of Git:
 - database dumps
 - screenshots containing real customer traffic
 
-The Compose file mounts the SSH key and verified host keys as secrets into the API and collector. Prefer environment variables for credentials.
+The Compose file mounts the SSH key and `known_hosts` file as secrets into the API and collector. Prefer environment variables for credentials.
+
+Compose enables automatic SSH host-key updates by default. This accepts new and
+changed server keys and records them in the persistent app data volume, without
+authenticating the server against previously trusted keys. Set
+`PANTHEON_AUTO_UPDATE_HOST_KEYS=false` and provide a verified `known_hosts` file
+to enforce host-key verification.
 
 ## Public Repository Hygiene
 

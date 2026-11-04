@@ -30,8 +30,10 @@ PANTHEON_SSH_KEY_FILE=C:/Users/example/.ssh/id_rsa
 PANTHEON_KNOWN_HOSTS_FILE=C:/Users/example/.ssh/known_hosts
 ```
 
-The Compose file mounts the key and verified host keys into the API and collector
-containers. Both files must exist on the host before starting the stack.
+The Compose file mounts both files into the API and collector containers. Both
+files must exist on the host before starting the stack; `known_hosts` may be
+empty with the default automatic host-key updates. New and changed server keys
+are accepted automatically and saved in the persistent application volume.
 
 ## Configure Sites
 

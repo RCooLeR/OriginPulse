@@ -94,6 +94,7 @@ services:
       <<: *originpulse-environment
       PANTHEON_SSH_KEY_PATH: /run/secrets/pantheon_ssh_key
       PANTHEON_KNOWN_HOSTS_PATH: /run/secrets/pantheon_known_hosts
+      PANTHEON_AUTO_UPDATE_HOST_KEYS: ${PANTHEON_AUTO_UPDATE_HOST_KEYS:-true}
     secrets:
       - pantheon_ssh_key
       - pantheon_known_hosts
@@ -114,6 +115,7 @@ services:
       <<: *originpulse-environment
       PANTHEON_SSH_KEY_PATH: /run/secrets/pantheon_ssh_key
       PANTHEON_KNOWN_HOSTS_PATH: /run/secrets/pantheon_known_hosts
+      PANTHEON_AUTO_UPDATE_HOST_KEYS: ${PANTHEON_AUTO_UPDATE_HOST_KEYS:-true}
     secrets:
       - pantheon_ssh_key
       - pantheon_known_hosts

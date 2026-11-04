@@ -90,23 +90,32 @@ pantheon:
     private_key_path: ""
     known_hosts_path_env: "PANTHEON_KNOWN_HOSTS_PATH"
     known_hosts_path: ""
+    auto_update_host_keys_env: "PANTHEON_AUTO_UPDATE_HOST_KEYS"
+    auto_update_host_keys: false
     insecure_ignore_host_key: false
     allow_legacy_rsa: false
 ```
 
-The Docker Compose file mounts both the private key and a verified `known_hosts`
+The Docker Compose file mounts both the private key and a `known_hosts`
 file into the API and collector and exposes their container paths through
 `PANTHEON_SSH_KEY_PATH` and `PANTHEON_KNOWN_HOSTS_PATH`. Set the host-file paths
 with `PANTHEON_SSH_KEY_FILE` and `PANTHEON_KNOWN_HOSTS_FILE` in `docker/.env`.
-Host verification fails closed when neither a known-hosts file nor
+Compose defaults `PANTHEON_AUTO_UPDATE_HOST_KEYS` to `true`, which overrides
+`auto_update_host_keys` from YAML. Automatic mode accepts and records new keys
+and replaces changed keys under `app.data_dir/ssh/known_hosts.d/`, one file per
+server IP and port. The records survive container restarts and recreation. This
+mode trusts presented keys without checking them against the mounted file.
+
+Set `PANTHEON_AUTO_UPDATE_HOST_KEYS=false` to verify against `known_hosts` instead.
+In that mode, host verification fails closed when neither a known-hosts file nor
 the `insecure_ignore_host_key` compatibility switch is configured. Enable
 `allow_legacy_rsa` only for a Pantheon account or host that cannot negotiate
 RSA-SHA2.
 
 Older config files that omit the two compatibility switches retain the previous
 host-key and RSA behavior so upgrades do not silently break collection. Add the
-explicit `false` values above and a verified known-hosts file to complete the
-security migration.
+explicit `false` values above, disable automatic updates, and provide a verified
+known-hosts file to require host verification.
 
 ## Sites
 

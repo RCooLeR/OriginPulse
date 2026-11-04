@@ -28,6 +28,8 @@ pantheon:
     private_key_path: ""
     known_hosts_path_env: "PANTHEON_KNOWN_HOSTS_PATH"
     known_hosts_path: ""
+    auto_update_host_keys_env: "PANTHEON_AUTO_UPDATE_HOST_KEYS"
+    auto_update_host_keys: false
     insecure_ignore_host_key: false
     allow_legacy_rsa: false
 

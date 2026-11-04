@@ -12,8 +12,8 @@ Copy-Item config.example.yml config.yml
 New-Item -ItemType Directory -Force tmp | Out-Null
 ```
 
-Set both required host-file paths to an SSH private key and a verified
-`known_hosts` file:
+Set both required host-file paths to an SSH private key and a `known_hosts`
+file. The latter may be empty when automatic host-key updates are enabled:
 
 ```text
 PANTHEON_SSH_KEY_FILE=C:/Users/example/.ssh/id_rsa
@@ -25,6 +25,14 @@ the API and collector. It sets `PANTHEON_SSH_KEY_PATH` to
 `/run/secrets/pantheon_ssh_key` and `PANTHEON_KNOWN_HOSTS_PATH` to
 `/run/secrets/pantheon_known_hosts`, overriding host-only paths from `config.yml`.
 These mounts are included whenever the services are created or recreated.
+
+Compose enables `PANTHEON_AUTO_UPDATE_HOST_KEYS=true` by default. The API and
+collector automatically accept new and changed server keys, storing one record
+per server IP and port under `/app/data/ssh/known_hosts.d/` in the persistent
+application volume. This mode trusts the key presented by each server; the
+mounted `known_hosts` file is used only when automatic updates are disabled.
+Set `PANTHEON_AUTO_UPDATE_HOST_KEYS=false` in `docker/.env` to require verification
+against the mounted file instead.
 
 ## Run
 

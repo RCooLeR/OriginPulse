@@ -1,6 +1,7 @@
 package pantheon
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
@@ -162,6 +163,44 @@ func TestKnownHostsPreservesIPPinsWithoutBypassingDNSMismatchOrRevocation(t *tes
 	}
 }
 
+func TestSSHClientConfigAutoUpdateOverridesStrictKnownHosts(t *testing.T) {
+	cfg := testSSHConfig(t)
+	remote := &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 2222}
+	const identity = "appserver.live.example.drush.in:2222"
+	oldKey := testHostPublicKey(t)
+	newKey := testHostPublicKey(t)
+	seed := []byte(knownhosts.Line([]string{identity}, oldKey) + "\n")
+	cfg.Pantheon.SSH.KnownHostsPath = filepath.Join(t.TempDir(), "known_hosts")
+	if err := os.WriteFile(cfg.Pantheon.SSH.KnownHostsPath, seed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Pantheon.SSH.AutoUpdateHostKeys = true
+	sshConfig, err := NewSFTPDownloader(cfg, nil).sshClientConfig("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sshConfig.HostKeyCallback(identity, remote, newKey); err != nil {
+		t.Fatalf("automatic mode rejected new key: %v", err)
+	}
+	persisted, err := filepath.Glob(filepath.Join(cfg.DataDir(), "ssh", "known_hosts.d", "*.known_hosts"))
+	if err != nil || len(persisted) != 1 {
+		t.Fatalf("learned key files = %d, err %v", len(persisted), err)
+	}
+	unchanged, err := os.ReadFile(cfg.Pantheon.SSH.KnownHostsPath)
+	if err != nil || !bytes.Equal(unchanged, seed) {
+		t.Fatalf("strict known-hosts file changed: %v", err)
+	}
+	cfg.Pantheon.SSH.AutoUpdateHostKeys = false
+	strictConfig, err := NewSFTPDownloader(cfg, nil).sshClientConfig("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mismatch *knownhosts.KeyError
+	if err := strictConfig.HostKeyCallback(identity, remote, newKey); !errors.As(err, &mismatch) || len(mismatch.Want) == 0 {
+		t.Fatalf("strict mode verification = %v, want key mismatch", err)
+	}
+}
+
 func testSSHConfig(t *testing.T) config.Config {
 	t.Helper()
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -175,10 +214,12 @@ func testSSHConfig(t *testing.T) config.Config {
 	}
 
 	cfg := config.Default()
+	cfg.App.DataDir = t.TempDir()
 	cfg.Pantheon.SSH.PrivateKeyPathEnv = ""
 	cfg.Pantheon.SSH.PrivateKeyPath = keyPath
 	cfg.Pantheon.SSH.KnownHostsPathEnv = ""
 	cfg.Pantheon.SSH.KnownHostsPath = ""
+	cfg.Pantheon.SSH.AutoUpdateHostKeysEnv = ""
 	cfg.Pantheon.SSH.InsecureIgnoreHostKey = false
 	cfg.Pantheon.SSH.AllowLegacyRSA = false
 	return cfg

@@ -31,6 +31,42 @@ func TestSSHCompatibilityDefaultsCanBeExplicitlyHardened(t *testing.T) {
 	}
 }
 
+func TestSSHAutoUpdateHostKeysConfiguration(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		env     string
+		want    bool
+		wantErr bool
+	}{
+		{name: "default", yaml: "pantheon: {}\n"},
+		{name: "YAML enabled", yaml: "pantheon:\n  ssh:\n    auto_update_host_keys: true\n", want: true},
+		{name: "environment enables", yaml: "pantheon: {}\n", env: "true", want: true},
+		{name: "environment disables", yaml: "pantheon:\n  ssh:\n    auto_update_host_keys: true\n", env: "false"},
+		{name: "invalid environment", yaml: "pantheon: {}\n", env: "invalid", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PANTHEON_AUTO_UPDATE_HOST_KEYS", tt.env)
+			path := filepath.Join(t.TempDir(), "config.yml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && (cfg.SSHAutoUpdateHostKeys() != tt.want || cfg.CredentialSummary().AutoUpdateHostKeys != tt.want) {
+				t.Fatalf("automatic key updates = %v, want %v", cfg.SSHAutoUpdateHostKeys(), tt.want)
+			}
+		})
+	}
+}
+
 func TestDefaultPipelineUsesParallelIndexing(t *testing.T) {
 	cfg := Default()
 	if cfg.Pipeline.IndexWorkers != 2 {

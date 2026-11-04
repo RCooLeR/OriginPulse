@@ -251,7 +251,9 @@ func downloadDecisionMessage(shouldDownload bool) string {
 
 func (d *SFTPDownloader) sshClientConfig(username string) (*ssh.ClientConfig, error) {
 	d.securityWarningOnce.Do(func() {
-		if d.cfg.Pantheon.SSH.InsecureIgnoreHostKey {
+		if d.cfg.SSHAutoUpdateHostKeys() {
+			log.Warn().Msg("Pantheon SSH host keys are automatically added and replaced")
+		} else if d.cfg.Pantheon.SSH.InsecureIgnoreHostKey && d.cfg.SSHKnownHostsPath() == "" {
 			log.Warn().Msg("Pantheon SSH host-key verification is disabled by compatibility configuration")
 		}
 		if d.cfg.Pantheon.SSH.AllowLegacyRSA {
@@ -289,7 +291,9 @@ func (d *SFTPDownloader) sshClientConfig(username string) (*ssh.ClientConfig, er
 
 	knownHostsPath := d.cfg.SSHKnownHostsPath()
 	var hostKeyCallback ssh.HostKeyCallback
-	if knownHostsPath != "" {
+	if d.cfg.SSHAutoUpdateHostKeys() {
+		hostKeyCallback = autoUpdateHostKeys(filepath.Join(d.cfg.DataDir(), "ssh", "known_hosts.d"))
+	} else if knownHostsPath != "" {
 		hostKeyCallback, err = knownhosts.New(knownHostsPath)
 		if err != nil {
 			return nil, err
