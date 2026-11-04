@@ -12,30 +12,25 @@ Copy-Item config.example.yml config.yml
 New-Item -ItemType Directory -Force tmp | Out-Null
 ```
 
-The base stack supports local log sources without an SSH key. For Pantheon
-collection, set both secret paths to an SSH key and a verified `known_hosts`
-file:
+Set both required host-file paths to an SSH private key and a verified
+`known_hosts` file:
 
 ```text
 PANTHEON_SSH_KEY_FILE=C:/Users/example/.ssh/id_rsa
 PANTHEON_KNOWN_HOSTS_FILE=C:/Users/example/.ssh/known_hosts
 ```
 
-Then include `docker/docker-compose.pantheon.yml` when creating or recreating
-the stack. The override mounts both files as Docker secrets and replaces
-host-only paths from `config.yml`.
+The single `docker/docker-compose.yml` mounts both files as Docker secrets into
+the API and collector. It sets `PANTHEON_SSH_KEY_PATH` to
+`/run/secrets/pantheon_ssh_key` and `PANTHEON_KNOWN_HOSTS_PATH` to
+`/run/secrets/pantheon_known_hosts`, overriding host-only paths from `config.yml`.
+These mounts are included whenever the services are created or recreated.
 
 ## Run
 
 ```powershell
 docker compose --env-file docker/.env -f docker/docker-compose.yml up --build -d
 docker compose --env-file docker/.env -f docker/docker-compose.yml logs -f originpulse-api originpulse-collector originpulse-ingest originpulse-reports
-```
-
-Use the following `up` command when Pantheon collection is enabled:
-
-```powershell
-docker compose --env-file docker/.env -f docker/docker-compose.yml -f docker/docker-compose.pantheon.yml up --build -d
 ```
 
 Published API and Postgres ports bind to `127.0.0.1` by default. Set

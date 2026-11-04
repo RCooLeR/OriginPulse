@@ -94,9 +94,11 @@ pantheon:
     allow_legacy_rsa: false
 ```
 
-The optional Pantheon Docker override mounts both the private key and a verified
-`known_hosts` file and exposes their container paths through environment
-variables. Host verification fails closed when neither a known-hosts file nor
+The Docker Compose file mounts both the private key and a verified `known_hosts`
+file into the API and collector and exposes their container paths through
+`PANTHEON_SSH_KEY_PATH` and `PANTHEON_KNOWN_HOSTS_PATH`. Set the host-file paths
+with `PANTHEON_SSH_KEY_FILE` and `PANTHEON_KNOWN_HOSTS_FILE` in `docker/.env`.
+Host verification fails closed when neither a known-hosts file nor
 the `insecure_ignore_host_key` compatibility switch is configured. Enable
 `allow_legacy_rsa` only for a Pantheon account or host that cannot negotiate
 RSA-SHA2.

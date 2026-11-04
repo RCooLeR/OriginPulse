@@ -35,17 +35,12 @@ Copy-Item config.example.yml config.yml
 New-Item -ItemType Directory -Force tmp | Out-Null
 ```
 
-Edit `docker\.env`, then start the stack. The default stack supports local log
-sources and binds its published ports to localhost:
+Edit `docker\.env` and set `PANTHEON_SSH_KEY_FILE` and
+`PANTHEON_KNOWN_HOSTS_FILE` to existing host files. The Compose stack mounts
+them into the API and collector and binds its published ports to localhost:
 
 ```powershell
 docker compose --env-file docker/.env -f docker/docker-compose.yml up --build -d
-```
-
-For Pantheon collection, also include the secret-mount override:
-
-```powershell
-docker compose --env-file docker/.env -f docker/docker-compose.yml -f docker/docker-compose.pantheon.yml up --build -d
 ```
 
 Open the UI:

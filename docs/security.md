@@ -30,7 +30,7 @@ Keep these out of Git:
 - database dumps
 - screenshots containing real customer traffic
 
-The optional Pantheon Compose override mounts the SSH key as a secret. Prefer environment variables for credentials.
+The Compose file mounts the SSH key and verified host keys as secrets into the API and collector. Prefer environment variables for credentials.
 
 ## Public Repository Hygiene
 

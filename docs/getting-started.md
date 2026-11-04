@@ -23,16 +23,15 @@ Copy-Item config.example.yml config.yml
 New-Item -ItemType Directory -Force tmp | Out-Null
 ```
 
-Edit `docker\.env`. Set the SSH key path only if Pantheon collection is enabled:
+Edit `docker\.env` and set both required host-file paths:
 
 ```text
 PANTHEON_SSH_KEY_FILE=C:/Users/example/.ssh/id_rsa
 PANTHEON_KNOWN_HOSTS_FILE=C:/Users/example/.ssh/known_hosts
 ```
 
-The optional Pantheon Compose override mounts the key and verified host keys into
-the API and collector containers. The base stack does not require SSH secrets
-and supports local log sources on its own.
+The Compose file mounts the key and verified host keys into the API and collector
+containers. Both files must exist on the host before starting the stack.
 
 ## Configure Sites
 
@@ -70,12 +69,6 @@ Use filename masks when a local log directory contains many unrelated files.
 
 ```powershell
 docker compose --env-file docker/.env -f docker/docker-compose.yml up --build -d
-```
-
-For Pantheon sources, start the stack with the secret override:
-
-```powershell
-docker compose --env-file docker/.env -f docker/docker-compose.yml -f docker/docker-compose.pantheon.yml up --build -d
 ```
 
 Open:
