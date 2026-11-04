@@ -854,6 +854,9 @@ func run() int {
 		fmt.Printf("database_configured: %t\n", cfg.DatabaseURL() != "")
 		fmt.Printf("machine_token_configured: %t\n", summary.MachineTokenConfigured)
 		fmt.Printf("ssh_key_configured: %t\n", summary.SSHKeyConfigured)
+		fmt.Printf("known_hosts_configured: %t\n", summary.KnownHostsConfigured)
+		fmt.Printf("insecure_ssh_host_key: %t\n", summary.InsecureSSHHostKey)
+		fmt.Printf("legacy_ssh_rsa_enabled: %t\n", summary.LegacySSHRSAEnabled)
 		fmt.Printf("retention_enabled: %t\n", cfg.Retention.Enabled)
 		fmt.Printf("retention_max_age: %s\n", cfg.Retention.MaxAge)
 	default:

@@ -1,11 +1,35 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestSSHCompatibilityDefaultsCanBeExplicitlyHardened(t *testing.T) {
+	legacy := Default()
+	if !legacy.Pantheon.SSH.InsecureIgnoreHostKey || !legacy.Pantheon.SSH.AllowLegacyRSA {
+		t.Fatal("legacy-compatible defaults must preserve existing config files that omit the new SSH switches")
+	}
+
+	path := filepath.Join(t.TempDir(), "config.yml")
+	data := []byte("pantheon:\n  ssh:\n    insecure_ignore_host_key: false\n    allow_legacy_rsa: false\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hardened, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hardened.Pantheon.SSH.InsecureIgnoreHostKey || hardened.Pantheon.SSH.AllowLegacyRSA {
+		t.Fatal("explicit hardened SSH switches did not override migration-compatible defaults")
+	}
+	if hardened.Pantheon.SSH.KnownHostsPathEnv != "PANTHEON_KNOWN_HOSTS_PATH" {
+		t.Fatalf("KnownHostsPathEnv = %q", hardened.Pantheon.SSH.KnownHostsPathEnv)
+	}
+}
 
 func TestDefaultPipelineUsesParallelIndexing(t *testing.T) {
 	cfg := Default()
@@ -14,6 +38,16 @@ func TestDefaultPipelineUsesParallelIndexing(t *testing.T) {
 	}
 	if cfg.Pipeline.MaxSegments != 500 {
 		t.Fatalf("Pipeline.MaxSegments = %d, want 500", cfg.Pipeline.MaxSegments)
+	}
+}
+
+func TestDatabaseRequiresConnectionForWorkAlongsideAdvisoryLock(t *testing.T) {
+	cfg := Default()
+	cfg.Database.MaxConns = 1
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "database.max_conns must be at least 2") {
+		t.Fatalf("Validate() error = %v, want database connection minimum error", err)
 	}
 }
 

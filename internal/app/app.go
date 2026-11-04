@@ -219,9 +219,13 @@ func (r *Runtime) RunServer(ctx context.Context) error {
 	})
 
 	server := &http.Server{
-		Addr:              r.cfg.Server.Addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
+		Addr:                r.cfg.Server.Addr,
+		Handler:             handler,
+		ReadTimeout:         15 * time.Second,
+		ReadHeaderTimeout:   5 * time.Second,
+		IdleTimeout:         60 * time.Second,
+		MaxHeaderBytes:      64 << 10,
+		MaxHeaderValueCount: 100,
 	}
 
 	errCh := make(chan error, 1)
@@ -282,9 +286,13 @@ func (r *Runtime) RunAPI(ctx context.Context) error {
 	})
 
 	server := &http.Server{
-		Addr:              r.cfg.Server.Addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
+		Addr:                r.cfg.Server.Addr,
+		Handler:             handler,
+		ReadTimeout:         15 * time.Second,
+		ReadHeaderTimeout:   5 * time.Second,
+		IdleTimeout:         60 * time.Second,
+		MaxHeaderBytes:      64 << 10,
+		MaxHeaderValueCount: 100,
 	}
 
 	errCh := make(chan error, 1)
@@ -459,9 +467,7 @@ func (r *Runtime) CollectAndPipelineSitesOnce(ctx context.Context) error {
 		for _, env := range site.Envs {
 			site := site
 			env := env
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				select {
 				case sem <- struct{}{}:
 				case <-ctx.Done():
@@ -511,7 +517,7 @@ func (r *Runtime) CollectAndPipelineSitesOnce(ctx context.Context) error {
 					Int("combined_segments", pipelineResult.CombinedSegments).
 					Int("indexed_segments", pipelineResult.IndexedSegments).
 					Msg("site post-collection pipeline completed")
-			}()
+			})
 		}
 	}
 

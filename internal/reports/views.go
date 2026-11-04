@@ -751,6 +751,8 @@ func actorColor(actorType string) string {
 		return "#a96216"
 	case "monitor":
 		return "#0f766e"
+	case "rag":
+		return "#178a5f"
 	case "missing":
 		return "#b93232"
 	default:

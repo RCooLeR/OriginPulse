@@ -31,7 +31,7 @@ type Overview struct {
 	Status5xxRate     float64   `json:"status_5xx_rate"`
 	TopSite           *TopSite  `json:"top_site,omitempty"`
 	TopIP             *TopIP    `json:"top_ip,omitempty"`
-	LatestEventAt     time.Time `json:"latest_event_at,omitempty"`
+	LatestEventAt     time.Time `json:"latest_event_at,omitzero"`
 	EventLagSeconds   int64     `json:"event_lag_seconds,omitempty"`
 }
 

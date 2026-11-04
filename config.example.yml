@@ -26,7 +26,10 @@ pantheon:
   ssh:
     private_key_path_env: "PANTHEON_SSH_KEY_PATH"
     private_key_path: ""
+    known_hosts_path_env: "PANTHEON_KNOWN_HOSTS_PATH"
     known_hosts_path: ""
+    insecure_ignore_host_key: false
+    allow_legacy_rsa: false
 
 ollama:
   base_url_env: "OLLAMA_BASE_URL"

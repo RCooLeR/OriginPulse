@@ -21,7 +21,7 @@ originpulse web-push-keys
 Inside Docker, prefix commands with:
 
 ```powershell
-docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse
+docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse-api originpulse
 ```
 
 ## Recommended Daily Checks

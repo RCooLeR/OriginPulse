@@ -34,7 +34,7 @@ func Analyze(value string, requests int64) Analysis {
 		out.KnownActor = match.KnownActor
 		out.ActorType = match.ActorType
 		out.RiskScore = match.RiskScore
-		out.IsBot = match.ActorType == "crawler"
+		out.IsBot = match.ActorType == "crawler" || match.ActorType == "rag"
 		out.IsTool = match.ActorType == "tool" || match.ActorType == "monitor"
 	}
 
@@ -81,7 +81,7 @@ func Analyze(value string, requests int64) Analysis {
 		}
 	}
 
-	if out.ActorType == "crawler" {
+	if out.ActorType == "crawler" || out.ActorType == "rag" {
 		out.IsBot = true
 	}
 	if out.ActorType == "tool" || out.ActorType == "monitor" {

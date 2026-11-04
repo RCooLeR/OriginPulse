@@ -74,7 +74,7 @@ type argonParams struct {
 
 func parseParams(value string) (argonParams, error) {
 	out := argonParams{}
-	for _, part := range strings.Split(value, ",") {
+	for part := range strings.SplitSeq(value, ",") {
 		keyValue := strings.SplitN(part, "=", 2)
 		if len(keyValue) != 2 {
 			return out, ErrInvalidHash

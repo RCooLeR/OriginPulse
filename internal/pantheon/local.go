@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/rs/zerolog/log"
@@ -229,12 +230,7 @@ func shouldCollectLocalLogType(logTypes []string, logType string) bool {
 	if logType == "unknown" {
 		return false
 	}
-	for _, allowed := range logTypes {
-		if allowed == logType {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(logTypes, logType)
 }
 
 func copyLocalFile(ctx context.Context, sourcePath string, localPath string) (string, int64, error) {

@@ -7,14 +7,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkg/sftp"
+	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
@@ -23,8 +27,9 @@ import (
 )
 
 type SFTPDownloader struct {
-	cfg  config.Config
-	jobs *jobs.Store
+	cfg                 config.Config
+	jobs                *jobs.Store
+	securityWarningOnce sync.Once
 }
 
 type DownloadStats struct {
@@ -76,8 +81,9 @@ func (d *SFTPDownloader) DownloadLogs(ctx context.Context, jobID string, target 
 	d.finishStep(configStep, jobs.StatusSuccess, "SSH config ready", nil, nil)
 
 	address := net.JoinHostPort(serverAddress, fmt.Sprintf("%d", d.cfg.Pantheon.SFTPPort))
-	connectStep := d.startStep(ctx, jobID, "connect sftp", mergeStepMeta(serverMeta, map[string]any{"address": address}))
-	conn, err := d.dialSSH(ctx, "tcp", address, sshConfig)
+	hostIdentity := sshHostIdentity(target, serverKind, serverAddress, d.cfg.Pantheon.SFTPPort)
+	connectStep := d.startStep(ctx, jobID, "connect sftp", mergeStepMeta(serverMeta, map[string]any{"address": address, "host_identity": hostIdentity}))
+	conn, err := d.dialSSH(ctx, "tcp", address, hostIdentity, sshConfig)
 	if err != nil {
 		if isPantheonResourceLocked(err) {
 			d.finishStep(connectStep, jobs.StatusSkipped, "Pantheon resource lock detected", nil, map[string]any{"reason": err.Error()})
@@ -231,12 +237,8 @@ func fileStepMeta(serverMeta map[string]any, rawFile RawFile) map[string]any {
 
 func mergeStepMeta(base map[string]any, extra map[string]any) map[string]any {
 	out := make(map[string]any, len(base)+len(extra))
-	for key, value := range base {
-		out[key] = value
-	}
-	for key, value := range extra {
-		out[key] = value
-	}
+	maps.Copy(out, base)
+	maps.Copy(out, extra)
 	return out
 }
 
@@ -248,6 +250,15 @@ func downloadDecisionMessage(shouldDownload bool) string {
 }
 
 func (d *SFTPDownloader) sshClientConfig(username string) (*ssh.ClientConfig, error) {
+	d.securityWarningOnce.Do(func() {
+		if d.cfg.Pantheon.SSH.InsecureIgnoreHostKey {
+			log.Warn().Msg("Pantheon SSH host-key verification is disabled by compatibility configuration")
+		}
+		if d.cfg.Pantheon.SSH.AllowLegacyRSA {
+			log.Warn().Msg("legacy Pantheon ssh-rsa compatibility is enabled by compatibility configuration")
+		}
+	})
+
 	keyPath := d.cfg.SSHPrivateKeyPath()
 	if strings.TrimSpace(keyPath) == "" {
 		return nil, errors.New("pantheon SSH private key path is not configured")
@@ -262,45 +273,83 @@ func (d *SFTPDownloader) sshClientConfig(username string) (*ssh.ClientConfig, er
 		return nil, err
 	}
 	if algorithmSigner, ok := signer.(ssh.AlgorithmSigner); ok && signer.PublicKey().Type() == ssh.KeyAlgoRSA {
-		compatibleSigner, err := ssh.NewSignerWithAlgorithms(algorithmSigner, []string{
+		signerAlgorithms := []string{
 			ssh.KeyAlgoRSASHA512,
 			ssh.KeyAlgoRSASHA256,
-			ssh.KeyAlgoRSA,
-		})
+		}
+		if d.cfg.Pantheon.SSH.AllowLegacyRSA {
+			signerAlgorithms = append(signerAlgorithms, ssh.KeyAlgoRSA)
+		}
+		compatibleSigner, err := ssh.NewSignerWithAlgorithms(algorithmSigner, signerAlgorithms)
 		if err != nil {
 			return nil, err
 		}
 		signer = compatibleSigner
 	}
 
-	hostKeyCallback := ssh.InsecureIgnoreHostKey()
-	if d.cfg.Pantheon.SSH.KnownHostsPath != "" {
-		hostKeyCallback, err = knownhosts.New(d.cfg.Pantheon.SSH.KnownHostsPath)
+	knownHostsPath := d.cfg.SSHKnownHostsPath()
+	var hostKeyCallback ssh.HostKeyCallback
+	if knownHostsPath != "" {
+		hostKeyCallback, err = knownhosts.New(knownHostsPath)
 		if err != nil {
 			return nil, err
 		}
+		hostKeyCallback = withKnownHostsIPFallback(hostKeyCallback)
+	} else if d.cfg.Pantheon.SSH.InsecureIgnoreHostKey {
+		hostKeyCallback = ssh.InsecureIgnoreHostKey()
+	} else {
+		return nil, errors.New("pantheon SSH host verification is not configured; set known_hosts_path or explicitly enable insecure_ignore_host_key")
 	}
 
+	algorithms := ssh.SupportedAlgorithms()
+	hostKeyAlgorithms := slices.Clone(algorithms.HostKeys)
+	if d.cfg.Pantheon.SSH.AllowLegacyRSA && !slices.Contains(hostKeyAlgorithms, ssh.KeyAlgoRSA) {
+		hostKeyAlgorithms = append(hostKeyAlgorithms, ssh.KeyAlgoRSA)
+	}
 	return &ssh.ClientConfig{
+		Config: ssh.Config{
+			KeyExchanges: algorithms.KeyExchanges,
+			Ciphers:      algorithms.Ciphers,
+			MACs:         algorithms.MACs,
+		},
 		User: username,
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
-		HostKeyCallback: hostKeyCallback,
-		HostKeyAlgorithms: []string{
-			ssh.KeyAlgoED25519,
-			ssh.KeyAlgoECDSA256,
-			ssh.KeyAlgoECDSA384,
-			ssh.KeyAlgoECDSA521,
-			ssh.KeyAlgoRSASHA512,
-			ssh.KeyAlgoRSASHA256,
-			ssh.KeyAlgoRSA,
-		},
-		Timeout: d.cfg.Collection.TimeoutPerSite,
+		HostKeyCallback:   hostKeyCallback,
+		HostKeyAlgorithms: hostKeyAlgorithms,
+		Timeout:           d.cfg.Collection.TimeoutPerSite,
 	}, nil
 }
 
-func (d *SFTPDownloader) dialSSH(ctx context.Context, network string, address string, sshConfig *ssh.ClientConfig) (*ssh.Client, error) {
+func withKnownHostsIPFallback(verify ssh.HostKeyCallback) ssh.HostKeyCallback {
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		err := verify(hostname, remote, key)
+		var keyErr *knownhosts.KeyError
+		if errors.As(err, &keyErr) && len(keyErr.Want) == 0 {
+			// Existing installations pinned the dialed IP before logical DNS identities were used.
+			return verify(remote.String(), remote, key)
+		}
+		return err
+	}
+}
+
+func sshHostIdentity(target Target, serverKind string, fallbackAddress string, port int) string {
+	host := fallbackAddress
+	switch serverKind {
+	case "appserver":
+		if strings.TrimSpace(target.AppserverDNS) != "" {
+			host = target.AppserverDNS
+		}
+	case "dbserver":
+		if strings.TrimSpace(target.DBServerDNS) != "" {
+			host = target.DBServerDNS
+		}
+	}
+	return net.JoinHostPort(host, fmt.Sprintf("%d", port))
+}
+
+func (d *SFTPDownloader) dialSSH(ctx context.Context, network string, address string, hostIdentity string, sshConfig *ssh.ClientConfig) (*ssh.Client, error) {
 	dialer := net.Dialer{Timeout: d.cfg.Collection.TimeoutPerSite}
 	rawConn, err := dialer.DialContext(ctx, network, address)
 	if err != nil {
@@ -313,7 +362,7 @@ func (d *SFTPDownloader) dialSSH(ctx context.Context, network string, address st
 	}
 	ch := make(chan result, 1)
 	go func() {
-		conn, chans, reqs, err := ssh.NewClientConn(rawConn, address, sshConfig)
+		conn, chans, reqs, err := ssh.NewClientConn(rawConn, hostIdentity, sshConfig)
 		if err != nil {
 			ch <- result{err: err}
 			return
@@ -449,12 +498,7 @@ func (d *SFTPDownloader) shouldCollect(logType string) bool {
 	if logType == "unknown" {
 		return false
 	}
-	for _, allowed := range d.cfg.Collection.LogTypes {
-		if allowed == logType {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(d.cfg.Collection.LogTypes, logType)
 }
 
 func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {

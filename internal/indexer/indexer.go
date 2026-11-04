@@ -1808,7 +1808,7 @@ func decodedSecurityVariants(value string) []string {
 	out := []string{value}
 	seen := map[string]struct{}{value: {}}
 	current := value
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		decoded, err := url.QueryUnescape(current)
 		if err != nil || decoded == current {
 			break

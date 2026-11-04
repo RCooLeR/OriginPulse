@@ -1,7 +1,18 @@
 .git
+.github
+.agents
+.cache
+.codex
 .idea
+.vscode
 designs
 designs/**
+
+docs
+web
+vendor
+README.md
+logo.png
 
 data
 data/**
@@ -12,6 +23,10 @@ components-font-awesome/**
 
 config.yml
 *.local.yml
+docker/.env
+.env
+.env.*
+!.env.example
 
 originpulse
 originpulse.exe

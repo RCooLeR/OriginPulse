@@ -188,6 +188,16 @@ func TestRequireSameOriginRejectsUnsafeCrossSiteRequests(t *testing.T) {
 			want: http.StatusNoContent,
 		},
 		{
+			name: "cross-site fetch metadata overrides marker",
+			request: func() *http.Request {
+				req := httptest.NewRequest("POST", "http://originpulse.local/api/v1/system/collect", strings.NewReader("{}"))
+				req.Header.Set(sameOriginRequestHeader, sameOriginRequestValue)
+				req.Header.Set("Sec-Fetch-Site", "cross-site")
+				return req
+			}(),
+			want: http.StatusForbidden,
+		},
+		{
 			name: "matching origin",
 			request: func() *http.Request {
 				req := httptest.NewRequest("POST", "http://originpulse.local/api/v1/system/collect", strings.NewReader("{}"))
@@ -213,6 +223,40 @@ func TestRequireSameOriginRejectsUnsafeCrossSiteRequests(t *testing.T) {
 			handler.ServeHTTP(rec, tt.request)
 			if rec.Code != tt.want {
 				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecodeJSONRequestUsesStrictJSONV2Semantics(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		allowEmpty bool
+		want       string
+		wantErr    bool
+	}{
+		{name: "valid", body: `{"value":"ok"}`, want: "ok"},
+		{name: "duplicate member", body: `{"value":"first","value":"second"}`, wantErr: true},
+		{name: "trailing value", body: `{"value":"ok"} {}`, wantErr: true},
+		{name: "non-JSON whitespace", body: "\u00a0" + `{"value":"ok"}`, wantErr: true},
+		{name: "invalid UTF-8", body: string([]byte(`{"value":"`)) + string([]byte{0xff}) + `"}`, wantErr: true},
+		{name: "optional empty", body: " \n\t", allowEmpty: true},
+		{name: "required empty", body: " \n\t", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tt.body))
+			var got struct {
+				Value string `json:"value"`
+			}
+			err := decodeJSONRequest(req, &got, tt.allowEmpty)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("decode error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && got.Value != tt.want {
+				t.Fatalf("value = %q, want %q", got.Value, tt.want)
 			}
 		})
 	}

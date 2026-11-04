@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"io"
 	"net/http"
@@ -600,7 +602,7 @@ func (api API) updateIPManualIntel(w http.ResponseWriter, r *http.Request) {
 		ManualLabel  string `json:"manual_label"`
 		ManualAction string `json:"manual_action"`
 	}{}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+	if err := decodeJSONRequest(r, &req, true); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 		return
 	}
@@ -689,7 +691,7 @@ func (api API) evaluateAlerts(w http.ResponseWriter, r *http.Request) {
 		Limit: parseLimit(r, 50, 500),
 	}
 	if r.Body != nil && r.Body != http.NoBody {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		if err := decodeJSONRequest(r, &req, true); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 			return
 		}
@@ -726,7 +728,7 @@ func (api API) refreshIPIntel(w http.ResponseWriter, r *http.Request) {
 		Limit: parseLimit(r, 100, ipintel.ResultMaxLimit),
 	}
 	if r.Body != nil && r.Body != http.NoBody {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		if err := decodeJSONRequest(r, &req, true); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 			return
 		}
@@ -810,7 +812,7 @@ func (api API) generateReport(w http.ResponseWriter, r *http.Request) {
 		SiteID: r.URL.Query().Get("site_id"),
 	}
 	if r.Body != nil && r.Body != http.NoBody {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		if err := decodeJSONRequest(r, &req, true); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 			return
 		}
@@ -844,7 +846,7 @@ func (api API) generateDailyReport(w http.ResponseWriter, r *http.Request) {
 		SiteID: r.URL.Query().Get("site_id"),
 	}
 	if r.Body != nil && r.Body != http.NoBody {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		if err := decodeJSONRequest(r, &req, true); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 			return
 		}
@@ -927,7 +929,7 @@ func (api API) subscribeWebPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var subscription webpush.Subscription
-	if err := json.NewDecoder(r.Body).Decode(&subscription); err != nil {
+	if err := decodeJSONRequest(r, &subscription, false); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_json", "request body must be a PushSubscription JSON object")
 		return
 	}
@@ -952,7 +954,7 @@ func (api API) unsubscribeWebPush(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Endpoint string `json:"endpoint"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+	if err := decodeJSONRequest(r, &req, true); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 		return
 	}
@@ -1074,7 +1076,7 @@ func (api API) runRetention(w http.ResponseWriter, r *http.Request) {
 		TemporaryImportsOnly bool `json:"temporary_imports_only"`
 	}{}
 	if r.Body != nil && r.Body != http.NoBody {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		if err := decodeJSONRequest(r, &req, true); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 			return
 		}
@@ -1351,7 +1353,7 @@ func (api API) runArchive(w http.ResponseWriter, r *http.Request) {
 		RemoveSources bool   `json:"remove_sources"`
 	}
 	if r.Body != nil && r.Body != http.NoBody {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		if err := decodeJSONRequest(r, &req, true); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 			return
 		}
@@ -1374,7 +1376,7 @@ func (api API) importArchive(w http.ResponseWriter, r *http.Request) {
 		ArchivePath string `json:"archive_path"`
 		Reason      string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONRequest(r, &req, false); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 		return
 	}
@@ -1395,7 +1397,7 @@ func (api API) importArchives(w http.ResponseWriter, r *http.Request) {
 		ArchiveIDs []string `json:"archive_ids"`
 		Reason     string   `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONRequest(r, &req, false); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 		return
 	}
@@ -1462,7 +1464,7 @@ func (api API) runBackfill(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Rollups = true
 	if r.Body != nil && r.Body != http.NoBody {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		if err := decodeJSONRequest(r, &req, true); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 			return
 		}
@@ -1503,7 +1505,7 @@ func (api API) combineNow(w http.ResponseWriter, r *http.Request) {
 		To      string `json:"to"`
 		Force   bool   `json:"force"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONRequest(r, &req, false); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 		return
 	}
@@ -1535,7 +1537,7 @@ func (api API) indexSegment(w http.ResponseWriter, r *http.Request) {
 		SegmentPath string `json:"segment_path"`
 		Force       bool   `json:"force"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONRequest(r, &req, false); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 		return
 	}
@@ -1555,7 +1557,7 @@ func (api API) runPipeline(w http.ResponseWriter, r *http.Request) {
 
 	var req pipelineRequest
 	if r.Body != nil && r.Body != http.NoBody {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		if err := decodeJSONRequest(r, &req, true); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 			return
 		}
@@ -1667,7 +1669,7 @@ func (api API) login(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONRequest(r, &req, false); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 		return
 	}
@@ -1740,7 +1742,7 @@ func (api API) createUser(w http.ResponseWriter, r *http.Request) {
 		Password    string `json:"password"`
 		DisplayName string `json:"display_name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONRequest(r, &req, false); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 		return
 	}
@@ -1763,7 +1765,7 @@ func (api API) updateUser(w http.ResponseWriter, r *http.Request) {
 		DisplayName *string `json:"display_name"`
 		IsActive    *bool   `json:"is_active"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONRequest(r, &req, false); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
 		return
 	}
@@ -1814,7 +1816,12 @@ func (api API) requireAuth(next http.Handler) http.Handler {
 }
 
 func requireSameOrigin(next http.Handler) http.Handler {
+	protection := http.NewCrossOriginProtection()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := protection.Check(r); err != nil {
+			writeError(w, http.StatusForbidden, "cross_site_request", "unsafe API requests must be same-origin")
+			return
+		}
 		if isSafeMethod(r.Method) || isSameOriginRequest(r) {
 			next.ServeHTTP(w, r)
 			return
@@ -1878,6 +1885,28 @@ func writeUserError(w http.ResponseWriter, err error, fallbackCode string) {
 func writeReport(w http.ResponseWriter, status int, report reports.Report) {
 	report.Input = nil
 	writeJSON(w, status, report)
+}
+
+func decodeJSONRequest(r *http.Request, out any, allowEmpty bool) error {
+	if r.Body == nil || r.Body == http.NoBody {
+		if allowEmpty {
+			return nil
+		}
+		return io.ErrUnexpectedEOF
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		if allowEmpty {
+			return nil
+		}
+		return io.ErrUnexpectedEOF
+	}
+
+	return jsonv2.Unmarshal(body, out)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

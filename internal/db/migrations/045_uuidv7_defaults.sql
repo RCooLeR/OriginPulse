@@ -1,0 +1,11 @@
+ALTER TABLE users ALTER COLUMN id SET DEFAULT uuidv7();
+ALTER TABLE sessions ALTER COLUMN id SET DEFAULT uuidv7();
+ALTER TABLE raw_files ALTER COLUMN id SET DEFAULT uuidv7();
+ALTER TABLE combined_segments ALTER COLUMN id SET DEFAULT uuidv7();
+ALTER TABLE alerts ALTER COLUMN id SET DEFAULT uuidv7();
+ALTER TABLE llm_reports ALTER COLUMN id SET DEFAULT uuidv7();
+ALTER TABLE jobs ALTER COLUMN id SET DEFAULT uuidv7();
+ALTER TABLE notification_deliveries ALTER COLUMN id SET DEFAULT uuidv7();
+ALTER TABLE web_push_subscriptions ALTER COLUMN id SET DEFAULT uuidv7();
+ALTER TABLE log_archives ALTER COLUMN id SET DEFAULT uuidv7();
+ALTER TABLE temporary_imports ALTER COLUMN id SET DEFAULT uuidv7();

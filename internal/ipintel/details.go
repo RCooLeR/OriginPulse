@@ -97,8 +97,8 @@ type TrafficSummary struct {
 	BytesSent        int64     `json:"bytes_sent"`
 	AvgRequestTimeMS float64   `json:"avg_request_time_ms"`
 	P95RequestTimeMS float64   `json:"p95_request_time_ms"`
-	FirstSeen        time.Time `json:"first_seen,omitempty"`
-	LastSeen         time.Time `json:"last_seen,omitempty"`
+	FirstSeen        time.Time `json:"first_seen,omitzero"`
+	LastSeen         time.Time `json:"last_seen,omitzero"`
 }
 
 type DetailSite struct {
@@ -177,13 +177,13 @@ type StoredIntel struct {
 	ProviderName     string    `json:"provider_name,omitempty"`
 	ProviderSource   string    `json:"provider_source_url,omitempty"`
 	ProviderRange    string    `json:"provider_range,omitempty"`
-	ProviderAt       time.Time `json:"provider_refreshed_at,omitempty"`
+	ProviderAt       time.Time `json:"provider_refreshed_at,omitzero"`
 	IsTorExit        bool      `json:"is_tor_exit"`
 	IsDatacenter     bool      `json:"is_datacenter"`
 	ManualLabel      string    `json:"manual_label,omitempty"`
 	ManualAction     string    `json:"manual_action,omitempty"`
 	RiskScore        int       `json:"risk_score,omitempty"`
-	RefreshedAt      time.Time `json:"refreshed_at,omitempty"`
+	RefreshedAt      time.Time `json:"refreshed_at,omitzero"`
 }
 
 type GeoIPDetails struct {

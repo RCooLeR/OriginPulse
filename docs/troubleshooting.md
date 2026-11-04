@@ -6,7 +6,7 @@ Check config and container logs:
 
 ```powershell
 originpulse check-config -config config.yml
-docker compose --env-file docker/.env -f docker/docker-compose.yml logs --tail=120 originpulse
+docker compose --env-file docker/.env -f docker/docker-compose.yml logs --tail=120 originpulse-api originpulse-collector originpulse-ingest originpulse-reports
 ```
 
 Common causes:

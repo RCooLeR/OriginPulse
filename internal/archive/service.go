@@ -5,18 +5,22 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/klauspost/compress/zstd"
 
 	"originpulse/internal/config"
 	"originpulse/internal/db"
+	"originpulse/internal/rootfs"
 )
 
 const archiveLockKey int64 = 7720005
@@ -453,7 +457,12 @@ func (s *Service) writeGroup(ctx context.Context, pool *pgxpool.Pool, group grou
 
 	hasher := sha256.New()
 	counting := &countingWriter{writer: io.MultiWriter(out, hasher)}
-	zstdWriter, err := zstd.NewWriter(counting, zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
+	zstdWriter, err := zstd.NewWriter(
+		counting,
+		zstd.WithEncoderLevel(zstd.SpeedBetterCompression),
+		zstd.WithEncoderConcurrency(min(runtime.GOMAXPROCS(0), 2)),
+		zstd.WithConcurrentBlocks(true),
+	)
 	if err != nil {
 		_ = out.Close()
 		_ = os.Remove(tmpPath)
@@ -607,7 +616,15 @@ WHERE id = $2::uuid`, archiveID, seg.ID); err != nil {
 	return tx.Commit(ctx)
 }
 
-func (s *Service) removeArchivedSources(ctx context.Context, pool *pgxpool.Pool, group group) (int, int, error) {
+func (s *Service) removeArchivedSources(ctx context.Context, pool interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}, group group) (int, int, error) {
+	root, err := rootfs.Open(s.cfg.CombinedDir())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return 0, 0, err
+	}
+	defer root.Close()
+
 	deleted := 0
 	failed := 0
 	for _, seg := range group.Segments {
@@ -616,13 +633,15 @@ func (s *Service) removeArchivedSources(ctx context.Context, pool *pgxpool.Pool,
 			return deleted, failed, ctx.Err()
 		default:
 		}
-		if err := os.Remove(seg.Path); err != nil {
-			if !os.IsNotExist(err) {
+		if root != nil {
+			removed, err := root.Remove(seg.Path)
+			if err != nil {
 				failed++
 				continue
 			}
-		} else {
-			deleted++
+			if removed {
+				deleted++
+			}
 		}
 		if _, err := pool.Exec(ctx, `
 UPDATE combined_segments
@@ -630,12 +649,20 @@ SET source_deleted_at = now()
 WHERE id = $1::uuid`, seg.ID); err != nil {
 			return deleted, failed, err
 		}
-		pruneEmptyParents(filepath.Dir(seg.Path), s.cfg.CombinedDir())
+		if root != nil {
+			root.PruneEmptyParents(seg.Path, 6)
+		}
 	}
 	return deleted, failed, nil
 }
 
 func (s *Service) removeCompactedDailyArchives(ctx context.Context, pool *pgxpool.Pool, group group) (int, int, error) {
+	root, err := rootfs.Open(s.cfg.ArchiveDir())
+	if err != nil {
+		return 0, 0, err
+	}
+	defer root.Close()
+
 	deleted := 0
 	failed := 0
 	for _, archive := range group.DailyArchives {
@@ -644,12 +671,12 @@ func (s *Service) removeCompactedDailyArchives(ctx context.Context, pool *pgxpoo
 			return deleted, failed, ctx.Err()
 		default:
 		}
-		if err := os.Remove(archive.Path); err != nil {
-			if !os.IsNotExist(err) {
-				failed++
-				continue
-			}
-		} else {
+		removed, err := root.Remove(archive.Path)
+		if err != nil {
+			failed++
+			continue
+		}
+		if removed {
 			deleted++
 		}
 		if _, err := pool.Exec(ctx, `
@@ -658,7 +685,7 @@ WHERE id = $1::uuid
   AND granularity = 'daily'`, archive.ID); err != nil {
 			return deleted, failed, err
 		}
-		pruneEmptyParents(filepath.Dir(archive.Path), s.cfg.ArchiveDir())
+		root.PruneEmptyParents(archive.Path, 6)
 	}
 	return deleted, failed, nil
 }
@@ -710,7 +737,11 @@ func addArchiveMembersToTar(tw *tar.Writer, archivePath string, names map[string
 		return 0, err
 	}
 	defer file.Close()
-	zstdReader, err := zstd.NewReader(file)
+	zstdReader, err := zstd.NewReader(
+		file,
+		zstd.WithDecoderMaxMemory(256<<20),
+		zstd.WithDecoderMaxWindow(64<<20),
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -805,21 +836,4 @@ func copyFile(src string, dst string) error {
 		return closeErr
 	}
 	return nil
-}
-
-func pruneEmptyParents(path string, stopAt string) {
-	stopAt, _ = filepath.Abs(stopAt)
-	for i := 0; i < 6; i++ {
-		if path == "." || path == string(filepath.Separator) {
-			return
-		}
-		abs, err := filepath.Abs(path)
-		if err != nil || abs == stopAt {
-			return
-		}
-		if err := os.Remove(path); err != nil {
-			return
-		}
-		path = filepath.Dir(path)
-	}
 }

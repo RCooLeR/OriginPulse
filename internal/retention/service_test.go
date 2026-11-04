@@ -17,8 +17,9 @@ import (
 )
 
 func TestRemoveLocalFilesDeletesFilesAndPrunesEmptyParents(t *testing.T) {
-	root := t.TempDir()
-	nested := filepath.Join(root, "raw", "site", "live")
+	workspace := t.TempDir()
+	root := filepath.Join(workspace, "raw")
+	nested := filepath.Join(root, "site", "live")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -27,20 +28,24 @@ func TestRemoveLocalFilesDeletesFilesAndPrunesEmptyParents(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	deleted, failed := removeLocalFiles([]string{path})
+	deleted, failed := removeLocalFiles(root, []string{path})
 	if deleted != 1 || failed != 0 {
 		t.Fatalf("removeLocalFiles() = deleted %d failed %d, want 1/0", deleted, failed)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("removed file still exists or unexpected stat error: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "raw")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "site")); !os.IsNotExist(err) {
 		t.Fatalf("empty parent directories should be pruned, stat error: %v", err)
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("configured root should be preserved: %v", err)
 	}
 }
 
 func TestRemoveLocalFilesIgnoresMissingFiles(t *testing.T) {
-	deleted, failed := removeLocalFiles([]string{filepath.Join(t.TempDir(), "missing.log")})
+	root := t.TempDir()
+	deleted, failed := removeLocalFiles(root, []string{filepath.Join(root, "missing.log")})
 	if deleted != 0 || failed != 0 {
 		t.Fatalf("removeLocalFiles() = deleted %d failed %d, want 0/0", deleted, failed)
 	}
@@ -56,7 +61,7 @@ func TestRemoveLocalFilesReportsDeletionFailures(t *testing.T) {
 		t.Fatalf("write child: %v", err)
 	}
 
-	deleted, failed := removeLocalFiles([]string{nonEmptyDir})
+	deleted, failed := removeLocalFiles(root, []string{nonEmptyDir})
 	if deleted != 0 || failed != 1 {
 		t.Fatalf("removeLocalFiles() = deleted %d failed %d, want 0/1", deleted, failed)
 	}
@@ -189,7 +194,7 @@ func testRetentionStore(t *testing.T) *db.Store {
 		t.Skip("ORIGINPULSE_TEST_DATABASE_URL is not set")
 	}
 	ctx := context.Background()
-	store, err := db.Open(ctx, config.DatabaseConfig{URL: url, MaxConns: 1})
+	store, err := db.Open(ctx, config.DatabaseConfig{URL: url, MaxConns: 2})
 	if err != nil {
 		t.Fatalf("open test database: %v", err)
 	}

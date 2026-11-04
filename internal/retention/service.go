@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"time"
 
 	"originpulse/internal/config"
 	"originpulse/internal/db"
 	"originpulse/internal/rollups"
+	"originpulse/internal/rootfs"
 )
 
 const retentionLockKey int64 = 7720003
@@ -269,16 +269,16 @@ WHERE status = 'ready'
 	result.ArchiveFilesDeleted = int(tag.RowsAffected())
 
 	if s.cfg.Retention.DeleteCombinedFiles {
-		deleted, failed := removeLocalFiles(combinedFiles)
+		deleted, failed := removeLocalFiles(s.cfg.CombinedDir(), combinedFiles)
 		result.LocalFilesDeleted += deleted
 		result.LocalFileErrors += failed
 	}
 	if s.cfg.Retention.DeleteRawFiles {
-		deleted, failed := removeLocalFiles(rawFiles)
+		deleted, failed := removeLocalFiles(s.cfg.RawDir(), rawFiles)
 		result.LocalFilesDeleted += deleted
 		result.LocalFileErrors += failed
 	}
-	deleted, failed := removeLocalFiles(archiveFiles)
+	deleted, failed := removeLocalFiles(s.cfg.ArchiveDir(), archiveFiles)
 	result.LocalFilesDeleted += deleted
 	result.LocalFileErrors += failed
 
@@ -454,31 +454,31 @@ func (s *Service) paths(ctx context.Context, query string, cutoff time.Time) ([]
 	return paths, rows.Err()
 }
 
-func removeLocalFiles(paths []string) (int, int) {
+func removeLocalFiles(rootPath string, paths []string) (int, int) {
+	if len(paths) == 0 {
+		return 0, 0
+	}
+	root, err := rootfs.Open(rootPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, 0
+		}
+		return 0, len(paths)
+	}
+	defer root.Close()
+
 	deleted := 0
 	failed := 0
 	for _, path := range paths {
-		if err := os.Remove(path); err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				failed++
-				continue
-			}
-		} else {
+		removed, err := root.Remove(path)
+		if err != nil {
+			failed++
+			continue
+		}
+		if removed {
 			deleted++
 		}
-		pruneEmptyParents(filepath.Dir(path))
+		root.PruneEmptyParents(path, 6)
 	}
 	return deleted, failed
-}
-
-func pruneEmptyParents(path string) {
-	for i := 0; i < 6; i++ {
-		if path == "." || path == string(filepath.Separator) {
-			return
-		}
-		if err := os.Remove(path); err != nil {
-			return
-		}
-		path = filepath.Dir(path)
-	}
 }

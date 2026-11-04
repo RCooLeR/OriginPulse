@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18.6-trixie@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
+        env:
+          POSTGRES_DB: originpulse
+          POSTGRES_USER: originpulse
+          POSTGRES_PASSWORD: originpulse_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U originpulse -d originpulse"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test
+        env:
+          ORIGINPULSE_TEST_DATABASE_URL: "postgres://originpulse:originpulse_test_password@127.0.0.1:5432/originpulse?sslmode=disable&require_auth=scram-sha-256"
+        run: go test -race -p 1 ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Vulnerability scan
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        with:
+          go-version-file: go.mod
+          repo-checkout: false
+  container:
+    name: Container build
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    needs: go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Compose configurations
+        shell: bash
+        run: |
+          pantheon_key="$(mktemp)"
+          pantheon_known_hosts="$(mktemp)"
+          docker compose --env-file docker/.env.example -f docker/docker-compose.yml config --quiet
+          PANTHEON_SSH_KEY_FILE="$pantheon_key" PANTHEON_KNOWN_HOSTS_FILE="$pantheon_known_hosts" docker compose --env-file docker/.env.example -f docker/docker-compose.yml -f docker/docker-compose.pantheon.yml config --quiet
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build runtime image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: originpulse:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Scan runtime image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.76.1
+          image-ref: originpulse:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+      - name: Scan PostgreSQL image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.76.1
+          image-ref: postgres:18.6-trixie@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os
+          severity: CRITICAL,HIGH

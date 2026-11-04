@@ -823,13 +823,6 @@ func ratio(part int64, total int64) float64 {
 	return float64(part) / float64(total)
 }
 
-func min(a int64, b int64) int64 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func clamp(value int, low int, high int) int {
 	if value < low {
 		return low

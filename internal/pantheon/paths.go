@@ -23,7 +23,7 @@ func LocalRawPath(rawDir string, siteID string, env string, containerID string, 
 	}
 	parts := []string{rawDir, siteID, env, containerID}
 	if relative != "" {
-		for _, part := range strings.Split(relative, "/") {
+		for part := range strings.SplitSeq(relative, "/") {
 			parts = append(parts, sanitizePathPart(part))
 		}
 	}

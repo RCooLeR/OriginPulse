@@ -74,9 +74,12 @@ type OllamaConfig struct {
 }
 
 type SSHConfig struct {
-	PrivateKeyPath    string `yaml:"private_key_path" json:"private_key_path"`
-	PrivateKeyPathEnv string `yaml:"private_key_path_env" json:"private_key_path_env"`
-	KnownHostsPath    string `yaml:"known_hosts_path" json:"known_hosts_path"`
+	PrivateKeyPath        string `yaml:"private_key_path" json:"private_key_path"`
+	PrivateKeyPathEnv     string `yaml:"private_key_path_env" json:"private_key_path_env"`
+	KnownHostsPath        string `yaml:"known_hosts_path" json:"known_hosts_path"`
+	KnownHostsPathEnv     string `yaml:"known_hosts_path_env" json:"known_hosts_path_env"`
+	InsecureIgnoreHostKey bool   `yaml:"insecure_ignore_host_key" json:"insecure_ignore_host_key"`
+	AllowLegacyRSA        bool   `yaml:"allow_legacy_rsa" json:"allow_legacy_rsa"`
 }
 
 type CollectionConfig struct {
@@ -219,6 +222,8 @@ type CredentialSummary struct {
 	SSHKeyPath             string `json:"ssh_key_path"`
 	KnownHostsConfigured   bool   `json:"known_hosts_configured"`
 	KnownHostsPath         string `json:"known_hosts_path"`
+	InsecureSSHHostKey     bool   `json:"insecure_ssh_host_key"`
+	LegacySSHRSAEnabled    bool   `json:"legacy_ssh_rsa_enabled"`
 }
 
 func Load(path string) (Config, error) {
@@ -268,7 +273,10 @@ func Default() Config {
 			SFTPPort:        2222,
 			DNSTimeout:      10 * time.Second,
 			SSH: SSHConfig{
-				PrivateKeyPathEnv: "PANTHEON_SSH_KEY_PATH",
+				PrivateKeyPathEnv:     "PANTHEON_SSH_KEY_PATH",
+				KnownHostsPathEnv:     "PANTHEON_KNOWN_HOSTS_PATH",
+				InsecureIgnoreHostKey: true,
+				AllowLegacyRSA:        true,
 			},
 		},
 		Ollama: OllamaConfig{
@@ -376,6 +384,9 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.App.DataDir) == "" {
 		return errors.New("app.data_dir is required")
+	}
+	if c.Database.MaxConns < 2 {
+		return errors.New("database.max_conns must be at least 2")
 	}
 	if c.Auth.SessionTTL <= 0 {
 		return errors.New("auth.session_ttl must be positive")
@@ -558,7 +569,7 @@ func (c Config) EnabledSites() []SiteConfig {
 
 func (c Config) CredentialSummary() CredentialSummary {
 	sshPath := c.SSHPrivateKeyPath()
-	knownHosts := strings.TrimSpace(c.Pantheon.SSH.KnownHostsPath)
+	knownHosts := c.SSHKnownHostsPath()
 
 	return CredentialSummary{
 		MachineTokenConfigured: envSet(c.Pantheon.MachineTokenEnv),
@@ -569,6 +580,8 @@ func (c Config) CredentialSummary() CredentialSummary {
 		SSHKeyPath:             sshPath,
 		KnownHostsConfigured:   knownHosts != "",
 		KnownHostsPath:         knownHosts,
+		InsecureSSHHostKey:     c.Pantheon.SSH.InsecureIgnoreHostKey,
+		LegacySSHRSAEnabled:    c.Pantheon.SSH.AllowLegacyRSA,
 	}
 }
 
@@ -592,6 +605,15 @@ func (c Config) SSHPrivateKeyPath() string {
 		}
 	}
 	return strings.TrimSpace(c.Pantheon.SSH.PrivateKeyPath)
+}
+
+func (c Config) SSHKnownHostsPath() string {
+	if c.Pantheon.SSH.KnownHostsPathEnv != "" {
+		if value := strings.TrimSpace(os.Getenv(c.Pantheon.SSH.KnownHostsPathEnv)); value != "" {
+			return value
+		}
+	}
+	return strings.TrimSpace(c.Pantheon.SSH.KnownHostsPath)
 }
 
 func (c Config) OllamaBaseURL() string {
@@ -650,7 +672,7 @@ func (c Config) SMTPPassword() string {
 func (c Config) PushWebhookURLs() []string {
 	urls := append([]string(nil), c.Notifications.Push.WebhookURLs...)
 	if c.Notifications.Push.WebhookURLsEnv != "" {
-		for _, part := range strings.Split(os.Getenv(c.Notifications.Push.WebhookURLsEnv), ",") {
+		for part := range strings.SplitSeq(os.Getenv(c.Notifications.Push.WebhookURLsEnv), ",") {
 			if trimmed := strings.TrimSpace(part); trimmed != "" {
 				urls = append(urls, trimmed)
 			}
@@ -839,6 +861,9 @@ func (c *Config) normalize() {
 	}
 	if c.Pantheon.SSH.PrivateKeyPathEnv == "" {
 		c.Pantheon.SSH.PrivateKeyPathEnv = "PANTHEON_SSH_KEY_PATH"
+	}
+	if c.Pantheon.SSH.KnownHostsPathEnv == "" {
+		c.Pantheon.SSH.KnownHostsPathEnv = "PANTHEON_KNOWN_HOSTS_PATH"
 	}
 	if c.Ollama.BaseURLEnv == "" {
 		c.Ollama.BaseURLEnv = "OLLAMA_BASE_URL"

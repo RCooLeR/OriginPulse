@@ -137,7 +137,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		_, _ = lockConn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationLockKey)
 	}()
 
-	if _, err := pool.Exec(ctx, `
+	if _, err := lockConn.Exec(ctx, `
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version text PRIMARY KEY,
   applied_at timestamptz NOT NULL DEFAULT now()
@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	sort.Strings(versions)
 
 	for _, version := range versions {
-		applied, err := s.migrationApplied(ctx, version)
+		applied, err := migrationApplied(ctx, lockConn, version)
 		if err != nil {
 			return err
 		}
@@ -173,7 +173,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			return err
 		}
 
-		tx, err := pool.Begin(ctx)
+		tx, err := lockConn.Begin(ctx)
 		if err != nil {
 			return err
 		}
@@ -194,14 +194,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	return nil
 }
 
-func (s *Store) migrationApplied(ctx context.Context, version string) (bool, error) {
-	pool, err := s.Pool()
-	if err != nil {
-		return false, err
-	}
-
+func migrationApplied(ctx context.Context, conn *pgxpool.Conn, version string) (bool, error) {
 	var exists bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, version).Scan(&exists); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, version).Scan(&exists); err != nil {
 		return false, err
 	}
 	return exists, nil

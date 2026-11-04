@@ -46,6 +46,13 @@ func TestMatchUserAgent(t *testing.T) {
 			knownActor: "Cohere",
 		},
 		{
+			name:       "verity rag bot",
+			userAgent:  "VerityBot/1.0",
+			family:     "veritybot",
+			actorType:  "rag",
+			knownActor: "VerityBot",
+		},
+		{
 			name:       "uptime robot",
 			userAgent:  "UptimeRobot/2.0",
 			family:     "uptimerobot",

@@ -26,7 +26,11 @@ database:
   max_conns: 10
 ```
 
-`DATABASE_URL` should point to Postgres. Automatic migrations are enabled by default.
+`DATABASE_URL` must point to PostgreSQL 18 or newer because current migrations use
+the built-in `uuidv7()` function. Automatic migrations are enabled by default.
+Back up and upgrade older PostgreSQL installations before starting this version.
+`max_conns` must be at least 2 so maintenance work can use the pool while its
+dedicated advisory-lock connection is held.
 
 ## Auth
 
@@ -84,10 +88,23 @@ pantheon:
   ssh:
     private_key_path_env: "PANTHEON_SSH_KEY_PATH"
     private_key_path: ""
+    known_hosts_path_env: "PANTHEON_KNOWN_HOSTS_PATH"
     known_hosts_path: ""
+    insecure_ignore_host_key: false
+    allow_legacy_rsa: false
 ```
 
-In Docker, the SSH key is mounted as `/run/secrets/pantheon_ssh_key` and exposed through `PANTHEON_SSH_KEY_PATH`.
+The optional Pantheon Docker override mounts both the private key and a verified
+`known_hosts` file and exposes their container paths through environment
+variables. Host verification fails closed when neither a known-hosts file nor
+the `insecure_ignore_host_key` compatibility switch is configured. Enable
+`allow_legacy_rsa` only for a Pantheon account or host that cannot negotiate
+RSA-SHA2.
+
+Older config files that omit the two compatibility switches retain the previous
+host-key and RSA behavior so upgrades do not silently break collection. Add the
+explicit `false` values above and a verified known-hosts file to complete the
+security migration.
 
 ## Sites
 

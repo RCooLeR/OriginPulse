@@ -5,6 +5,7 @@
 /originpulse
 /originpulse.exe
 /.tmp/
+/.cache/
 /tmp/
 /.gotmp*/
 /components-font-awesome/

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -307,7 +308,7 @@ func testNotificationStore(t *testing.T, ctx context.Context) *db.Store {
 	if strings.TrimSpace(url) == "" {
 		t.Skip("ORIGINPULSE_TEST_DATABASE_URL is not set")
 	}
-	store, err := db.Open(ctx, config.DatabaseConfig{URL: url, MaxConns: 1})
+	store, err := db.Open(ctx, config.DatabaseConfig{URL: url, MaxConns: 2})
 	if err != nil {
 		t.Fatalf("open test database: %v", err)
 	}
@@ -319,12 +320,7 @@ func testNotificationStore(t *testing.T, ctx context.Context) *db.Store {
 }
 
 func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }
 
 func startFakeSMTP(t *testing.T) (string, <-chan string, func()) {

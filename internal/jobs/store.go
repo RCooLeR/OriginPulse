@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -74,14 +75,14 @@ type StepPage struct {
 
 type SchedulerSummary struct {
 	CollectionIntervalMS   int64     `json:"collection_interval_ms"`
-	LastCycleStartedAt     time.Time `json:"last_cycle_started_at,omitempty"`
-	LastCycleFinishedAt    time.Time `json:"last_cycle_finished_at,omitempty"`
+	LastCycleStartedAt     time.Time `json:"last_cycle_started_at,omitzero"`
+	LastCycleFinishedAt    time.Time `json:"last_cycle_finished_at,omitzero"`
 	LastCycleDurationMS    int64     `json:"last_cycle_duration_ms,omitempty"`
 	LastCycleUtilization   float64   `json:"last_cycle_utilization,omitempty"`
 	CollectionJobs         int       `json:"collection_jobs,omitempty"`
 	PipelineDurationMS     int64     `json:"pipeline_duration_ms,omitempty"`
 	PostPipelineDurationMS int64     `json:"post_pipeline_duration_ms,omitempty"`
-	LatestPipelineAt       time.Time `json:"latest_pipeline_at,omitempty"`
+	LatestPipelineAt       time.Time `json:"latest_pipeline_at,omitzero"`
 	RunningSinceStart      int       `json:"running_since_start"`
 	FailedSinceStart       int       `json:"failed_since_start"`
 	InterruptedSinceStart  int       `json:"interrupted_since_start"`
@@ -240,10 +241,7 @@ func (s *Store) RecentPage(limit int, offset int) Page {
 	if offset > total {
 		offset = total
 	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
+	end := min(offset+limit, total)
 	result := make([]Job, end-offset)
 	copy(result, s.jobs[offset:end])
 	return Page{Jobs: result, Total: total, Limit: limit, Offset: offset}
@@ -554,9 +552,7 @@ func cloneMeta(meta map[string]any) map[string]any {
 		return nil
 	}
 	out := make(map[string]any, len(meta))
-	for key, value := range meta {
-		out[key] = value
-	}
+	maps.Copy(out, meta)
 	return out
 }
 
@@ -565,9 +561,7 @@ func mergeMeta(base map[string]any, updates map[string]any) map[string]any {
 	if out == nil {
 		out = map[string]any{}
 	}
-	for key, value := range updates {
-		out[key] = value
-	}
+	maps.Copy(out, updates)
 	return out
 }
 

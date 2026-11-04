@@ -57,10 +57,12 @@ const SEO_BOT_PATTERN = /\b(ahrefsbot|ahrefssiteaudit|semrushbot|semrush|dotbot|
 const SOCIAL_BOT_PATTERN = /\b(facebookexternalhit|facebot|facebookcatalog|facebookbot|meta-externalagent|twitterbot|linkedinbot|slackbot-linkexpanding|slackbot)\b/i;
 const MONITOR_BOT_PATTERN = /\b(uptimerobot|uptime robot|pingdom|statuscake|datadog|newrelic|new relic)\b/i;
 const TOOL_BOT_PATTERN = /\b(curl|wget|go-http-client|python-requests|python-urllib|aiohttp|scrapy|okhttp|postmanruntime|axios|node-fetch|java)\b/i;
+const RAG_BOT_PATTERN = /\b(veritybot)\b/i;
 const SEARCH_BOT_ACTORS = ["google", "bing", "microsoft", "duckduckgo", "apple", "yandex", "baidu", "yahoo", "ask", "aol"];
 const SEO_BOT_ACTORS = ["ahrefs", "semrush", "moz", "majestic", "blexbot", "screaming frog", "sitebulb", "addsearch", "dataforseo"];
 const SOCIAL_BOT_ACTORS = ["meta", "facebook", "x", "twitter", "linkedin", "slack"];
 const MONITOR_BOT_ACTORS = ["uptimerobot", "pingdom", "statuscake", "datadog", "newrelic", "new relic"];
+const RAG_BOT_ACTORS = ["veritybot"];
 
 const state = {
   route: pathToRoute[location.pathname] || "overview",
@@ -1228,6 +1230,7 @@ function botFilterBar(visibleCount, totalCount) {
   const options = [
     ["all", "All automation"],
     ["ai", "AI bots"],
+    ["rag", "RAG / safe bots"],
     ["search", "Search engines"],
     ["seo", "SEO crawlers"],
     ["social", "Social previews"],
@@ -1255,6 +1258,7 @@ function botFilterRows(rows) {
 }
 
 function botCategory(item) {
+  if (isRAGBot(item)) return "rag";
   if (isKnownAIBot(item)) return "ai";
   const text = botCategoryText(item);
   const actor = botActorName(item);
@@ -1265,6 +1269,11 @@ function botCategory(item) {
   if (TOOL_BOT_PATTERN.test(text) || String(item.actor_type || "").toLowerCase() === "tool") return "tools";
   if (isSuspiciousBotAgent(item) || isSuspiciousBotSourceIP(item)) return "suspicious";
   return "other";
+}
+
+function isRAGBot(item) {
+  const actor = botActorName(item);
+  return String(item.actor_type || "").toLowerCase() === "rag" || RAG_BOT_ACTORS.includes(actor) || RAG_BOT_PATTERN.test(botCategoryText(item));
 }
 
 function botActorName(item) {
@@ -1295,7 +1304,7 @@ function isSuspiciousBotAgent(item) {
 }
 
 function isBotLikeSourceIP(item) {
-  return /bot|crawler|script|service|unknown|search|openai|anthropic|perplexity|amazon quick/i.test(`${item.actor_type} ${item.known_actor} ${item.reverse_dns}`);
+  return /bot|crawler|script|service|unknown|search|openai|anthropic|perplexity|amazon quick|rag|veritybot/i.test(`${item.actor_type} ${item.known_actor} ${item.reverse_dns}`);
 }
 
 function isSuspiciousBotSourceIP(item) {
@@ -4189,7 +4198,7 @@ function detectBot(sample, knownActor = "") {
     [/LinkedInBot\/?([\d.]*)/i, "LinkedInBot", "LinkedIn"],
     [/Twitterbot\/?([\d.]*)/i, "Twitterbot", "X"],
     [/Slackbot-LinkExpanding\/?([\d.]*)/i, "Slackbot", "Slack"],
-    [/VerityBot\/?([\d.]*)/i, "VerityBot", knownActor || ""],
+    [/VerityBot\/?([\d.]*)/i, "VerityBot", "VerityBot"],
     [/YisouSpider\/?([\d.]*)/i, "YisouSpider", knownActor || ""],
   ];
   for (const [regex, name, actor] of patterns) {

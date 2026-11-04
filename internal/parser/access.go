@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -173,8 +174,8 @@ func parseTarget(target string) (string, string, string, string) {
 		return emptyPath(path), query, "", ""
 	}
 
-	if idx := strings.Index(target, "?"); idx >= 0 {
-		return emptyPath(target[:idx]), target[idx+1:], "", ""
+	if before, after, ok := strings.Cut(target, "?"); ok {
+		return emptyPath(before), after, "", ""
 	}
 	return emptyPath(target), "", "", ""
 }
@@ -198,12 +199,12 @@ func bestClientIP(fields []string) string {
 	}
 
 	forwarded := make([]string, 0)
-	for i := len(fields) - 1; i >= 0; i-- {
-		field := fields[i]
+	for _, field := range slices.Backward(fields) {
+
 		if !strings.Contains(field, ",") {
 			continue
 		}
-		for _, part := range strings.Split(field, ",") {
+		for part := range strings.SplitSeq(field, ",") {
 			forwarded = append(forwarded, strings.TrimSpace(part))
 		}
 	}
@@ -275,7 +276,7 @@ func parseDurationMS(value string) int {
 	}
 	if strings.Contains(value, ",") {
 		maxMS := 0
-		for _, part := range strings.Split(value, ",") {
+		for part := range strings.SplitSeq(value, ",") {
 			part = strings.TrimSpace(part)
 			if part == "" || part == "-" {
 				continue

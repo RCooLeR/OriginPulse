@@ -35,6 +35,19 @@ func TestAnalyzeAmazonQuickCrawler(t *testing.T) {
 	}
 }
 
+func TestAnalyzeVerityBotRAG(t *testing.T) {
+	got := Analyze("VerityBot/1.0", 5000)
+	if got.Family != "veritybot" || got.ActorType != "rag" || got.KnownActor != "VerityBot" {
+		t.Fatalf("verity bot = %q/%q/%q, want veritybot/rag/VerityBot", got.Family, got.ActorType, got.KnownActor)
+	}
+	if !got.IsBot || got.IsTool {
+		t.Fatalf("bot/tool = %v/%v, want true/false", got.IsBot, got.IsTool)
+	}
+	if got.RiskScore > 10 {
+		t.Fatalf("RiskScore = %d, want safe RAG risk", got.RiskScore)
+	}
+}
+
 func TestAnalyzeTool(t *testing.T) {
 	got := Analyze("curl/8.7.1", 3)
 	if got.Family != "curl" || got.ActorType != "tool" || got.BrowserVersion != "8.7.1" {

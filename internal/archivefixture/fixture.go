@@ -136,7 +136,7 @@ func CreateCompactionSet(ctx context.Context, cfg config.Config, pool *pgxpool.P
 	}
 	weekEnd := weekStart.Add(7 * 24 * time.Hour)
 	result := CompactionResult{WeekStart: weekStart, WeekEnd: weekEnd, LogType: logType}
-	for day := 0; day < 2; day++ {
+	for day := range 2 {
 		bucketStart := weekStart.Add(time.Duration(day) * 24 * time.Hour)
 		bucketEnd := bucketStart.Add(time.Hour)
 		segmentPath := filepath.Join(cfg.CombinedDir(), "_smoke", fmt.Sprintf("compaction-%s.log.gz", bucketStart.Format("20060102T15")))

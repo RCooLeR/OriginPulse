@@ -171,7 +171,11 @@ func (s *Service) importArchive(ctx context.Context, record archiveRecord, impor
 	}
 	defer file.Close()
 
-	zstdReader, err := zstd.NewReader(file)
+	zstdReader, err := zstd.NewReader(
+		file,
+		zstd.WithDecoderMaxMemory(256<<20),
+		zstd.WithDecoderMaxWindow(64<<20),
+	)
 	if err != nil {
 		return err
 	}

@@ -31,12 +31,21 @@ Create a local Docker env file:
 
 ```powershell
 Copy-Item docker\.env.example docker\.env
+Copy-Item config.example.yml config.yml
+New-Item -ItemType Directory -Force tmp | Out-Null
 ```
 
-Edit `docker\.env`, then start the stack:
+Edit `docker\.env`, then start the stack. The default stack supports local log
+sources and binds its published ports to localhost:
 
 ```powershell
 docker compose --env-file docker/.env -f docker/docker-compose.yml up --build -d
+```
+
+For Pantheon collection, also include the secret-mount override:
+
+```powershell
+docker compose --env-file docker/.env -f docker/docker-compose.yml -f docker/docker-compose.pantheon.yml up --build -d
 ```
 
 Open the UI:
@@ -48,7 +57,7 @@ http://localhost:8080
 Create an initial user:
 
 ```powershell
-docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse originpulse create-user -config /app/config.yml -email admin@example.com -password "change-me"
+docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse-api originpulse create-user -config /app/config.yml -email admin@example.com -password "change-me"
 ```
 
 See [Docker setup](docker/README.md) for volume and command details.
@@ -59,7 +68,9 @@ See [Docker setup](docker/README.md) for volume and command details.
 go run ./cmd/originpulse server -config config.example.yml
 ```
 
-`DATABASE_URL` enables Postgres-backed auth, sessions, sites, migrations, analytics, reports, retention, and jobs.
+`DATABASE_URL` enables PostgreSQL 18+-backed auth, sessions, sites, migrations,
+analytics, reports, retention, and jobs. Back up an older database and upgrade it
+to PostgreSQL 18 before running the current migrations.
 
 ## Common Commands
 

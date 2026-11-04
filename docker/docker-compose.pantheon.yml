@@ -1,0 +1,22 @@
+services:
+  originpulse-api:
+    environment:
+      PANTHEON_SSH_KEY_PATH: /run/secrets/pantheon_ssh_key
+      PANTHEON_KNOWN_HOSTS_PATH: /run/secrets/pantheon_known_hosts
+    secrets:
+      - pantheon_ssh_key
+      - pantheon_known_hosts
+
+  originpulse-collector:
+    environment:
+      PANTHEON_SSH_KEY_PATH: /run/secrets/pantheon_ssh_key
+      PANTHEON_KNOWN_HOSTS_PATH: /run/secrets/pantheon_known_hosts
+    secrets:
+      - pantheon_ssh_key
+      - pantheon_known_hosts
+
+secrets:
+  pantheon_ssh_key:
+    file: ${PANTHEON_SSH_KEY_FILE:?Set PANTHEON_SSH_KEY_FILE to your Pantheon SSH private key path}
+  pantheon_known_hosts:
+    file: ${PANTHEON_KNOWN_HOSTS_FILE:?Set PANTHEON_KNOWN_HOSTS_FILE to a verified SSH known_hosts file}

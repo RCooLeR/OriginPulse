@@ -1,32 +1,41 @@
-FROM golang:1.27.3-bookworm@sha256:972b4110ba0f47539a975c31e52c64765e1ff19f2d74469ae4a595c6676e80a5 AS build
+# syntax=docker/dockerfile:1
+# check=error=true
+
+FROM --platform=$BUILDPLATFORM golang:1.27.3-trixie@sha256:fbb7ae40b62ff8afe31662df570d39b4f5052ac32b90dae8e60d7657a20a74f4 AS build
+
+ARG TARGETOS
+ARG TARGETARCH
 
 ENV GOTOOLCHAIN=local
 
 WORKDIR /src
 
-COPY . .
-RUN mkdir -p /out/data
-RUN if [ ! -d vendor ]; then go mod download; fi
-RUN if [ -d vendor ]; then \
-      CGO_ENABLED=0 go build -mod=vendor -o /out/originpulse ./cmd/originpulse; \
-    else \
-      CGO_ENABLED=0 go build -o /out/originpulse ./cmd/originpulse; \
-    fi
+COPY go.mod go.sum ./
+RUN --mount=type=cache,id=originpulse-go-mod,target=/go/pkg/mod,sharing=locked \
+    go mod download
 
-FROM gcr.io/distroless/static-debian12
+COPY cmd ./cmd
+COPY internal ./internal
+
+RUN mkdir -p /out/data
+RUN --mount=type=cache,id=originpulse-go-mod,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,id=originpulse-go-build,target=/root/.cache/go-build,sharing=locked \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/originpulse ./cmd/originpulse
+
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:18f4cc26c9ffa7f20a359298be7deadac5c607c8e03a02b8119f1a5fc2f82c99
 
 WORKDIR /app
 
-COPY --from=build --chown=nonroot:nonroot /out/originpulse /usr/local/bin/originpulse
-COPY --from=build --chown=nonroot:nonroot /out/data /app/data
-COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --chown=nonroot:nonroot config.example.yml /app/config.example.yml
-COPY --chown=nonroot:nonroot assets /app/assets
+COPY --link --from=build --chown=65532:65532 /out/originpulse /usr/local/bin/originpulse
+COPY --link --from=build --chown=65532:65532 /out/data /app/data
+COPY --link --chown=65532:65532 config.example.yml /app/config.example.yml
+COPY --link --chown=65532:65532 assets /app/assets
 
 VOLUME ["/app/data"]
 EXPOSE 8080
 
 USER nonroot:nonroot
 
-ENTRYPOINT ["originpulse"]
+ENTRYPOINT ["/usr/local/bin/originpulse"]
 CMD ["server", "-config", "/app/config.example.yml"]

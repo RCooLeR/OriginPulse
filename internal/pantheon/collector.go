@@ -87,9 +87,7 @@ func (c *Collector) collectAll(ctx context.Context) error {
 		for _, env := range site.Envs {
 			site := site
 			env := env
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				select {
 				case sem <- struct{}{}:
 					defer func() { <-sem }()
@@ -104,7 +102,7 @@ func (c *Collector) collectAll(ctx context.Context) error {
 					}
 					errMu.Unlock()
 				}
-			}()
+			})
 		}
 	}
 
@@ -238,10 +236,7 @@ func (c *Collector) downloadTargetLogs(ctx context.Context, jobID string, target
 	results := make(chan serverResult, len(servers))
 	var wg sync.WaitGroup
 	for _, server := range servers {
-		server := server
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			if until, ok := c.cooldownUntil(ctx, target, server.kind, server.ip); ok {
 				meta := map[string]any{
 					"site_id":                    target.SiteID,
@@ -274,7 +269,7 @@ func (c *Collector) downloadTargetLogs(ctx context.Context, jobID string, target
 				})
 			}
 			results <- serverResult{target: server, stats: stats, err: err}
-		}()
+		})
 	}
 	wg.Wait()
 	close(results)
@@ -483,9 +478,10 @@ func join(values []string) string {
 	if len(values) == 0 {
 		return ""
 	}
-	out := values[0]
+	var out strings.Builder
+	out.WriteString(values[0])
 	for _, value := range values[1:] {
-		out += "," + value
+		out.WriteString("," + value)
 	}
-	return out
+	return out.String()
 }

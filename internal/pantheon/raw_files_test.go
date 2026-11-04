@@ -18,7 +18,7 @@ func TestRawFileRepositoryKeepsDownloadedStatusForUnchangedDiscovery(t *testing.
 	}
 
 	ctx := context.Background()
-	store, err := db.Open(ctx, config.DatabaseConfig{URL: url, MaxConns: 1})
+	store, err := db.Open(ctx, config.DatabaseConfig{URL: url, MaxConns: 2})
 	if err != nil {
 		t.Fatal(err)
 	}

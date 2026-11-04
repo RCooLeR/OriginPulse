@@ -311,6 +311,14 @@ var catalog = []Fingerprint{
 		ASNOrgContains:    []string{"omgili"},
 	},
 	{
+		ID:                "veritybot",
+		Family:            "veritybot",
+		KnownActor:        "VerityBot",
+		ActorType:         "rag",
+		RiskScore:         10,
+		UserAgentContains: []string{"veritybot"},
+	},
+	{
 		ID:                "pingdom",
 		Family:            "pingdom",
 		KnownActor:        "Pingdom",

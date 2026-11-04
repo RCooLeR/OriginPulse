@@ -62,7 +62,7 @@ type RefreshedIP struct {
 	ProviderName     string    `json:"provider_name,omitempty"`
 	ProviderSource   string    `json:"provider_source_url,omitempty"`
 	ProviderRange    string    `json:"provider_range,omitempty"`
-	ProviderAt       time.Time `json:"provider_refreshed_at,omitempty"`
+	ProviderAt       time.Time `json:"provider_refreshed_at,omitzero"`
 	IsTorExit        bool      `json:"is_tor_exit"`
 	IsDatacenter     bool      `json:"is_datacenter"`
 	Status4xx        int64     `json:"status_4xx"`
@@ -167,14 +167,12 @@ func (s *Service) refreshIPBatch(ctx context.Context, items []RefreshedIP, torEx
 	outcomes := make(chan refreshOutcome, len(items))
 	var wg sync.WaitGroup
 
-	for i := 0; i < workerCount; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workerCount {
+		wg.Go(func() {
 			for item := range jobs {
 				outcomes <- s.refreshOneIP(ctx, item, torExits, torCheckAvailable, refreshedAt)
 			}
-		}()
+		})
 	}
 
 	go func() {

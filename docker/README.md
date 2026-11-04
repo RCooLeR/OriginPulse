@@ -8,22 +8,39 @@ Create a local Compose env file from the example:
 
 ```powershell
 Copy-Item docker\.env.example docker\.env
+Copy-Item config.example.yml config.yml
+New-Item -ItemType Directory -Force tmp | Out-Null
 ```
 
-Edit `docker\.env` and set at least:
+The base stack supports local log sources without an SSH key. For Pantheon
+collection, set both secret paths to an SSH key and a verified `known_hosts`
+file:
 
 ```text
 PANTHEON_SSH_KEY_FILE=C:/Users/example/.ssh/id_rsa
+PANTHEON_KNOWN_HOSTS_FILE=C:/Users/example/.ssh/known_hosts
 ```
 
-The container receives that key as `/run/secrets/pantheon_ssh_key`, which overrides the host-only Windows path in `config.yml`.
+Then include `docker/docker-compose.pantheon.yml` when creating or recreating
+the stack. The override mounts both files as Docker secrets and replaces
+host-only paths from `config.yml`.
 
 ## Run
 
 ```powershell
 docker compose --env-file docker/.env -f docker/docker-compose.yml up --build -d
-docker compose --env-file docker/.env -f docker/docker-compose.yml logs -f originpulse
+docker compose --env-file docker/.env -f docker/docker-compose.yml logs -f originpulse-api originpulse-collector originpulse-ingest originpulse-reports
 ```
+
+Use the following `up` command when Pantheon collection is enabled:
+
+```powershell
+docker compose --env-file docker/.env -f docker/docker-compose.yml -f docker/docker-compose.pantheon.yml up --build -d
+```
+
+Published API and Postgres ports bind to `127.0.0.1` by default. Set
+`ORIGINPULSE_BIND_HOST` or `POSTGRES_BIND_HOST` deliberately if another host
+must reach them.
 
 Open:
 
@@ -34,16 +51,16 @@ http://localhost:8080
 ## Useful Checks
 
 ```powershell
-docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse originpulse check-config -config /app/config.yml
-docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse originpulse collect -config /app/config.yml
-docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse originpulse pipeline -config /app/config.yml -from 2026-06-20T00:00:00Z -to 2026-06-21T00:00:00Z
+docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse-api originpulse check-config -config /app/config.yml
+docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse-api originpulse collect -config /app/config.yml
+docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse-api originpulse pipeline -config /app/config.yml -from 2026-06-20T00:00:00Z -to 2026-06-21T00:00:00Z
 ```
 
 For long-run collection checks:
 
 ```powershell
 docker compose --env-file docker/.env -f docker/docker-compose.yml ps
-docker compose --env-file docker/.env -f docker/docker-compose.yml logs --tail=120 originpulse
+docker compose --env-file docker/.env -f docker/docker-compose.yml logs --tail=120 originpulse-api originpulse-collector originpulse-ingest originpulse-reports
 docker compose --env-file docker/.env -f docker/docker-compose.yml exec postgres psql -U originpulse -d originpulse -c "select count(*) filter (where rollups_1h_backfilled_at is null) as unbackfilled, max(ts) as newest_access_event, now() - max(ts) as lag from access_events;"
 docker compose --env-file docker/.env -f docker/docker-compose.yml exec postgres psql -U originpulse -d originpulse -c "select type,status,started_at,finished_at,duration_ms,message,meta from job_runs order by started_at desc limit 20;"
 ```
@@ -62,6 +79,23 @@ $env:DATABASE_URL='postgres://originpulse:originpulse_dev_password@127.0.0.1:554
 
 The volume names are explicit so existing local Docker data is reused across Compose project-name changes.
 
+The stack pins PostgreSQL 18.6 on Debian 13 and uses PostgreSQL 18's worker
+I/O method by default. Override `POSTGRES_IO_METHOD` only after benchmarking on
+the deployment host. Changing `POSTGRES_PASSWORD` does not update the password
+inside an existing database volume; it is an initialization setting for a new,
+empty cluster.
+
+OriginPulse migrations use PostgreSQL 18's time-ordered UUIDv7 defaults for new
+records. PostgreSQL 18 is therefore the minimum supported database version.
+
 Postgres 18 uses a different official image data layout than Postgres 16. The old PG16 `docker_pgdata` volume is not mounted by this stack anymore, so it is preserved for manual backup or dump/restore instead of being mutated in place. To migrate existing local data, export from the old PG16 stack before switching volumes, then restore into the new `originpulse-postgres` volume.
 
-Do not expose Postgres publicly. Back up both Docker volumes for real long-term runs.
+The application images use a read-only Debian 13 Distroless filesystem, run as
+non-root without Linux capabilities, and keep writable state in `/app/data` and
+an ephemeral `/tmp`. The builder uses Go 1.27 on Debian 13.
+
+Do not expose Postgres publicly. Back up both Docker volumes before image or
+database upgrades and for all real long-term runs.
+
+The Compose file requires Docker Engine 25 or newer and Docker Compose 2.20.2
+or newer for healthcheck `start_interval` and hardened bind-mount behavior.

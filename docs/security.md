@@ -30,7 +30,7 @@ Keep these out of Git:
 - database dumps
 - screenshots containing real customer traffic
 
-Docker mounts the Pantheon SSH key as a secret. Prefer environment variables for credentials.
+The optional Pantheon Compose override mounts the SSH key as a secret. Prefer environment variables for credentials.
 
 ## Public Repository Hygiene
 

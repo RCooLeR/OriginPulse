@@ -4,12 +4,14 @@ This guide starts OriginPulse with Docker Compose, creates the first user, and r
 
 ## Requirements
 
-- Docker Desktop or a compatible Docker Engine
+- Docker Engine 25+ with Docker Compose 2.20.2+ (or a current Docker Desktop)
 - A local clone of the repository
 - For Pantheon collection: an SSH private key accepted by a Pantheon user with access to the configured sites
 - For local log collection: a readable directory containing log files
 
-Postgres is included in the Compose stack. The app can run without a database only in a degraded mode; real collection and analysis require Postgres.
+PostgreSQL 18 is included in the Compose stack and is the minimum supported
+database version. The app can run without a database only in a degraded mode;
+real collection and analysis require PostgreSQL.
 
 ## Configure Docker
 
@@ -17,15 +19,20 @@ Create a local environment file:
 
 ```powershell
 Copy-Item docker\.env.example docker\.env
+Copy-Item config.example.yml config.yml
+New-Item -ItemType Directory -Force tmp | Out-Null
 ```
 
-Edit `docker\.env` and set the SSH key path if Pantheon collection is enabled:
+Edit `docker\.env`. Set the SSH key path only if Pantheon collection is enabled:
 
 ```text
 PANTHEON_SSH_KEY_FILE=C:/Users/example/.ssh/id_rsa
+PANTHEON_KNOWN_HOSTS_FILE=C:/Users/example/.ssh/known_hosts
 ```
 
-The Compose stack mounts that key into the app container as `/run/secrets/pantheon_ssh_key`.
+The optional Pantheon Compose override mounts the key and verified host keys into
+the API and collector containers. The base stack does not require SSH secrets
+and supports local log sources on its own.
 
 ## Configure Sites
 
@@ -65,6 +72,12 @@ Use filename masks when a local log directory contains many unrelated files.
 docker compose --env-file docker/.env -f docker/docker-compose.yml up --build -d
 ```
 
+For Pantheon sources, start the stack with the secret override:
+
+```powershell
+docker compose --env-file docker/.env -f docker/docker-compose.yml -f docker/docker-compose.pantheon.yml up --build -d
+```
+
 Open:
 
 ```text
@@ -74,7 +87,7 @@ http://localhost:8080
 ## Create The First User
 
 ```powershell
-docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse originpulse create-user -config /app/config.yml -email admin@example.com -password "change-me"
+docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse-api originpulse create-user -config /app/config.yml -email admin@example.com -password "change-me"
 ```
 
 Sign in through the browser with that account.
@@ -86,8 +99,8 @@ From the UI, use the Pulse Logs or header controls to run collection and pipelin
 From the CLI:
 
 ```powershell
-docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse originpulse collect -config /app/config.yml
-docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse originpulse pipeline -config /app/config.yml
+docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse-api originpulse collect -config /app/config.yml
+docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse-api originpulse pipeline -config /app/config.yml
 ```
 
 After indexing, check the Overview, Traffic, Live Logs, Security, Bots, and Pulse Logs pages.
@@ -96,8 +109,8 @@ After indexing, check the Overview, Traffic, Live Logs, Security, Bots, and Puls
 
 ```powershell
 docker compose --env-file docker/.env -f docker/docker-compose.yml ps
-docker compose --env-file docker/.env -f docker/docker-compose.yml logs --tail=120 originpulse
-docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse originpulse check-config -config /app/config.yml
+docker compose --env-file docker/.env -f docker/docker-compose.yml logs --tail=120 originpulse-api originpulse-collector originpulse-ingest originpulse-reports
+docker compose --env-file docker/.env -f docker/docker-compose.yml exec originpulse-api originpulse check-config -config /app/config.yml
 ```
 
 The app health endpoint is:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -19,8 +20,8 @@ import (
 )
 
 type Options struct {
-	From               time.Time `json:"from,omitempty"`
-	To                 time.Time `json:"to,omitempty"`
+	From               time.Time `json:"from,omitzero"`
+	To                 time.Time `json:"to,omitzero"`
 	Force              bool      `json:"force"`
 	SkipCombine        bool      `json:"skip_combine"`
 	SkipRollupRecovery bool      `json:"skip_rollup_recovery,omitempty"`
@@ -36,8 +37,8 @@ type Options struct {
 }
 
 type Result struct {
-	From              time.Time         `json:"from,omitempty"`
-	To                time.Time         `json:"to,omitempty"`
+	From              time.Time         `json:"from,omitzero"`
+	To                time.Time         `json:"to,omitzero"`
 	LogTypes          []string          `json:"log_types"`
 	CombinedSegments  int               `json:"combined_segments"`
 	LinesCombined     int               `json:"lines_combined"`
@@ -329,12 +330,7 @@ func (s *Service) run(ctx context.Context, opts Options, jobID string) (Result, 
 }
 
 func hasAccessLogType(logTypes []string) bool {
-	for _, logType := range logTypes {
-		if isAccessLogType(logType) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(logTypes, isAccessLogType)
 }
 
 func isAccessLogType(logType string) bool {
@@ -535,9 +531,7 @@ func (s *Service) indexPendingSegments(ctx context.Context, jobID string, pendin
 	results := make(chan indexedSegmentResult, len(pending))
 	var wg sync.WaitGroup
 	for worker := 0; worker < workers; worker++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for idx := range work {
 				segment := pending[idx]
 				step := s.startStep(ctx, jobID, "index segment", map[string]any{
@@ -571,7 +565,7 @@ func (s *Service) indexPendingSegments(ctx context.Context, jobID string, pendin
 					return
 				}
 			}
-		}()
+		})
 	}
 	go func() {
 		defer close(work)
@@ -635,7 +629,7 @@ func (s *Service) finishStep(step jobs.Step, status jobs.Status, message string,
 func (s *Service) indexSegmentWithRetry(ctx context.Context, segment combiner.SegmentManifest, opts Options) (indexer.Result, error) {
 	var result indexer.Result
 	var err error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		result, err = s.indexer.IndexSegment(ctx, indexer.Options{SegmentPath: segment.Path, Force: opts.Force, SkipRollups: true})
 		if err == nil || !isRetryableIndexError(err) {
 			return result, err
@@ -658,8 +652,8 @@ func (s *Service) indexSegmentWithRetry(ctx context.Context, segment combiner.Se
 }
 
 func isRetryableIndexError(err error) bool {
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) {
+	pgErr, ok := errors.AsType[*pgconn.PgError](err)
+	if !ok {
 		return false
 	}
 	return pgErr.Code == "40P01" || pgErr.Code == "40001"
