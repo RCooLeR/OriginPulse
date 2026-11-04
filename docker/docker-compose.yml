@@ -120,3 +120,8 @@ volumes:
     name: originpulse-postgres
   originpulse_data:
     name: docker_originpulse_data
+secrets:
+  pantheon_ssh_key:
+    file: ${PANTHEON_SSH_KEY_FILE:?Set PANTHEON_SSH_KEY_FILE to your Pantheon SSH private key path}
+  pantheon_known_hosts:
+    file: ${PANTHEON_KNOWN_HOSTS_FILE:?Set PANTHEON_KNOWN_HOSTS_FILE to a verified SSH known_hosts file}
