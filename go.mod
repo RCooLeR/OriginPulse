@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/go-chi/chi/v5 v5.5.0
-	github.com/jackc/pgx/v5 v5.11.0
+	github.com/jackc/pgx/v5 v5.12.0
 	github.com/klauspost/compress v1.20.3
 	github.com/oschwald/geoip2-golang v1.13.0
 	github.com/pkg/sftp v1.13.12
