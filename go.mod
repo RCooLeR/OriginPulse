@@ -1,16 +1,16 @@
 module originpulse
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/go-chi/chi/v5 v5.5.0
-	github.com/jackc/pgx/v5 v5.12.0
-	github.com/klauspost/compress v1.20.3
+	github.com/jackc/pgx/v5 v5.13.0
+	github.com/klauspost/compress v1.20.4
 	github.com/oschwald/geoip2-golang v1.13.0
 	github.com/pkg/sftp v1.13.12
 	github.com/rs/zerolog v1.35.1
-	golang.org/x/crypto v0.58.0
+	golang.org/x/crypto v0.59.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -25,7 +25,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/oschwald/maxminddb-golang v1.13.1 // indirect
 	github.com/rogpeppe/go-internal v1.16.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 )
