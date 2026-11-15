@@ -12,26 +12,36 @@ jobs:
     name: Go checks
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    services:
-      postgres:
-        image: postgres:18.6-trixie@sha256:bd5dfa494a5a259704365813dbfa5fa6b3e69be7348d43b547f540c730478583
-        env:
-          POSTGRES_DB: originpulse
-          POSTGRES_USER: originpulse
-          POSTGRES_PASSWORD: originpulse_test_password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U originpulse -d originpulse"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
+      - name: Build PostgreSQL image
+        run: docker buildx build --load --tag originpulse-postgres:ci docker/postgres
+      - name: Start disposable PostgreSQL
+        run: |
+          docker run --detach --rm --name originpulse-postgres-ci \
+            --publish 127.0.0.1:5432:5432 \
+            --env POSTGRES_DB=originpulse \
+            --env POSTGRES_USER=originpulse \
+            --env POSTGRES_PASSWORD=originpulse_test_password \
+            --health-cmd 'pg_isready -h 127.0.0.1 -U originpulse -d originpulse' \
+            --health-interval 5s --health-timeout 3s --health-retries 20 \
+            originpulse-postgres:ci
+          for _ in {1..105}; do
+            status="$(docker inspect --format '{{.State.Health.Status}}' originpulse-postgres-ci)"
+            if [[ "$status" == healthy ]]; then
+              exit 0
+            fi
+            if [[ "$status" == unhealthy ]]; then
+              break
+            fi
+            sleep 1
+          done
+          docker logs originpulse-postgres-ci
+          exit 1
       - name: Test
         env:
           ORIGINPULSE_TEST_DATABASE_URL: "postgres://originpulse:originpulse_test_password@127.0.0.1:5432/originpulse?sslmode=disable&require_auth=scram-sha-256"
@@ -43,6 +53,17 @@ jobs:
         with:
           go-version-file: go.mod
           repo-checkout: false
+      - name: Scan PostgreSQL image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.76.1
+          image-ref: originpulse-postgres:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os
+          severity: CRITICAL,HIGH
+
   container:
     name: Container build
     runs-on: ubuntu-latest
@@ -76,14 +97,4 @@ jobs:
           format: table
           exit-code: "1"
           ignore-unfixed: true
-          severity: CRITICAL,HIGH
-      - name: Scan PostgreSQL image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: v0.76.1
-          image-ref: postgres:18.6-trixie@sha256:bd5dfa494a5a259704365813dbfa5fa6b3e69be7348d43b547f540c730478583
-          format: table
-          exit-code: "1"
-          ignore-unfixed: true
-          vuln-type: os
           severity: CRITICAL,HIGH
